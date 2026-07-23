@@ -1,6 +1,6 @@
 # App Store Connect submission checklist
 
-> **Release status (2026-07-24):** macOS 1.0.0 was approved and released on 2026-07-21: [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497). The **macOS 1.0.2 update** is the version now being prepared for submission — its build is already uploaded to App Store Connect via the pushed `apple-v1.0.2` tag; complete the boxes below to submit it for review. The iPhone/iPad companion remains in review. Keep this checklist as the reusable gate for subsequent submissions.
+> **Release status (2026-07-24):** macOS 1.0.0 was approved and released on 2026-07-21: [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497). The **macOS 1.0.2 update (build 3901) was submitted for review on 2026-07-24** with automatic release on approval; review may take up to 48 hours. The iPhone/iPad companion remains in review. Keep this checklist as the reusable gate for subsequent submissions.
 
 ## App record
 

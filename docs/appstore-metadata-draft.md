@@ -157,10 +157,15 @@ claude code,ai,agent,dashboard,stream deck,monitoring,apme,openclaw,codex,ipad,c
 
 ### What's New (v1.0.2, macOS — 유지보수)
 
+> 1.0.1이 공개된 적 없고 1.0.0이 라이브라, 1.0.0→1.0.2로 올라오는 사용자가 받는 1.0.1+1.0.2 수정을 합침 (App Store Swift 앱 실제 포함 항목만; ESP32 시리얼 등 CLI 전용 제외). 2026-07-24 심사 제출된 실제 문구.
+
 ```
 안정성 개선 업데이트.
 
-• 관찰 중인 Codex·OpenCode·Antigravity 세션이 내부 세션 ID 형식 차이로 타임라인에서 사라지던 문제 수정 — 포커스된 세션이 계속 표시됩니다
+• 대시보드가 실행 시 내장 데몬에 안정적으로 연결됩니다
+• 라이브 세션 화면의 드문 크래시 수정
+• 텍스트 디코딩 버그로 비어 보이던 Codex 사용량 게이지 복구
+• 관찰 중인 Codex·OpenCode·Antigravity 세션이 타임라인에서 사라지던 문제 수정
 
 피드백은 언제든 환영합니다: admin@foundby.kr
 ```
@@ -374,7 +379,10 @@ claude code,ai,エージェント,ダッシュボード,stream deck,monitoring,a
 ```
 安定性の改善アップデート。
 
-• 監視中のCodex・OpenCode・Antigravityセッションが内部セッションIDの形式差でタイムラインから消える問題を修正 — フォーカス中のセッションが表示され続けます
+• ダッシュボードが起動時に内蔵デーモンへ確実に接続されるようになりました
+• ライブセッション画面のまれなクラッシュを修正
+• テキストデコードの不具合で空白になることがあったCodex使用量ゲージを復元
+• 監視中のCodex・OpenCode・Antigravityセッションがタイムラインから消える問題を修正
 
 フィードバックはいつでも歓迎します: admin@foundby.kr
 ```
@@ -585,13 +593,19 @@ claude code,ai,agent,dashboard,monitoring,apme,openclaw,codex,ipad,stream deck,d
 
 ### What's New (v1.0.2, macOS — maintenance)
 
-macOS ships 1.0.2 as a reliability update; the CI-owned build number is whatever
-`apple-release.yml` produced for the `apple-v1.0.2` tag — never set it by hand.
+macOS ships 1.0.2 as a reliability update on build 3901 (the `apple-v1.0.2` CI
+upload; build number is CI-owned — never set it by hand). Because 1.0.1 never
+shipped publicly and 1.0.0 is live, this What's New folds the 1.0.1 and 1.0.2
+fixes together (only the ones that ship in the App Store Swift app — CLI-daemon-only
+items like ESP32 serial recovery are excluded). Submitted for review 2026-07-24.
 
 ```
 Reliability update.
 
-• Fixed observed Codex, OpenCode, and Antigravity sessions disappearing from the timeline when their internal session IDs used a provider prefix — the focused session now stays visible
+• The dashboard now reliably connects to its built-in daemon on launch
+• Fixed a rare crash in the live session view
+• Restored the Codex usage gauge that a text-decoding bug could leave blank
+• Observed Codex, OpenCode, and Antigravity sessions no longer drop off the timeline
 
 Thanks for the feedback — keep it coming: admin@foundby.kr
 ```
