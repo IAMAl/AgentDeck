@@ -1,6 +1,6 @@
 # App Store Connect submission checklist
 
-> **Release status (2026-07-22):** macOS 1.0.0 was approved and released on 2026-07-21: [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497). The iPhone/iPad companion remains in review. Keep this checklist as the reusable gate for subsequent submissions.
+> **Release status (2026-07-24):** macOS 1.0.0 was approved and released on 2026-07-21: [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497). The **macOS 1.0.2 update** is the version now being prepared for submission — its build is already uploaded to App Store Connect via the pushed `apple-v1.0.2` tag; complete the boxes below to submit it for review. The iPhone/iPad companion remains in review. Keep this checklist as the reusable gate for subsequent submissions.
 
 ## App record
 
@@ -13,7 +13,7 @@
 - [ ] Secondary category: Productivity
 - [ ] Price: Free
 - [ ] Copyright: `© 2026 Serendipity Bound`
-- [ ] Version: `1.0.0` — build number is CI-owned (`github.run_number` injected by `apple-release.yml`); never set it by hand (RELEASING.md)
+- [ ] Version: `1.0.2` — build number is CI-owned (`github.run_number` injected by `apple-release.yml`); never set it by hand (RELEASING.md)
 - [ ] macOS minimum: 26.0; iOS/iPadOS minimum: 17.0
 
 ## Product page
@@ -60,7 +60,8 @@
 - [ ] Confirm `PrivacyInfo.xcprivacy` is embedded and declares the same two collected data types as App Store Connect, with tracking disabled
 - [ ] Upload and wait for processing; select the correct build for both platform versions
 - [ ] Recheck export compliance, content rights, age rating, and App Privacy before “Add for Review”
-- [ ] Choose release method: manual release is recommended for v1.0.0
+- [ ] Choose release method: manual release is recommended for the 1.0.2 update
+- [ ] Paste the **What's New (v1.0.2, macOS)** copy from `docs/appstore-metadata-draft.md` (ko/ja/en) into the version's release-notes field
 
 ## Known blocker audit
 

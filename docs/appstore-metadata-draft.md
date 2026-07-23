@@ -155,6 +155,16 @@ AgentDeck은 독립적인 프로젝트이며 Anthropic, OpenAI, Google, SST, Cor
 claude code,ai,agent,dashboard,stream deck,monitoring,apme,openclaw,codex,ipad,companion,developer
 ```
 
+### What's New (v1.0.2, macOS — 유지보수)
+
+```
+안정성 개선 업데이트.
+
+• 관찰 중인 Codex·OpenCode·Antigravity 세션이 내부 세션 ID 형식 차이로 타임라인에서 사라지던 문제 수정 — 포커스된 세션이 계속 표시됩니다
+
+피드백은 언제든 환영합니다: admin@foundby.kr
+```
+
 ### What's New (v1.0.1, macOS — 유지보수)
 
 ```
@@ -359,6 +369,16 @@ AgentDeckは独立したプロジェクトであり、Anthropic、OpenAI、Googl
 claude code,ai,エージェント,ダッシュボード,stream deck,monitoring,apme,openclaw,codex,ipad,developer
 ```
 
+### What's New (v1.0.2, macOS — メンテナンス)
+
+```
+安定性の改善アップデート。
+
+• 監視中のCodex・OpenCode・Antigravityセッションが内部セッションIDの形式差でタイムラインから消える問題を修正 — フォーカス中のセッションが表示され続けます
+
+フィードバックはいつでも歓迎します: admin@foundby.kr
+```
+
 ### What's New (v1.0.1, macOS — メンテナンス)
 
 ```
@@ -561,6 +581,19 @@ AgentDeck is independent and is not affiliated with or endorsed by Anthropic, Op
 
 ```
 claude code,ai,agent,dashboard,monitoring,apme,openclaw,codex,ipad,stream deck,developer
+```
+
+### What's New (v1.0.2, macOS — maintenance)
+
+macOS ships 1.0.2 as a reliability update; the CI-owned build number is whatever
+`apple-release.yml` produced for the `apple-v1.0.2` tag — never set it by hand.
+
+```
+Reliability update.
+
+• Fixed observed Codex, OpenCode, and Antigravity sessions disappearing from the timeline when their internal session IDs used a provider prefix — the focused session now stays visible
+
+Thanks for the feedback — keep it coming: admin@foundby.kr
 ```
 
 ### What's New (v1.0.1, macOS — maintenance)
