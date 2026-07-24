@@ -13,10 +13,10 @@ against our files on 2026-07-20.
 
 | Slot | Spec | Our file | ✓ |
 |---|---|---|---|
-| App icon | 288×288 PNG | `marketplace/elgato/1.0.0/app-icon-288.png` | 288×288 |
-| Thumbnail | 1920×960 PNG | `marketplace/elgato/1.0.0/thumbnail-1920x960.png` | 1920×960 |
-| Gallery | 1920×960 PNG, **min 3**, max 10 | `gallery-01-session-keys.png` · `gallery-02-dials.png` · `gallery-03-hardware.png` | 3 × 1920×960 |
-| Gallery video (optional) | 1920×1080 MP4, <250 MB | `apple/appstore-submission/previews/macOS/agentdeck-preview.mp4` | 1920×1080, 28s, 37 MB |
+| App icon | 288×288 PNG | `marketplace/elgato/1.0.2/app-icon-288.png` | 288×288 |
+| Thumbnail | 1920×960 PNG | `marketplace/elgato/1.0.2/thumbnail-1920x960.png` | 1920×960 |
+| Gallery | 1920×960 PNG, **min 3**, max 10 | `gallery-01-overview.png` · `gallery-02-session-keys.png` · `gallery-03-dials.png` (real hardware) | 3 × 1920×960 |
+| Gallery video (optional) | 1920×1080 MP4, <250 MB | `agentdeck-elgato-review-demo.mp4` (or `apple/.../agentdeck-preview.mp4`) | 1920×1080, 33s, 5.2 MB |
 | Product name | ≤30 chars | `AgentDeck` | 9 |
 | Description | 250–1,500 per guidelines; console field allows 4000 | below | see check |
 
@@ -25,8 +25,11 @@ Plugin package: `dist/bound.serendipity.agentdeck.streamDeckPlugin` — rebuild 
 
 ## Version
 
-`1.0.0.0` (product version `1.0.0`) — Stream Deck requires the 4-part form;
-`scripts/verify-version-sync.mjs` pins it to `<VERSION>.0`.
+`1.0.2.0` (product version `1.0.2`) — Stream Deck requires the 4-part form;
+`scripts/verify-version-sync.mjs` pins it to `<VERSION>.0`. The plugin is still
+in Elgato's initial review (not yet published), so this revision resubmits under
+the same version — the Marketplace's monotonic-version rule applies to published
+builds, not pre-publication review revisions.
 
 ## Platform
 
@@ -74,31 +77,42 @@ First public release.
 - Support: https://github.com/puritysb/AgentDeck/issues
 - Privacy: https://puritysb.github.io/AgentDeck/#privacy
 
-## Submission files
+## Submission files (revision — 2026-07-25)
 
-- Plugin: `dist/bound.serendipity.agentdeck.streamDeckPlugin`
-- App icon: `marketplace/elgato/1.0.0/app-icon-288.png`
-- Thumbnail: `marketplace/elgato/1.0.0/thumbnail-1920x960.png`
-- Gallery: the three `marketplace/elgato/1.0.0/gallery-*.png` files
-- Optional gallery video: `apple/appstore-submission/previews/macOS/agentdeck-preview.mp4`
+- Plugin: `dist/bound.serendipity.agentdeck.streamDeckPlugin` (v1.0.2.0, white category icon)
+- App icon: `marketplace/elgato/1.0.2/app-icon-288.png`
+- Thumbnail: `marketplace/elgato/1.0.2/thumbnail-1920x960.png`
+- Gallery: the three `marketplace/elgato/1.0.2/gallery-*.png` files
+- Demo video for `maker@elgato.com`: `agentdeck-elgato-review-demo.mp4` (1920×1080, 33 s, 5.2 MB) — kept out of the repo; source in the editing folder
+- Optional gallery video slot: same demo, or `apple/appstore-submission/previews/macOS/agentdeck-preview.mp4`
 
-## Gallery sources
+## Review response (2026-07-25)
 
-The gallery shows the plugin on Stream Deck hardware rather than the Mac app.
-Sources live in `docs/media/` and are 2026-07-20 captures of the shipped 1.0.0
-layout:
+Elgato's first review asked for three things. This revision addresses them:
 
-| File | Source |
+1. **White in-app icons.** The category icon was resized from the full-colour
+   brand PNG, so it showed the colour aquarium mark. It is now generated as the
+   white AgentDeck mark, matching the (already white) action icons —
+   `scripts/generate-icons.mjs`, commit `480a00b3`. The plugin/Marketplace icon
+   stays full colour.
+2. **Product-page media.** The gallery is rebuilt from real Stream Deck hardware
+   shots (below) instead of the earlier renders/raw photo.
+3. **Demo video.** A 33-second demo is emailed to `maker@elgato.com` so the
+   reviewer can verify functionality before re-review.
+
+## Gallery sources (2026-07-25 revision)
+
+The gallery leads with a brand overview slide, then real Stream Deck hardware
+running the plugin, on the aquarium-tide canvas. Sources are the edited captures
+re-encoded losslessly (compressionLevel 9) into `marketplace/elgato/1.0.2/`:
+
+| File | Content |
 |---|---|
-| `gallery-01-session-keys.png` | `streamdeck-keys-app.png` — Stream Deck app, 15-key grid |
-| `gallery-02-dials.png` | `streamdeck-plus-app.png` — Stream Deck + keys, touch strip, dials |
-| `gallery-03-hardware.png` | `streamdeck-plus-hw.jpg` — the physical deck running live sessions |
+| `gallery-01-overview.png` | Brand title slide — "AgentDeck · Live control for AI coding agents" (same art as the thumbnail) |
+| `gallery-02-session-keys.png` | Real Stream Deck 15-key running session keys — "Sessions at a glance" |
+| `gallery-03-dials.png` | Real Stream Deck + keys, touch strip, and dials — "Four dials, four jobs" |
 
 **Do not reuse `docs/media/hardware-d200h-tc001-closeup.png` for Stream Deck
 imagery.** Its touch strip reads VOL / PROMPT / USAGE / VOICE, and the Voice and
 Prompt dials were removed in `f20af561` — it advertises features that no longer
 ship. The same applies to any capture predating that commit.
-
-Sources are modest resolution (910×548 / 794×560 app captures, 1280×960 photos),
-so the generator composes each near native scale on an ink-tide canvas instead of
-upscaling to fill 1920×960.
