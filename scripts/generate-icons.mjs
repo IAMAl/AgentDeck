@@ -108,11 +108,13 @@ const svgs = {
 // Size specs: plugin/category are 28/56, action icons are 20/40
 // Action-list icons are 20 (@2x 40).
 //
-// The two brand icons (plugin + category) are NOT drawn here — they are resized
-// from the canonical artwork in design/brand/agentdeck-icon.png, the same mark
-// the dashboard app uses. Drawing them by hand is what produced the previous
-// category icon: a "C with a diamond" left over from the plugin's Claude Code
-// days, which had nothing to do with AgentDeck.
+// The plugin icon (Marketplace / plugin manager) is the full-colour brand mark,
+// resized from design/brand/agentdeck-icon.png. The category icon is NOT drawn
+// from that PNG — see the white-category block below. Elgato requires the icons
+// shown inside the Stream Deck app for the category and the actions to be white
+// on transparent (they render on the app's dark sidebar), so the category uses
+// the white AgentDeck mark and stays in the action-icon family. The colour PNG
+// remains the plugin/Marketplace icon only.
 const sizeMap = {
   option:   [20, 40],
   session:  [20, 40],
@@ -187,8 +189,7 @@ for (const name of keyIcons) {
 // ---- Brand icons from the canonical asset ----------------------------------
 const brandSource = resolve(__dirname, '../design/brand/agentdeck-icon.png');
 const brandIcons = [
-  ['plugin', 256, 512],   // Marketplace listing / plugin manager
-  ['category', 28, 56],   // actions-list category header
+  ['plugin', 256, 512],   // Marketplace listing / plugin manager — full-colour
 ];
 for (const [name, s1x, s2x] of brandIcons) {
   for (const [size, suffix] of [[s1x, ''], [s2x, '@2x']]) {
@@ -200,6 +201,25 @@ for (const [name, s1x, s2x] of brandIcons) {
   }
   console.log(`  ${name}.png (${s1x}x${s1x}) + ${name}@2x.png (${s2x}x${s2x}) — from design/brand/agentdeck-icon.png`);
 }
+
+// ---- Category icon: white monochrome mark (Elgato in-app icon rule) ----------
+//
+// The actions-list category header renders on the Stream Deck app's dark
+// sidebar, so Elgato requires it white on transparent — same as the action
+// icons. It reuses the compact AgentDeck mark (as the Session action icon does),
+// in white, so the whole in-app icon set reads as one family. This is
+// deliberately NOT the colour brand PNG, which stays the plugin/Marketplace icon.
+const categorySvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+    ${renderAgentDeckMarkCompact(20, 20, 37, 'white')}
+  </svg>`;
+for (const [size, suffix] of [[28, ''], [56, '@2x']]) {
+  await sharp(Buffer.from(categorySvg), { density: 300 })
+    .resize(size, size)
+    .png()
+    .toFile(resolve(outputDir, `category${suffix}.png`));
+  count++;
+}
+console.log('  category.png (28x28) + category@2x.png (56x56) — white AgentDeck mark');
 
 console.log(`\nGenerated ${count} icon files in ${outputDir}`);
 console.log(`Generated ${keyCount} key state images in ${keyOutputDir}`);
