@@ -915,6 +915,16 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   let gatewayConnecting = false;
   let moduleHealthProvider: () => Record<string, unknown> = () => ({});
 
+  // Gateway-local activity state for the virtual `openclaw-gateway` session row.
+  // Driven ONLY by the OpenClaw adapter's own parser events — NOT the global
+  // `core.stateMachine`, which every observed Claude session hook also feeds
+  // (daemon-server.ts:1181-1188). Borrowing `snap.state` there painted OpenClaw
+  // as "processing" whenever any unrelated Claude/opencode turn was in flight,
+  // even though the Gateway itself was idle. Mirror of Swift DaemonServer's
+  // `gatewaySessionState` / `gatewayModelName` dedicated fields.
+  let gatewaySessionState = 'idle';
+  let gatewayModelName: string | undefined;
+
   // Wi-Fi WebSocket e-ink panels (XTeink X3/X4 CrossPoint fork) self-register
   // their device roster via `client_register{clientType:"eink-device"}` — the
   // same volunteer model as the Stream Deck plugin. This handler lived ONLY in
@@ -2199,12 +2209,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // / adapter-liveness alone must not materialize a session — that kept a
     // phantom OpenClaw alive on devices after it was effectively off. Shared
     // injector with bridge/src/index.ts; mirror of Swift buildSessionsListEvent.
-    const snap = core.stateMachine.getSnapshot();
+    //
+    // State/project/model come from Gateway-LOCAL trackers, never the global
+    // `core.stateMachine` snapshot: the daemon hub feeds that same snapshot from
+    // every observed Claude/opencode hook, so borrowing it here reported OpenClaw
+    // as active whenever any unrelated session was mid-turn. `projectName` is
+    // pinned to 'OpenClaw' (Swift parity) rather than the global machine's
+    // last-seen project for the same reason.
     return injectOpenClawSession(enrichedSessions, {
       gatewayConnected: core.cachedGatewayConnected,
-      state: snap.state,
-      projectName: snap.projectName ?? 'OpenClaw',
-      modelName: snap.modelName ?? undefined,
+      state: gatewaySessionState,
+      projectName: 'OpenClaw',
+      modelName: gatewayModelName,
       controlMode: 'managed',
     });
   });
@@ -2250,12 +2266,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           break;
         case 'parser':
           core.stateMachine.handleParserEvent(evt.event, evt.data);
+          // Gateway-local activity state for the virtual session row (mirror of
+          // Swift `gatewaySessionState`). Kept separate from the global
+          // `core.stateMachine` above so the OpenClaw row reflects only the
+          // Gateway's own turn lifecycle, not unrelated observed sessions.
+          if (evt.event === 'spinner_start') gatewaySessionState = 'processing';
+          else if (evt.event === 'idle') gatewaySessionState = 'idle';
+          else if (evt.event === 'permission_prompt') gatewaySessionState = 'awaiting_permission';
           // The OpenClaw adapter emits the real model via a model_info parser
           // event, but it only ever updated the display StateMachine — the APME
           // run was never told, so every openclaw run persisted model_id=NULL.
-          if (evt.event === 'model_info' && apme && openclawApmeSessionId) {
+          if (evt.event === 'model_info') {
             const model = evt.data?.model as string | undefined;
-            if (model) apme.collector.updateModel(openclawApmeSessionId, model);
+            if (model) {
+              gatewayModelName = model;
+              if (apme && openclawApmeSessionId) apme.collector.updateModel(openclawApmeSessionId, model);
+            }
           }
           break;
         case 'metadata':
@@ -2308,6 +2334,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             core.cachedGatewayAvailable = true;
             core.cachedGatewayConnected = true;
             core.cachedGatewayAuthStatus = 'connected';
+            gatewaySessionState = 'idle';
             bridgeLogStream.start();
             log('[agentdeck] OpenClaw Gateway connected');
             if (core.stateMachine.getSnapshot().state === 'disconnected') {
@@ -2327,6 +2354,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           } else {
             core.cachedGatewayConnected = false;
             core.cachedGatewayAuthStatus = 'gateway_not_found';
+            // Reset activity to idle; gatewayModelName is preserved across brief
+            // disconnects (Swift parity) so a flap doesn't blank the model chip.
+            gatewaySessionState = 'idle';
             bridgeLogStream.stop();
             log('[agentdeck] OpenClaw Gateway disconnected');
             core.stateMachine.emit('state_changed', core.stateMachine.getSnapshot());
@@ -2368,6 +2398,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     core.cachedGatewayConnected = false;
     core.cachedGatewayAuthStatus = 'gateway_not_found';
     core.cachedModelCatalog = null;
+    gatewaySessionState = 'idle';
     if (wasAlive) core.stateMachine.handleHookEvent('SessionEnd', {});
     else core.stateMachine.emit('state_changed', core.stateMachine.getSnapshot());
     // Do NOT broadcast connection:disconnected — that would make WS clients
