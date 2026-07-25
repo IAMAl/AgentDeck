@@ -24,7 +24,7 @@
 // against; `scripts/check-preview-mirror-sync.mjs` verifies they match the
 // current `git hash-object` of each file and fails CI when the origin drifts
 // ahead of this mirror. Update them whenever you re-port.
-// SYNC-HASH shared/src/d200h-layout.ts 3878b6cc7dd2efaa3dac99344ab8d365c4771135
+// SYNC-HASH shared/src/d200h-layout.ts 7c083346576103c3df927eb93824761409696870
 // SYNC-HASH shared/src/session-utils.ts 91cf2510e4b2bff520909f53e1ea7cc5ac7aa4f7
 //
 // INTENTIONALLY OMITTED (not needed by a read-only preview):
@@ -35,6 +35,13 @@
 //     model aliasing) ARE ported so text matches.
 //   • Runtime command dispatch. `DeckAction` mirrors the TS `DeckAction` union
 //     so the preview can show what a key *would* do, but nothing is executed.
+//   • Observed-session inertness. In TS, `controlMode === 'observed'` (hook-only,
+//     no PTY) nulls the action on STOP, ESC, idle-STOP, and the awaiting option
+//     cells, because those keystrokes have no delivery path. `D200HSession`
+//     carries no `controlMode`, so this mirror always models the PTY-session
+//     semantics. It changes which action a key would carry, never the key's
+//     kind, label, subtitle, or position — the layout this preview reproduces
+//     is identical either way.
 //   • Animation frames (`animFrame`/`animated`) — the preview is a static frame.
 //   • resvg text sanitization (ANSI/control-char stripping) — irrelevant to a
 //     native SwiftUI text surface.
