@@ -17,6 +17,9 @@
 #include <Wire.h>
 #include "../boards/board_config.h"
 #endif
+#if defined(BOARD_T_EMBED)
+#include "../input/power_monitor.h"
+#endif
 
 // Reusable JSON document — sized for typical bridge messages
 static JsonDocument doc;
@@ -916,6 +919,18 @@ static void sendDeviceInfo() {
     if (Net::wifiConnected()) {
         resp["ip"] = Net::wifiLocalIP();
     }
+#if defined(BOARD_T_EMBED)
+    {
+        // Battery telemetry for the dashboard downstream rail (gauge-validated;
+        // absent fields mean "no gauge answer", not 0%).
+        Input::PowerStatus ps = Input::powerStatus();
+        if (ps.valid) {
+            resp["batteryPercent"] = ps.soc;
+            resp["batteryCharging"] = ps.charging;
+            resp["usbPowered"] = ps.usbPowered;
+        }
+    }
+#endif
     OtaCapability::Info ota = OtaCapability::get();
     resp["otaSupported"] = ota.supported;
     resp["otaSlotCount"] = ota.slotCount;

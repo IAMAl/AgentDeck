@@ -3,6 +3,8 @@
 #include "knob_ui.h"
 #include "../../state/agent_state.h"
 #include "../../net/ws_client.h"
+#include "../../net/wifi_manager.h"
+#include "../../input/power_monitor.h"
 #include "../display.h"
 #include "../theme.h"
 #include "../agent_label.h"
@@ -69,6 +71,8 @@ static lv_obj_t* s_scr = nullptr;
 static lv_obj_t* s_header = nullptr;
 static lv_obj_t* s_headerLeft = nullptr;
 static lv_obj_t* s_headerRight = nullptr;
+static lv_obj_t* s_hdrWifi = nullptr;   // WiFi/WS link glyph
+static lv_obj_t* s_hdrBatt = nullptr;   // battery % (+ charge bolt)
 static lv_obj_t* s_body = nullptr;
 static lv_obj_t* s_footer = nullptr;
 
@@ -226,7 +230,12 @@ static void buildMenu(const SessionSnap& s) {
         addMenuItem("Esc (cancel prompt)", MI_ESC, 0, false);
     } else if (strcmp(s.state, "processing") == 0) {
         addMenuItem("STOP (interrupt)", MI_STOP, 0, false);
-    } else {
+    } else if (strncmp(s.id, "observed:", 9) != 0) {
+        // "Go on" types into the managed PTY. An observed session's terminal
+        // cannot be typed into, and its idle directive queue only drains at a
+        // turn end that never comes — so the item is honest only for managed
+        // sessions. (Observed processing sessions still get STOP: the soft-stop
+        // ladder is real.)
         addMenuItem("Go on", MI_CONTINUE, 0, false);
     }
     addMenuItem("Back", MI_BACK, 0, false);
@@ -292,9 +301,16 @@ static lv_obj_t* makeLabel(lv_obj_t* parent, const lv_font_t* font,
 
 static void renderListBody(bool connected, uint8_t sessionCount) {
     if (!connected) {
+        bool wifiUp = Net::wifiConnected();
         lv_obj_t* l = makeLabel(s_body, &lv_font_montserrat_14, Theme::HUDDim,
-                                "Searching for AgentDeck...");
-        lv_obj_align(l, LV_ALIGN_CENTER, 0, 0);
+                                wifiUp ? "Searching for AgentDeck..."
+                                       : "No WiFi — provision over USB");
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, -10);
+        char netline[64];
+        if (wifiUp) snprintf(netline, sizeof(netline), "WiFi ok · %s", Net::wifiLocalIP());
+        else snprintf(netline, sizeof(netline), "agentdeck wifi-setup");
+        lv_obj_t* n = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDFaint, netline);
+        lv_obj_align(n, LV_ALIGN_CENTER, 0, 14);
         return;
     }
     if (sessionCount == 0) {
@@ -423,6 +439,10 @@ void create() {
     lv_obj_align(s_headerLeft, LV_ALIGN_LEFT_MID, 8, 0);
     s_headerRight = makeLabel(s_header, &lv_font_montserrat_12, Theme::HUDDim, "");
     lv_obj_align(s_headerRight, LV_ALIGN_RIGHT_MID, -8, 0);
+    s_hdrBatt = makeLabel(s_header, &lv_font_montserrat_12, Theme::HUDDim, "");
+    lv_obj_align(s_hdrBatt, LV_ALIGN_RIGHT_MID, -44, 0);
+    s_hdrWifi = makeLabel(s_header, &lv_font_montserrat_12, Theme::HUDDim, LV_SYMBOL_WIFI);
+    lv_obj_align(s_hdrWifi, LV_ALIGN_RIGHT_MID, -100, 0);
 
     s_body = lv_obj_create(s_scr);
     lv_obj_remove_style_all(s_body);
@@ -521,26 +541,60 @@ void update(float dt) {
     bool flashOn = s_flashText[0] && (int32_t)(s_flashUntilMs - now) > 0;
     if (!flashOn) s_flashText[0] = '\0';
 
+    // Status cluster inputs (battery, radio link) — part of the signature so
+    // the header refreshes exactly when they change.
+    Input::PowerStatus pw = Input::powerStatus();
+    bool wifiUp = Net::wifiConnected();
+    bool wsUp = Net::wsConnected();
+    int battBucket = pw.valid ? (pw.soc / 5) : -1;
+
     // Content signature — cheap change detection; rebuild the body only when
     // something the user can see actually changed.
     char sig[256];
     if (s_mode == Mode::DETAIL && haveDetail) {
         buildMenu(detail);
-        snprintf(sig, sizeof(sig), "D|%s|%s|%d|%d|%d|%.40s|%d|%s",
+        snprintf(sig, sizeof(sig), "D|%s|%s|%d|%d|%d|%.40s|%d|%s|%d%d%d%d",
                  detail.id, detail.state, s_menuIdx, s_menuScroll, s_menuCount,
-                 detail.question, connected ? 1 : 0, s_flashText);
+                 detail.question, connected ? 1 : 0, s_flashText,
+                 battBucket, pw.charging ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0);
     } else {
         SessionSnap s;
         bool have = snapshotSession(s_listIdx, s);
-        snprintf(sig, sizeof(sig), "L|%d|%d|%s|%s|%.24s|%.40s|%lu|%d|%s",
+        snprintf(sig, sizeof(sig), "L|%d|%d|%s|%s|%.24s|%.40s|%lu|%d|%s|%d%d%d%d",
                  s_listIdx, count, have ? s.id : "", have ? s.state : "",
                  have ? s.currentTool : "", have ? s.activity : "",
                  have ? (unsigned long)(s.elapsedSec / 60) : 0,
-                 connected ? 1 : 0, s_flashText);
+                 connected ? 1 : 0, s_flashText,
+                 battBucket, pw.charging ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0);
     }
     if (strcmp(sig, s_lastSig) == 0) return;
     strncpy(s_lastSig, sig, sizeof(s_lastSig) - 1);
     s_lastSig[sizeof(s_lastSig) - 1] = '\0';
+
+    // Status cluster: WiFi/WS link glyph + battery. Link color: green = WS to
+    // the daemon, amber = WiFi without WS, red = no WiFi. Battery hides when
+    // the gauge doesn't answer; charge bolt while the charger reports charging.
+    lv_obj_set_style_text_color(
+        s_hdrWifi,
+        lv_color_hex(wsUp ? Theme::StatusGreen : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
+    if (pw.valid) {
+        char batt[24];
+        const char* battSym = pw.soc > 80 ? LV_SYMBOL_BATTERY_FULL
+                            : pw.soc > 55 ? LV_SYMBOL_BATTERY_3
+                            : pw.soc > 30 ? LV_SYMBOL_BATTERY_2
+                            : pw.soc > 10 ? LV_SYMBOL_BATTERY_1
+                                          : LV_SYMBOL_BATTERY_EMPTY;
+        snprintf(batt, sizeof(batt), "%s%s %d%%",
+                 pw.charging ? LV_SYMBOL_CHARGE : "", battSym, pw.soc);
+        lv_label_set_text(s_hdrBatt, batt);
+        uint32_t battColor = pw.charging ? Theme::StatusBlue
+                           : pw.soc > 50 ? Theme::HUDDim
+                           : pw.soc > 20 ? Theme::StatusAmber
+                                         : Theme::StatusRed;
+        lv_obj_set_style_text_color(s_hdrBatt, lv_color_hex(battColor), 0);
+    } else {
+        lv_label_set_text(s_hdrBatt, "");
+    }
 
     // Header
     if (s_mode == Mode::DETAIL && haveDetail) {

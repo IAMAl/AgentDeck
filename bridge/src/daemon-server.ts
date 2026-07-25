@@ -39,8 +39,11 @@ import {
   shouldHoldPreToolUse, gateReleased, buildGateQuestion,
   consumeStop, requestStop, clearStop, STOP_DENY_REASON,
   queueDirective, takeDirective, clearOnUserPrompt, clearSession as clearSteeringSession,
+} from './observed-steering.js';
+import {
   notePermissionPromptShown, noteToolEnd, steeringSnapshot,
 } from './observed-steering.js';
+import { resolveSessionIdPrefix } from './session-id-resolve.js';
 import { enqueueOpenCodeCommand, pollOpenCodeCommands } from './opencode-steering.js';
 import { runSessionReview, reviewSnapshot } from './review-runner.js';
 
@@ -2622,7 +2625,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       // device that connected mid-session can fill its Detail view on demand
       // (the live timeline_event stream is forward-only). Useful for any
       // reconnecting surface, not just the XTeink X3.
-      const sessionId = (msg as { sessionId?: unknown }).sessionId;
+      const sessionId = resolveDeviceSessionId((msg as { sessionId?: unknown }).sessionId);
       const since = (msg as { since?: unknown }).since;
       if (typeof sessionId === 'string' && sessionId) {
         const sinceMs = typeof since === 'number' ? since : undefined;
@@ -2647,6 +2650,23 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     return false; // not consumed — pass to command handler
   });
+
+  // Device clients with narrow id buffers (ESP32 SessionInfo.id[32]) echo back
+  // session ids truncated by prepareForSerial's 31-char cap. Observed ids
+  // (`observed:claude:<uuid>`, 52 chars) always exceed that, so an exact-match
+  // lookup silently dropped their commands — worse, the observed-steering
+  // branch queued state under a truncated uuid no hook ever reads. Restore the
+  // full id by unique-prefix match against the known roster before routing.
+  function resolveDeviceSessionId(raw: unknown): string {
+    if (typeof raw !== 'string' || !raw) return '';
+    const known: string[] = ['openclaw-gateway'];
+    for (const s of listActiveSessions()) known.push(s.id);
+    const last = core.getLastSessionsListEvent() as { sessions?: Array<{ id?: unknown }> } | null;
+    if (Array.isArray(last?.sessions)) {
+      for (const s of last.sessions) if (typeof s?.id === 'string') known.push(s.id);
+    }
+    return resolveSessionIdPrefix(raw, known);
+  }
 
   // Steering commands for observed (hook-only, no PTY) Claude sessions —
   // shared by the session_command route and the bare-command fallback below.
@@ -2717,7 +2737,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       return;
     }
     if (cmd.type === 'focus_session') {
-      const sessionId = (cmd as any).sessionId as string;
+      const sessionId = resolveDeviceSessionId((cmd as any).sessionId);
       if (!sessionId) return;
       userFocusedSessionId = sessionId;
       broadcastFocusedState();
@@ -2739,7 +2759,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // type — no agent control involved. Result: WS events + badge fields +
     // HTML report opened in the browser (this daemon's "popup" tier).
     if (cmd.type === 'review_run') {
-      const sessionId = (cmd as any).sessionId as string;
+      const sessionId = resolveDeviceSessionId((cmd as any).sessionId);
       if (!sessionId) return;
       const managed = listActiveSessions().find(s => s.id === sessionId);
       const observed = managed ? undefined
@@ -2808,8 +2828,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     // Session-scoped command: forward inner command to a specific session's bridge
     if (cmd.type === 'session_command') {
-      const { sessionId, command } = cmd as any;
-      if (!sessionId || !command) return;
+      const { sessionId: rawSessionId, command } = cmd as any;
+      if (!rawSessionId || !command) return;
+      const sessionId = resolveDeviceSessionId(rawSessionId);
       // Observed Claude sessions have no bridge/PTY — route to the hook-based
       // steering primitives instead (soft STOP, turn-end directive queue,
       // gate approval). This replaces the old silent drop.
@@ -2847,7 +2868,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // any awaiting cell can be answered, not just the focused one. Focus the
     // named session, then route a plain select_option to its bridge.
     if (cmd.type === 'select_option' && typeof (cmd as any).sessionId === 'string') {
-      const sessionId = (cmd as any).sessionId as string;
+      const sessionId = resolveDeviceSessionId((cmd as any).sessionId);
+      // Session-scoped answering of an OBSERVED session's gate — the same
+      // steering primitive the session_command route uses. Without this, a
+      // device answering an observed awaiting cell fell through to the
+      // focused-session relay and was dropped.
+      if (sessionId.startsWith('observed:claude:')) {
+        handleObservedClaudeCommand(sessionId.slice('observed:claude:'.length), cmd as any);
+        return;
+      }
       const target = listActiveSessions().find(s => s.id === sessionId);
       if (target) {
         userFocusedSessionId = sessionId;

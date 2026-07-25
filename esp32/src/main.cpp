@@ -31,6 +31,7 @@
 #include "ui/knob/knob_ui.h"
 #include "ui/knob/ring_leds.h"
 #include "input/encoder.h"
+#include "input/power_monitor.h"
 #else
 #include "ui/display.h"
 #include "ui/screens/splash.h"
@@ -304,8 +305,14 @@ static void uiTask(void* param) {
 
     UI::displayInit();
     Input::encoderInit(BOARD_PIN_ENC_A, BOARD_PIN_ENC_B, BOARD_PIN_ENC_KEY);
+    Input::powerInit();
     Ring::init();
     Knob::create();
+
+    // Side key: long-press = power off (vendor idiom). Active-low.
+    pinMode(BOARD_PIN_USER_KEY, INPUT_PULLUP);
+    bool userKeyPrev = true;
+    uint32_t userKeyDownMs = 0;
 
     Serial.println("[UI] Knob screen created, entering main loop");
 
@@ -323,6 +330,26 @@ static void uiTask(void* param) {
         if (detents != 0) Knob::onRotate(detents);
         Input::KeyEvent key = Input::encoderPollKey(now);
         if (key != Input::KeyEvent::NONE) Knob::onKey(key);
+
+        // Battery/charger poll (I2C, self-throttled to every ~5s)
+        Input::powerPoll(now);
+
+        // Side key held ≥1.5s → clean power-off (panel dark, ring dark, rail
+        // latched off; deep-sleep fallback on USB power, side key wakes).
+        {
+            bool down = (digitalRead(BOARD_PIN_USER_KEY) == LOW);
+            if (down && userKeyPrev) userKeyDownMs = now;
+            if (down && !userKeyPrev && userKeyDownMs == 0) userKeyDownMs = now;
+            if (down && userKeyDownMs != 0 && (now - userKeyDownMs) >= 1500) {
+                Serial.println("[Power] side key held — powering off");
+                Serial.flush();
+                UI::setBrightness(0);
+                Ring::update(now, -1, false, true /* dark */);
+                Input::powerOff();  // does not return
+            }
+            if (!down) userKeyDownMs = 0;
+            userKeyPrev = !down;
+        }
 
         lockState();
         g_state.applyPendingSessionClear(now);

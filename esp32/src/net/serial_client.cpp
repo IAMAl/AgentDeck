@@ -5,6 +5,9 @@
 #include "../state/agent_state.h"
 #include "../util/ota_capability.h"
 #include "../util/reset_reason.h"
+#if defined(BOARD_T_EMBED)
+#include "../input/power_monitor.h"
+#endif
 #if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK)
 #include "../ui/screens/splash.h"
 #endif
@@ -107,6 +110,18 @@ static void sendDeviceInfoSerial() {
     if (wifiConnected()) {
         resp["ip"] = wifiLocalIP();
     }
+#if defined(BOARD_T_EMBED)
+    {
+        // Battery telemetry (mirrors protocol.cpp sendDeviceInfo — keep the
+        // two device_info ladders in lockstep).
+        Input::PowerStatus ps = Input::powerStatus();
+        if (ps.valid) {
+            resp["batteryPercent"] = ps.soc;
+            resp["batteryCharging"] = ps.charging;
+            resp["usbPowered"] = ps.usbPowered;
+        }
+    }
+#endif
     OtaCapability::Info ota = OtaCapability::get();
     resp["otaSupported"] = ota.supported;
     resp["otaSlotCount"] = ota.slotCount;
