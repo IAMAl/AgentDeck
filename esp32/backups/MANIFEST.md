@@ -15,6 +15,26 @@ SHA-256 to reproduce the directory.
 
 SHA-256 `25998ea66d8b393b358f5e267c47a7ea18348c3c58047f1309de5e7544639083`
 
+## LilyGO T-Display-S3-Pro V1.1
+
+Captured directly from the on-hand unit (no camera fitted) over native USB on
+2026-07-25, before any AgentDeck experimentation — this is the unit's shipped
+state and its rollback target. Read in 256 KiB chunks (single large
+`read_flash` calls corrupted intermittently on this unit's USB CDC);
+spot-verified against fresh re-reads at 0x300000 and 0xC80000.
+
+| File | Layout | Size |
+|---|---|---:|
+| `t-display-s3-pro-factory-16MB.bin` | Merged full-flash → `0x0` | 16,777,216 B |
+
+SHA-256 `9f6765e5e619627228a5e4dad0f1910b74f850d61960586add91a5e11ded66e1`
+
+Restore with:
+
+```bash
+esptool --port <port> write-flash 0x0 esp32/backups/t-display-s3-pro-factory-16MB.bin
+```
+
 ## LilyGO T-Embed CC1101
 
 Source: [`Xinyuan-LilyGO/T-Embed-CC1101`](https://github.com/Xinyuan-LilyGO/T-Embed-CC1101) `firmware/`
