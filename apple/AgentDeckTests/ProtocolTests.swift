@@ -335,6 +335,38 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(e.oauthConnected, true)
     }
 
+    /// Usage fields merge retain-on-absent, which made `usageStale` a one-way
+    /// latch: the Node daemon's cold-cache connect frame set it true and — with
+    /// the key omitted whenever fresh — nothing could retract it, so the macOS
+    /// Dashboard showed "stale" over live percentages until restart
+    /// (2026-07-25).
+    func testUsageStaleUnlatchesWhenAFrameCarriesFreshQuotaNumbers() {
+        // The regression itself: live numbers with no explicit flag must
+        // retract a latched stale badge.
+        XCTAssertEqual(
+            AgentStateHolder.mergedUsageStale(incoming: nil, frameHasQuota: true, previous: true),
+            false
+        )
+        // An explicit true outranks data presence — the daemon legitimately
+        // sends "had data, now stale" with percentages still riding along, and
+        // handleUsageUpdate relies on that true to scrub the values.
+        XCTAssertEqual(
+            AgentStateHolder.mergedUsageStale(incoming: true, frameHasQuota: true, previous: false),
+            true
+        )
+        // Neither flag nor numbers → retain; a partial frame must not claim
+        // freshness.
+        XCTAssertEqual(
+            AgentStateHolder.mergedUsageStale(incoming: nil, frameHasQuota: false, previous: true),
+            true
+        )
+        // An explicit false always wins.
+        XCTAssertEqual(
+            AgentStateHolder.mergedUsageStale(incoming: false, frameHasQuota: false, previous: true),
+            false
+        )
+    }
+
     // MARK: - Connection Event
 
     func testDecodeConnectionEvent() throws {

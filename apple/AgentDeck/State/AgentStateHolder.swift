@@ -796,6 +796,31 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
 
     // MARK: - Usage Update
 
+    /// Merge an incoming staleness flag over the retained one.
+    ///
+    /// Usage fields merge retain-on-absent, which turns `usageStale` into a
+    /// ONE-WAY LATCH against any producer that omits the key when fresh. The
+    /// Node daemon's first frame on client connect is built from a cold usage
+    /// cache (`sendInitialState` runs synchronously, before the async fetch
+    /// lands) and correctly carries `usageStale: true` — but a producer that
+    /// then omits the key can never retract it. Percentages recovered, the
+    /// badge did not (macOS Dashboard, 2026-07-25).
+    ///
+    /// Precedence, strictest first:
+    ///   1. An explicit flag always wins. `true` WITH percentages is a real,
+    ///      load-bearing state ("had data, now stale") that `handleUsageUpdate`
+    ///      relies on to scrub the displayed values — never override it.
+    ///   2. No flag but live quota numbers on the frame → data presence IS the
+    ///      negative signal. Same inference `d200h-layout.ts` uses for
+    ///      `usageKnown`.
+    ///   3. Neither flag nor numbers → retain. A partial frame must not
+    ///      silently declare freshness.
+    static func mergedUsageStale(incoming: Bool?, frameHasQuota: Bool, previous: Bool?) -> Bool? {
+        if let incoming { return incoming }
+        if frameHasQuota { return false }
+        return previous
+    }
+
     private func handleUsageUpdate(_ e: UsageEvent) {
         // Local copy + single assignment — same @Published fan-out rationale as
         // handleStateUpdate.
@@ -835,7 +860,11 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         s.extraUsageUtilization = e.extraUsageUtilization ?? s.extraUsageUtilization
         s.oauthConnected = e.oauthConnected ?? s.oauthConnected
         if let os = e.ollamaStatus { s.ollamaStatus = os }
-        s.usageStale = e.usageStale ?? s.usageStale
+        s.usageStale = Self.mergedUsageStale(
+            incoming: e.usageStale,
+            frameHasQuota: e.fiveHourPercent != nil || e.sevenDayPercent != nil,
+            previous: s.usageStale
+        )
         let sawCodexAuthField = e.codexAuthMode != nil
             || e.codexWebAuthConnected != nil
             || e.codexPlanType != nil

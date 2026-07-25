@@ -190,13 +190,20 @@ export function buildUsageEvent(
     extraUsageUtilization: subscriptionQuotaApplies ? (apiUsage?.extraUsageUtilization ?? undefined) : undefined,
     oauthConnected: oauthStatus,
     ollamaStatus: ollamaStatus ?? undefined,
-    // No quota numbers at all (never fetched / not applicable) must read as
-    // stale: clients treat "field absent + usageStale falsy" as "keep the
-    // previous value", so an omitted-but-not-stale frame lets a dashboard
-    // that roamed from another daemon render foreign quota forever. The
-    // cost-based API-billing percent path keeps usageStale honest (defined
-    // percent → not forced stale).
-    usageStale: (stale || (fiveHourPercent === undefined && sevenDayPercent === undefined)) || undefined,
+    // ALWAYS an explicit boolean — never omitted. Clients merge usage fields
+    // retain-on-absent, so an absent key can only ever ADD staleness; both
+    // halves of the contract have to ride the wire:
+    //   positive — no quota numbers at all (never fetched / not applicable)
+    //     reads as stale, so a dashboard that roamed from another daemon
+    //     purges the foreign quota instead of rendering it forever;
+    //   negative — fresh numbers read as explicitly NOT stale. Omitting here
+    //     (the old `|| undefined`) made usageStale a one-way latch: the
+    //     cold-cache frame `sendInitialState` emits on connect set it true and
+    //     nothing could ever retract it, so the macOS Dashboard showed "stale"
+    //     over live percentages until the app restarted (2026-07-25).
+    // The cost-based API-billing percent path keeps usageStale honest too
+    // (defined percent → not forced stale).
+    usageStale: stale || (fiveHourPercent === undefined && sevenDayPercent === undefined),
     tokenStatus: getTokenStatus() !== 'unknown' ? getTokenStatus() : undefined,
     codexAuthMode: codexAuth?.authMode,
     codexWebAuthConnected: codexAuth?.webAuthConnected,

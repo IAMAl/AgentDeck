@@ -156,7 +156,51 @@ describe('buildUsageEvent staleness contract', () => {
     ) as UsageEvent;
 
     expect(evt.fiveHourPercent).toBe(55);
-    expect(evt.usageStale).toBeUndefined();
+    expect(evt.usageStale).toBe(false);
+  });
+
+  it('always puts usageStale on the wire, never omits it', () => {
+    // Clients merge usage retain-on-absent, so an omitted key can only ever
+    // ADD staleness — never retract it. Omitting when fresh made usageStale a
+    // one-way latch (macOS Dashboard stuck on "stale" over live percentages,
+    // 2026-07-25). The key must survive serialization, not just be falsy.
+    const evt = buildUsageEvent(
+      snapshot({ modelName: 'claude-fable-5', billingType: 'subscription' }),
+      usage(),
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    ) as UsageEvent;
+
+    expect(Object.prototype.hasOwnProperty.call(evt, 'usageStale')).toBe(true);
+    expect(JSON.parse(JSON.stringify(evt)).usageStale).toBe(false);
+  });
+
+  it('keeps usageStale true when cached numbers ride a stale frame', () => {
+    // "Had data, now stale" — clients rely on the explicit true to SCRUB the
+    // percentages, so data-presence must never override an explicit flag.
+    const evt = buildUsageEvent(
+      snapshot({ modelName: 'claude-fable-5', billingType: 'subscription' }),
+      usage(),
+      true,
+      undefined,
+      undefined,
+      true,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    ) as UsageEvent;
+
+    expect(evt.fiveHourPercent).toBe(55);
+    expect(evt.usageStale).toBe(true);
   });
 
   it('does not force usageStale when the cost-based API-billing percent is present', () => {
@@ -172,7 +216,7 @@ describe('buildUsageEvent staleness contract', () => {
     ) as UsageEvent;
 
     expect(evt.fiveHourPercent).toBe(50);
-    expect(evt.usageStale).toBeUndefined();
+    expect(evt.usageStale).toBe(false);
   });
 });
 
