@@ -30,6 +30,7 @@
 #include "ui/display.h"
 #include "ui/knob/knob_ui.h"
 #include "ui/knob/ring_leds.h"
+#include "ui/knob/chime.h"
 #include "input/encoder.h"
 #include "input/power_monitor.h"
 #else
@@ -275,12 +276,24 @@ static void networkTask(void* param) {
 // Encoder-driven two-level steering UI + WS2812 session ring. No touch, no
 // terrarium — the knob render tree (ui/knob/) is the whole surface.
 
-// Host display-sleep contract (off must be dark, min must stay visible) —
-// applied to both the panel backlight and the LED ring.
-static void knobApplyHostDim(bool* ringDark) {
+// Millis of the last physical interaction (encoder detent or key). Drives the
+// battery pager's local idle policy.
+static uint32_t s_lastInputMs = 0;
+
+// Power/wake policy, two regimes:
+//  - USB-powered (docked): follow the host display-sleep contract (off must be
+//    dark, min must stay visible) — panel AND ring go dark with the host.
+//  - Battery (pager): the host's display state is irrelevant (the host may be
+//    across the house). Local idle policy instead: 60s with no input and
+//    nothing awaiting → panel off, but the RING STAYS ARMED — the amber pulse
+//    is the pager's whole point. Input or a new awaiting wakes the panel.
+static void knobApplyPower(uint32_t now, bool anyAwaiting, bool* ringDark) {
     static int lastApplied = -1;
+    Input::PowerStatus ps = Input::powerStatus();
+    bool onBattery = ps.valid && !ps.usbPowered;
+
     lockState();
-    bool on = g_state.hostDisplayOn;
+    bool hostOn = g_state.hostDisplayOn;
     bool dimEnabled = g_state.hostDimEnabled;
     uint8_t dimMode = g_state.hostDimMode;
     uint8_t dimLevel = g_state.hostDimLevel;
@@ -289,7 +302,10 @@ static void knobApplyHostDim(bool* ringDark) {
 
     int target = userLevel;
     bool dark = false;
-    if (!on && dimEnabled) {
+    if (onBattery) {
+        bool idle = (uint32_t)(now - s_lastInputMs) > 60000 && !anyAwaiting;
+        if (idle) target = 0;
+    } else if (!hostOn && dimEnabled) {
         target = (dimMode == 0) ? 0 : dimLevel;
         dark = (dimMode == 0);
     }
@@ -330,9 +346,31 @@ static void uiTask(void* param) {
         if (detents != 0) Knob::onRotate(detents);
         Input::KeyEvent key = Input::encoderPollKey(now);
         if (key != Input::KeyEvent::NONE) Knob::onKey(key);
+        if (detents != 0 || key != Input::KeyEvent::NONE) s_lastInputMs = now;
 
         // Battery/charger poll (I2C, self-throttled to every ~5s)
         Input::powerPoll(now);
+
+        // Awaiting edge: a session just entered a genuine response-wait →
+        // pager chime + panel wake (derived from sessions_list; no new event).
+        bool anyAwaiting = false;
+        lockState();
+        for (uint8_t i = 0; i < g_state.sessionCount; i++) {
+            if (strstr(g_state.sessions[i].state, "awaiting") != nullptr) {
+                anyAwaiting = true;
+                break;
+            }
+        }
+        bool connectedNow = g_state.wsConnected;
+        unlockState();
+        {
+            static bool prevAwaiting = false;
+            if (anyAwaiting && !prevAwaiting && connectedNow) {
+                Chime::playAttention();
+                s_lastInputMs = now;  // wake the panel with the chime
+            }
+            prevAwaiting = anyAwaiting;
+        }
 
         // Side key held ≥1.5s → clean power-off (panel dark, ring dark, rail
         // latched off; deep-sleep fallback on USB power, side key wakes).
@@ -357,7 +395,7 @@ static void uiTask(void* param) {
         unlockState();
 
         bool ringDark = false;
-        knobApplyHostDim(&ringDark);
+        knobApplyPower(now, anyAwaiting, &ringDark);
 
         Knob::update(dt);
         Ring::update(now, Knob::selectedSessionIdx(), connected, ringDark);

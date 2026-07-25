@@ -41,6 +41,11 @@
 #define BOARD_PIN_I2C_SDA    8
 #define BOARD_PIN_I2C_SCL    18
 
+// Speaker I2S (vendor "voice" pins; mic is a separate PDM pair 42/39)
+#define BOARD_PIN_SPK_BCLK   46
+#define BOARD_PIN_SPK_LRCLK  40
+#define BOARD_PIN_SPK_DIN    7
+
 // Display settings — panel native is 170x320 portrait; the device is used
 // landscape-only (rotation 1 → 320x170), so no runtime rotation machinery.
 #define BOARD_ROTATION       3     // landscape, knob on the right, pins down
