@@ -249,6 +249,7 @@ The macOS app ships through the App Store and must stay **self-contained** under
 | [docs/streamdeck-layout.md](docs/streamdeck-layout.md) | Session-per-button keypad + encoder mapping (E1 Volume / E2 Claude usage / E3 Codex usage / E4 Launcher), Marketplace submission constraints. The v3/v4 layout numbering is retired — see [docs/retired-surfaces.md](docs/retired-surfaces.md) |
 | [docs/tui-dashboard.md](docs/tui-dashboard.md) | `agentdeck dashboard` — terrarium, sprites, adaptive layouts |
 | [docs/esp32.md](docs/esp32.md) | Firmware boards, flash safety, WiFi provisioning, disconnect recovery |
+| [docs/esp32-companion-concepts.md](docs/esp32-companion-concepts.md) | Concept study for the Evaluation boards — T-Embed CC1101 "Companion Knob" (docked steering + portable pager w/ BLE phone relay + staged voice→AI speaker + NFC/IR/sub-GHz peripheral primitives), T-Display-S3-Pro "Tide Ticker"; Evaluation→Shipping gap checklist |
 | [docs/android.md](docs/android.md) | Android device support matrix, creature rendering |
 | [docs/android-ui.md](docs/android-ui.md) | Android UI/UX Vision — e-ink + tablet layouts, creatures, refresh zones |
 | [docs/voice-setup.md](docs/voice-setup.md) | Apple SFSpeech permissions + dictation model download troubleshooting |

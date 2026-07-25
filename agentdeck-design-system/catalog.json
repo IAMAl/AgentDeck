@@ -45,6 +45,7 @@
       "docs/appstore-metadata-draft.md": "Store listing copy in three locales — marketing input, not a canonical spec.",
       "docs/asc-cert-setup.md": "Credential and certificate runbook. Operational steps, no design or specification surface.",
       "docs/otel-standardization-study.md": "Exploratory study. Nothing here is adopted, so binding it would imply a decision that was not made.",
+      "docs/esp32-companion-concepts.md": "Exploratory concept study for the two Evaluation boards (T-Embed CC1101, T-Display-S3-Pro). Nothing here ships; it graduates into hardware-compatibility.md and devices.md when a board reaches Shipping.",
       "docs/voice-setup.md": "Permission troubleshooting runbook for a single platform capability.",
       "docs/wake-word.md": "Engine evaluation notes for Porcupine / microWakeWord.",
       "docs/install.md": "User manual — indexed by README, not the catalog. It tells a reader how to use the product; the catalog documents how the product is designed and specified.",
