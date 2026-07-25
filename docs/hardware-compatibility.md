@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: stable
 owner: Hardware maintainers
-reviewed: 2026-07-18
-revision: 2026-07-18
+reviewed: 2026-07-25
+revision: 2026-07-25
 source_of_truth: docs/hardware-compatibility.md
 validators: [node scripts/build-design-system-viewer.mjs --check, bash esp32/robot/run.sh all]
 translations: [ko, ja]
@@ -73,20 +73,32 @@ Do not copy numeric specifications into domain guides. Link back to this matrix 
 
 **Counted surfaces: 22.** Public surface-count claims (README, landing page) mirror this derivation: every row above except the protocol rows (SSE stream) counts. XTeink X3/X4 operate normally (both register with the daemon over Wi-Fi) but run the community CrossPoint fork — their Partial mark states that distribution limitation, see operational exceptions. Update this line and the mirrors together when rows change.
 
-## ESP32 board specifications
+## ESP32 board specification sheet
 
 The AgentDeck firmware uses PlatformIO and Arduino. LVGL 9.2 drives LCD boards; TC001 uses FastLED; InkDeck uses its e-ink renderer. USB port names are not identities—probe `device_info_request` before flashing.
 
-| Board | Friendly name | PlatformIO env | SoC | Panel / resolution | Flash | PSRAM | USB |
-|---|---|---|---|---|---:|:---:|---|
-| JC3248W535 | `ips_35` | `ips35` | ESP32-S3 | AXS15231B · 480×320 | 16 MB | Yes | Native USB JTAG |
-| JC3636W518 | `amoled_18` | `amoled` | ESP32-S3 | ST77916 · 360×360 | 8 MB | Yes | Native USB JTAG |
-| ESP32-S3-4848S040 | `box_40` | `box_86` | ESP32-S3 | ST7701 · 480×480 | 16 MB | Yes | CH340 |
-| LilyGO T-Display | `tft_114` | `ttgo` | ESP32 classic | ST7789 · 135×240 | 16 MB | No | CH340 |
-| Waveshare ESP32-C6-LCD-1.47 | — | `esp32_c6_147` | ESP32-C6 | ST7789 · 172×320 | 4 MB | No | Native USB CDC |
-| JC8012P4A1C | `ips_101` | `ips10` | ESP32-P4NRW32 + C6 | JD9365 · 800×1280 | 16 MB | 32 MB | CH340 |
-| Ulanzi TC001 | `led_8x32` | `led8x32` | ESP32 classic | WS2812B · 32×8 | 8 MB | No | CH340 |
-| Seeed TRMNL 7.5 DIY Kit | `inkdeck` | `inkdeck` | XIAO ESP32-S3 Plus | UC8179 · 800×480 | 8 MB | Yes | Native USB |
+Rows are ordered by overall capability, applied in this precedence: SoC class, then memory, then panel capability, then peripheral breadth. Boards of the same character sit together. Two status values appear:
+
+- **Shipping** — runs AgentDeck firmware from `esp32/`, and has a row in the surface matrix above.
+- **Evaluation** — hardware on hand that AgentDeck does not yet build firmware for. These rows are *not* counted as surfaces and carry no compatibility claim; they exist so board selection starts from measured facts rather than vendor copy.
+
+| Board | `device_info.board` · env | SoC | Flash · PSRAM | Panel · controller | Input | Notable peripherals | USB | OTA slot | Status |
+|---|---|---|---|---|---|---|---|---:|---|
+| JC8012P4A1C | `ips_10` · `ips10` | ESP32-P4NRW32 + C6 | 16 MB · 32 MB | JD9365 MIPI-DSI · 800×1280 | GSL3680 touch | ESP32-C6 Wi-Fi coprocessor | CH340 | 6 MB | Shipping |
+| ESP32-S3-4848S040 | `86box` · `box_86` | ESP32-S3 | 16 MB · 8 MB | ST7701 RGB IPS · 480×480 | GT911 touch | — | CH340 | 7.75 MB | Shipping |
+| JC3248W535 | `ips_35` · `ips35` | ESP32-S3 | 16 MB · 8 MB | AXS15231B QSPI IPS · 480×320 | AXS15231B touch (0x3B) | FAT data partition | Native USB JTAG | 3.5 MB | Shipping |
+| LilyGO T-Display-S3-Pro V1.1 · GC0308 | — | ESP32-S3R8 | 16 MB · 8 MB | ST7796U SPI IPS · 480×222 | CST226SE touch (0x5A) · 3 buttons | GC0308 camera · SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh | Native USB JTAG | — | Evaluation |
+| LilyGO T-Display-S3-Pro V1.1 · no camera | — | ESP32-S3R8 | 16 MB · 8 MB | ST7796U SPI IPS · 480×222 | CST226SE touch (0x5A) · 3 buttons | SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh · camera POGO header | Native USB JTAG | — | Evaluation |
+| LilyGO T-Embed CC1101 | — | ESP32-S3-WROOM-1 | 16 MB · 8 MB | ST7789 IPS · 320×170 | Rotary encoder · button | CC1101 sub-GHz · PN532 NFC (0x24) · IR TX/RX · 8× WS2812 · mic + speaker · BQ25896 (0x6B) · BQ27220 (0x55) · microSD · 1300 mAh | Native USB JTAG | — | Evaluation |
+| JC3636W518 | `round_amoled` · `amoled` | ESP32-S3 | 8 MB · 8 MB | ST77916 QSPI AMOLED · 360×360 round | CST816S touch | — | Native USB JTAG | 3 MB | Shipping |
+| Seeed TRMNL 7.5 DIY Kit | `inkdeck` · `inkdeck` | XIAO ESP32-S3 Plus | 8 MB · 8 MB | UC8179 e-ink · 800×480 | — | USB-powered only | Native USB CDC | 3.19 MB | Shipping |
+| Waveshare ESP32-C6-LCD-1.47 | `esp32_c6_147` · `esp32_c6_147` | ESP32-C6 | 4 MB · none | ST7789 · 172×320 | — | — | Native USB CDC | Single app | Shipping |
+| LilyGO T-Display | `ttgo_t_display` · `ttgo` | ESP32 classic | 16 MB · none | ST7789 SPI · 135×240 | 2 buttons | — | CH340 | 6 MB | Shipping |
+| Ulanzi TC001 | `ulanzi_tc001` · `led8x32` | ESP32 classic | 8 MB · none | WS2812B matrix · 32×8 | 3 buttons | Buzzer on GPIO 15 (silenced at boot) | CH340 | 3 MB | Shipping |
+
+The ordering is by panel and compute, so peripheral breadth does not drive it. On that separate axis the T-Embed CC1101 leads every board here: it is the only unit with a rotary encoder, and the only one carrying a sub-GHz radio, NFC, and infrared. It is also the only bidirectional-input candidate in the fleet — every Shipping board is output-only apart from touch.
+
+OTA slot sizes are the measured `device_info.otaSlotSize` from live boards, matching `esp32/partitions/*.csv`. Evaluation units run vendor factory firmware and have no AgentDeck OTA layout; their shipped partition tables are single-app 4 MB (T-Display-S3-Pro) and dual-OTA 6.25 MB (T-Embed CC1101). Factory images and restore instructions live in [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md).
 
 Operational exceptions:
 
@@ -96,6 +108,9 @@ Operational exceptions:
 - Existing factory or old-partition 86 Box and IPS 10.1 units require one USB full flash before OTA.
 - InkDeck serial reflashing must go through the download-mode port with `boot_app0.bin` included (native-CDC re-enumeration makes plain `pio -t upload` unreliable); routine updates ship over WiFi OTA instead. A residual crash in the prebuilt Espressif mDNS component is under observation and does not affect the render or OTA path.
 - XTeink X3/X4 run the external CrossPoint Reader fork, not the `esp32/` PlatformIO project. They are not distributed through AgentDeck releases and flash via SD-card `update.bin` only (no WiFi OTA). Their wire contract is [ESP32 client contract](esp32-client-contract.md).
+- T-Display-S3-Pro ships in hardware revisions V1.0 and V1.1 that differ in backlight drive, with no runtime detection — the vendor selects it at compile time with `USING_DISPLAY_PRO_V1`. V1.0 is LEDC PWM with 255 levels; V1.1 is a constant-current driver pulsed on GPIO 48 with 16 levels. Both on-hand units are V1.1, so that flag must stay undefined for them. The vendor `platformio.ini` comment on this flag has its two revisions transposed; the `#ifdef` branches in `AdjustBacklight.ino` and `utilities.h` are authoritative.
+- T-Display-S3-Pro camera is a purchase option (`GC0308`, `OV5640`, or none) on a POGO shield header, not a board revision. Its SCCB lines share the I2C bus with touch, PMU, and the light sensor, so capture and touch responsiveness interact.
+- T-Embed CC1101 has a known upstream defect where the panel stays dark after flashing; the vendor ships a dedicated fix image and advises pressing `RST` on the back afterwards. Check this before diagnosing a hardware fault.
 
 ## Pixel displays and control decks
 

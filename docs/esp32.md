@@ -144,7 +144,7 @@ AgentDeck esp32/src/net/protocol"*). C3(no-PSRAM/ArduinoJson)에는 C++ 코드�
 
 ## 기기별 펌웨어 사양 및 포트 매핑 정보 (2026-06-10 기준)
 
-현재 연결된 디스플레이 기기의 **포트 매핑 스냅샷**(디버깅용)입니다. 포트는 USB 허브 위치/재연결에 따라 변경될 수 있으며 `device_info_request`로 실시간 확인 필요. **SoC·디스플레이 IC·터치 IC·Flash/PSRAM 등 전체 칩 사양은 [hardware-compatibility.md § ESP32 board specifications](hardware-compatibility.md#esp32-board-specifications) 가 SSOT** 다.
+현재 연결된 디스플레이 기기의 **포트 매핑 스냅샷**(디버깅용)입니다. 포트는 USB 허브 위치/재연결에 따라 변경될 수 있으며 `device_info_request`로 실시간 확인 필요. **SoC·디스플레이 IC·터치 IC·Flash/PSRAM 등 전체 칩 사양은 [hardware-compatibility.md § ESP32 board specification sheet](hardware-compatibility.md#esp32-board-specification-sheet) 가 SSOT** 다.
 
 | 기기 설명 | PlatformIO Env | 가로/세로 해상도 | 사용 칩셋 | 현재 포트 (2026-06-10) | 상태 |
 |---|---|---|---|---|---|

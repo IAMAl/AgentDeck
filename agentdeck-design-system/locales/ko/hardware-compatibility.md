@@ -7,10 +7,10 @@ locale: ko
 canonical: false
 status: reader-translation
 owner: Hardware maintainers
-reviewed: 2026-07-18
-revision: 2026-07-18-ko
+reviewed: 2026-07-25
+revision: 2026-07-25-ko
 translation_of: hardware.compatibility
-source_revision: 2026-07-18
+source_revision: 2026-07-25
 source_of_truth: docs/hardware-compatibility.md
 validators: [node scripts/build-design-system-viewer.mjs --check]
 ---
