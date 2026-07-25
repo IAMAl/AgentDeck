@@ -50,6 +50,28 @@ Applications then become config mappings rather than firmware work: NFC tags as 
 
 The identity to protect: this board is not another display. It is the fleet's only *input* device — and with these primitives its only sensor/effector — and every design choice should defend that.
 
+### Refinement directions (2026-07-25, from external ideation)
+
+A ten-concept external study of the T-Embed form factor ("AI ORBIT CONTROLLER") was reviewed against this architecture. What it validates, what it adds, and what stays out of scope:
+
+**Adopted — maps onto existing wiring:**
+
+- **INTENT (autonomy dial)** — the strongest addition. "Click-then-rotate adjusts how boldly the agent acts" maps directly onto machinery AgentDeck already has: Claude Code **permission modes** (default / acceptEdits / plan / bypassPermissions) are switchable today via the routable `switch_mode` command (the Shift+Tab convention), **effort level** already travels in the state stream, and the model choice already has a daemon-side answer in the APME Pareto **Recommend**. A detail-level "Autonomy" menu entry — rotate through mode/effort steps, press to apply — turns the knob into the physical steering wheel for *how* an agent works, not just *what it does next*. No new protocol; managed PTY sessions only at first (observed sessions can't switch modes).
+- **RESUME (timeline scrubbing)** — rotate to scrub the focused session's milestone history. The daemon already serves exactly this via `query_session_timeline` (session-scoped `timeline_history` backfill); the knob adds a read-only "scrub" sub-view in detail mode. Checkpoint *jumping* stays out (no such primitive), but scrub + read is a natural encoder gesture.
+- **WHISPER (voice capture → next action)** — refines voice Stage 3: a captured utterance doesn't have to open a live Q&A; routed through the existing turn-end **directive queue** (`send_prompt`), a spoken thought becomes the session's next instruction. "Speak → pick target session with the dial → queued" is the AgentDeck-native version of the study's idea-inbox.
+- **RELAY (work-token framing)** — not a feature but the right *mental model* for the grammar we shipped: STOP = take the baton, options/approve = answer and hand it back, Go on = hand the baton to the agent. Worth adopting in copy and docs.
+- **Screen discipline** — the study's four-line rule matches this panel: *who is working, what they're doing, how far along, what I can do*. The list-level card already approximates it; treat it as the explicit acceptance test for every future knob screen.
+- **ORBIT (radio-channel switching)** — validates the shipped list level (rotate = cycle sessions, ring = fleet state). One deviation stays deliberate: "needs human" pulses **amber**, not red — semantic status colors are a design-system invariant.
+
+**Noted for later phases:**
+
+- **PROBE** (environmental sensing via Grove/GPIO) folds into the peripheral-primitives plan — sensors would ride the same `peripheral_event` frame; no bespoke mode.
+- **TUNE** (continuous generative-parameter tuning) — the encoder-as-continuous-controller insight is sound, but AgentDeck has no generative-parameter surface; the INTENT dial is its coding-agent translation.
+
+**Out of scope (not AgentDeck's product):** TURN (meeting facilitation), COMPASS (personal direction), SIGNAL (presence totem) — desirable products, different product. Recorded so they are not re-litigated here.
+
+Hardware caveat: the study describes the **base** T-Embed (7-LED ring, dual mic, 1200 mAh, no radios). The on-hand unit is the CC1101 variant — 8-LED ring, single mic + speaker, 1300 mAh, plus the NFC/IR/sub-GHz set — so counts and peripherals in the spec sheet stay authoritative.
+
 ## T-Display-S3-Pro — "Tide Ticker"
 
 The 2.33″ 480×222 wide strip is the wrong shape for a terrarium and the right shape for a **ticker**: a always-on strip below the monitor or in front of the keyboard, showing the numbers a working session makes you tab away to check. It is a stationary desk fixture (USB-powered; the 470 mAh cell only bridges cable swaps).
