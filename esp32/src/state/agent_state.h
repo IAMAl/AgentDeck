@@ -45,6 +45,15 @@ struct PromptOption {
     bool selected;
 };
 
+// Per-session prompt option (trimmed vs the global PromptOption — sized for
+// small interactive surfaces that answer per session, e.g. the T-Embed knob).
+struct SessionOption {
+    char label[64];
+    uint8_t index;
+    bool recommended;
+};
+constexpr uint8_t SESSION_OPTIONS_CAP = 6;
+
 // ===== Session info (multi-agent) =====
 struct SessionInfo {
     char id[32];
@@ -61,6 +70,10 @@ struct SessionInfo {
     char question[160];     // awaiting prompt text for this session ("" when not awaiting)
     char promptType[20];    // "yes_no" / "multi_select" / "diff_review" / ...
     char requestId[40];     // gated PreToolUse request id → reply permission_decision
+    // Parsed per-session options from the enriched sessions_list (select_option
+    // is session-scoped, so an interactive surface answers without global focus).
+    SessionOption options[SESSION_OPTIONS_CAP];
+    uint8_t optionCount;
     char activity[80];      // shared one-liner summary of recent work ("" when none)
     // Daemon-computed "latest milestone" for this session (TIMELINE parity):
     // the newest chat/task row from the daemon's authoritative timeline store.

@@ -350,6 +350,22 @@ static void handleSessionsList(JsonObject& obj) {
         strncpy(g_state.sessions[i].requestId, s["requestId"] | "",
                 sizeof(g_state.sessions[i].requestId) - 1);
         g_state.sessions[i].requestId[sizeof(g_state.sessions[i].requestId) - 1] = '\0';
+        // Per-session options — lets an interactive surface answer with the
+        // session-scoped select_option without global focus (knob detail view).
+        g_state.sessions[i].optionCount = 0;
+        if (s["options"].is<JsonArray>()) {
+            JsonArray sopts = s["options"].as<JsonArray>();
+            uint8_t n = 0;
+            for (JsonObject o : sopts) {
+                if (n >= SESSION_OPTIONS_CAP) break;
+                SessionOption& dst = g_state.sessions[i].options[n];
+                copyTextU8(dst.label, sizeof(dst.label), o["label"] | "");
+                dst.index = o["index"] | n;
+                dst.recommended = o["recommended"] | false;
+                n++;
+            }
+            g_state.sessions[i].optionCount = n;
+        }
         // Shared per-session activity one-liner (heuristic → Foundation Models
         // summary) — the most meaningful glanceable line for a dashboard row.
         copyTextU8(g_state.sessions[i].activity, sizeof(g_state.sessions[i].activity),
@@ -858,6 +874,8 @@ static void sendDeviceInfo() {
     resp["board"] = "inkdeck";
     #elif defined(BOARD_TTGO)
     resp["board"] = "ttgo_t_display";
+    #elif defined(BOARD_T_EMBED)
+    resp["board"] = "t_embed";
     #elif defined(BOARD_ESP32_C6_147)
     resp["board"] = "esp32_c6_147";
     #elif IS_ROUND

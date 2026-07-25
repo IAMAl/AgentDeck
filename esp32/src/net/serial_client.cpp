@@ -68,6 +68,8 @@ static void sendDeviceInfoSerial() {
     resp["board"] = "inkdeck";
     #elif defined(BOARD_TTGO)
     resp["board"] = "ttgo_t_display";
+    #elif defined(BOARD_T_EMBED)
+    resp["board"] = "t_embed";
     #elif defined(BOARD_ESP32_C6_147)
     resp["board"] = "esp32_c6_147";
     #elif IS_ROUND

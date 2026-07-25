@@ -262,6 +262,68 @@ public:
     }
 };
 
+#elif defined(BOARD_T_EMBED)
+// ===== LilyGO T-Embed CC1101: ST7789 1.9" 170x320 SPI (S3) =====
+// The SPI bus is shared with CC1101 (CS 12) and microSD (CS 13); the display
+// is the only device this firmware drives, write-only (no MISO claimed).
+// RST is not wired (-1) — the panel resets with the chip.
+class LGFX : public lgfx::LGFX_Device {
+public:
+    lgfx::Bus_SPI        _bus_instance;
+    lgfx::Panel_ST7789   _panel_instance;
+    lgfx::Light_PWM      _light_instance;
+
+    LGFX() {
+        // SPI bus configuration
+        {
+            auto cfg = _bus_instance.config();
+            cfg.spi_host = SPI2_HOST;  // ESP32-S3 general-purpose FSPI
+            cfg.dma_channel = 0;       // bring-up conservative: no DMA (mirrors C6/TTGO)
+            cfg.freq_write = 40000000;
+            cfg.freq_read  = 16000000;
+            cfg.pin_sclk = BOARD_PIN_SPI_SCLK;
+            cfg.pin_mosi = BOARD_PIN_SPI_MOSI;
+            cfg.pin_miso = -1;
+            cfg.pin_dc   = BOARD_PIN_SPI_DC;
+            _bus_instance.config(cfg);
+        }
+        _panel_instance.setBus(&_bus_instance);
+
+        // Panel configuration
+        {
+            auto cfg = _panel_instance.config();
+            cfg.pin_cs           = BOARD_PIN_SPI_CS;
+            cfg.pin_rst          = BOARD_PIN_SPI_RST;   // -1
+            cfg.pin_busy         = -1;
+            cfg.memory_width     = 240;
+            cfg.memory_height    = 320;
+            cfg.panel_width      = 170;
+            cfg.panel_height     = 320;
+            cfg.offset_x         = 35;  // 170-wide window centered in 240-wide GRAM
+            cfg.offset_y         = 0;
+            cfg.offset_rotation  = 0;
+            cfg.dummy_read_bits  = 8;
+            cfg.readable         = false;
+            cfg.invert           = BOARD_INVERT;
+            cfg.rgb_order        = false; // BGR order
+            _panel_instance.config(cfg);
+        }
+
+        // Backlight (Light_PWM single owner of GPIO21)
+        {
+            auto cfg = _light_instance.config();
+            cfg.pin_bl = BOARD_PIN_BL;
+            cfg.invert = false;
+            cfg.freq   = 12000;
+            cfg.pwm_channel = 0;
+            _light_instance.config(cfg);
+            _panel_instance.setLight(&_light_instance);
+        }
+
+        setPanel(&_panel_instance);
+    }
+};
+
 #elif defined(BOARD_IPS35)
 // ===== JC3248W535: AXS15231B QSPI =====
 // Requires Arduino_Canvas wrapper — direct QSPI writes produce black screen.

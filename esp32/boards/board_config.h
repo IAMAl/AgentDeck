@@ -19,6 +19,8 @@
     #include "board_jc8012p4a1c.h"
 #elif defined(BOARD_INKDECK)
     #include "board_inkdeck.h"
+#elif defined(BOARD_T_EMBED)
+    #include "board_t_embed.h"
 #else
     #error "No board defined! Use -DBOARD_IPS35, -DBOARD_BOX_86, -DBOARD_AMOLED, -DBOARD_LED8X32, -DBOARD_TTGO, -DBOARD_ESP32_C6_147, or -DBOARD_IPS10"
 #endif

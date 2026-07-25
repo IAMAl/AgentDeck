@@ -26,6 +26,11 @@
 #include "ui/matrix/matrix_display.h"
 #elif defined(BOARD_INKDECK)
 #include "ui/eink/eink_display.h"
+#elif defined(BOARD_T_EMBED)
+#include "ui/display.h"
+#include "ui/knob/knob_ui.h"
+#include "ui/knob/ring_leds.h"
+#include "input/encoder.h"
 #else
 #include "ui/display.h"
 #include "ui/screens/splash.h"
@@ -38,7 +43,7 @@
 DashboardState g_state;
 SemaphoreHandle_t g_stateMutex = nullptr;
 
-#if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK)
+#if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK) && !defined(BOARD_T_EMBED)
 // ===== Screen objects (LVGL boards only) =====
 static lv_obj_t* scrSplash = nullptr;
 static lv_obj_t* scrAquarium = nullptr;
@@ -264,7 +269,80 @@ static void networkTask(void* param) {
     }
 }
 
-#if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK)
+#if defined(BOARD_T_EMBED)
+// ===== UI task — Companion Knob (Core 1) =====
+// Encoder-driven two-level steering UI + WS2812 session ring. No touch, no
+// terrarium — the knob render tree (ui/knob/) is the whole surface.
+
+// Host display-sleep contract (off must be dark, min must stay visible) —
+// applied to both the panel backlight and the LED ring.
+static void knobApplyHostDim(bool* ringDark) {
+    static int lastApplied = -1;
+    lockState();
+    bool on = g_state.hostDisplayOn;
+    bool dimEnabled = g_state.hostDimEnabled;
+    uint8_t dimMode = g_state.hostDimMode;
+    uint8_t dimLevel = g_state.hostDimLevel;
+    uint8_t userLevel = g_state.userBrightness;
+    unlockState();
+
+    int target = userLevel;
+    bool dark = false;
+    if (!on && dimEnabled) {
+        target = (dimMode == 0) ? 0 : dimLevel;
+        dark = (dimMode == 0);
+    }
+    if (target != lastApplied) {
+        lastApplied = target;
+        UI::setBrightness(target);
+    }
+    *ringDark = dark;
+}
+
+static void uiTask(void* param) {
+    Serial.printf("[UI] Knob task started on core %d\n", xPortGetCoreID());
+
+    UI::displayInit();
+    Input::encoderInit(BOARD_PIN_ENC_A, BOARD_PIN_ENC_B, BOARD_PIN_ENC_KEY);
+    Ring::init();
+    Knob::create();
+
+    Serial.println("[UI] Knob screen created, entering main loop");
+
+    uint32_t lastFrameMs = millis();
+    while (true) {
+        uint32_t now = millis();
+        uint32_t dt_ms = now - lastFrameMs;
+        float dt = dt_ms / 1000.0f;
+        lastFrameMs = now;
+        if (dt > 0.1f) dt = 0.1f;
+        if (dt_ms > 0) lv_tick_inc(dt_ms);
+
+        // Encoder → knob grammar
+        int detents = Input::encoderReadDelta();
+        if (detents != 0) Knob::onRotate(detents);
+        Input::KeyEvent key = Input::encoderPollKey(now);
+        if (key != Input::KeyEvent::NONE) Knob::onKey(key);
+
+        lockState();
+        g_state.applyPendingSessionClear(now);
+        bool connected = g_state.wsConnected || Net::serialConnected();
+        unlockState();
+
+        bool ringDark = false;
+        knobApplyHostDim(&ringDark);
+
+        Knob::update(dt);
+        Ring::update(now, Knob::selectedSessionIdx(), connected, ringDark);
+
+        lv_timer_handler();
+
+        // Frame-pace ~30fps like the other small SPI panels.
+        uint32_t work = millis() - now;
+        vTaskDelay(pdMS_TO_TICKS(work < RENDER_INTERVAL_MS ? (RENDER_INTERVAL_MS - work) : 1));
+    }
+}
+#elif !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK)
 // ===== Settings long-press handler =====
 static void onLongPress(lv_event_t* e) {
 #if defined(BOARD_IPS10)
@@ -638,7 +716,13 @@ static void uiTask(void* param) {
 
 // ===== Arduino setup =====
 void setup() {
-#if defined(BOARD_INKDECK) || defined(BOARD_IPS10)
+#if defined(BOARD_T_EMBED)
+    // Latch the power rail FIRST — on battery the board browns out the moment
+    // code runs unless PWR_EN is driven high (USB masks this).
+    pinMode(BOARD_PIN_PWR_EN, OUTPUT);
+    digitalWrite(BOARD_PIN_PWR_EN, HIGH);
+#endif
+#if defined(BOARD_INKDECK) || defined(BOARD_IPS10) || defined(BOARD_T_EMBED)
     // RX 8192 — a 10-session enriched sessions_list is ~2.2-3.5KB; the old
     // 2048 truncated it mid-line ([Protocol] JSON error: InvalidInput).
     Serial.setRxBufferSize(8192);
@@ -679,6 +763,11 @@ void setup() {
     for (int i = 0; i < 30 && !Serial; i++) delay(100);
     delay(200);
     Serial.println("\n=== AgentDeck InkDeck 7.5\" e-ink ===");
+#elif defined(BOARD_T_EMBED)
+    // Native USB CDC: wait for host connection (up to 3 seconds)
+    for (int i = 0; i < 30 && !Serial; i++) delay(100);
+    delay(200);
+    Serial.println("\n=== AgentDeck T-Embed Companion Knob ===");
 #else
     // Native USB CDC: wait for host connection (up to 3 seconds)
     for (int i = 0; i < 30 && !Serial; i++) delay(100);
@@ -695,6 +784,8 @@ void setup() {
         "ESP32-C6 1.47\"",
 #elif defined(BOARD_INKDECK)
         "InkDeck 7.5\" e-ink",
+#elif defined(BOARD_T_EMBED)
+        "T-Embed Knob",
 #elif defined(BOARD_IPS35)
         "IPS 3.5\"",
 #elif defined(BOARD_BOX_86) || defined(BOARD_86_BOX)
