@@ -15,6 +15,7 @@ import {
   uninstallHooks,
   migrateHooksIfNeeded,
   sweepLegacyHooks,
+  hasUnboundedHookCurl,
 } from '../install.js';
 
 describe('Hook Installer', () => {
@@ -474,5 +475,99 @@ describe('install target (~/.claude/settings.json)', () => {
 
     expect(read(settings).hooks).toBeUndefined();
     expect(read(legacy).hooks).toBeUndefined();
+  });
+});
+
+describe('migration 7 — unbounded curl self-heal', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agentdeck-hooks-m7-'));
+    mkdirSync(join(home, '.claude'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  /**
+   * What an App Store build from before the timeout fix writes: current in
+   * every other respect (daemon.json discovery, request-response Stop,
+   * PostToolUseFailure present) — so migrations 1-6 all pass it by.
+   */
+  const preFixSettings = () => {
+    const preamble = [
+      'PORT="${AGENTDECK_PORT:-}"',
+      'if [ -z "$PORT" ]; then',
+      '  for F in "$HOME/.agentdeck/daemon.json"; do',
+      '    [ -f "$F" ] || continue',
+      '    P=$(python3 -c "..." 2>/dev/null)',
+      '    [ -n "$P" ] && curl -sf --max-time 0.3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { PORT="$P"; break; }',
+      '  done',
+      'fi',
+      'PORT="${PORT:-9120}"',
+    ];
+    const command = (event: string) => {
+      if (event === 'PreToolUse' || event === 'Stop') {
+        const cap = event === 'PreToolUse' ? 60 : 10;
+        return preamble.concat([
+          `RESP=$(curl -s -X POST "http://127.0.0.1:$PORT/hooks/${event}" -H 'Content-Type: application/json' --max-time ${cap} -d @- 2>/dev/null)`,
+          `printf '%s' "\${RESP:-}"`,
+        ]).join('\n');
+      }
+      return preamble.concat([
+        `curl -sf -X POST "http://127.0.0.1:$PORT/hooks/${event}" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true`,
+      ]).join('\n');
+    };
+    const hooks: Record<string, unknown> = {};
+    for (const event of HOOK_EVENTS) {
+      hooks[event] = [{
+        matcher: ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event) ? '*' : '',
+        hooks: [{ type: 'command', command: command(event) }],
+      }];
+    }
+    return { hooks };
+  };
+
+  it('flags a pre-fix hook set that every earlier migration passes by', () => {
+    const settings = preFixSettings();
+    // Migrations 4-6 look at exactly these three signals and find nothing wrong.
+    const raw = JSON.stringify(settings);
+    expect(raw.includes('daemon.json')).toBe(true);
+    expect(/RESP=\$\(curl[^\n]*\/hooks\/Stop/.test(raw)).toBe(true);
+    expect(settings.hooks.PostToolUseFailure).toBeDefined();
+
+    expect(hasUnboundedHookCurl(settings)).toBe(true);
+    expect(hasUnboundedHookCurl(applyHooks(settings))).toBe(false);
+  });
+
+  it('rebuilds unbounded hooks on migrate and then leaves the file alone', () => {
+    const { settings: settingsPath } = claudeSettingsPaths(home);
+    writeFileSync(settingsPath, JSON.stringify(preFixSettings(), null, 2) + '\n');
+
+    migrateHooksIfNeeded(home);
+
+    const repaired = readFileSync(settingsPath, 'utf-8');
+    if (process.platform !== 'win32') {
+      // 8 events minus the two request-response ones.
+      expect(repaired.split('--max-time 0.8').length - 1).toBe(6);
+      expect(repaired).toContain('--connect-timeout 0.2 --max-time 0.3');
+      expect(repaired).toContain('--max-time 60');
+      expect(repaired).toContain('--max-time 10');
+    }
+    expect(hasUnboundedHookCurl(JSON.parse(repaired))).toBe(false);
+
+    // Idempotent: a second pass must not rewrite an already-bounded file.
+    migrateHooksIfNeeded(home);
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(repaired);
+  });
+
+  it('does not flag the request-response hooks for lacking a short timeout', () => {
+    const current = applyHooks({});
+    expect(hasUnboundedHookCurl(current)).toBe(false);
+    // A user's own unrelated hook is not ours to judge.
+    expect(hasUnboundedHookCurl({
+      hooks: { SessionEnd: [{ matcher: '', hooks: [{ type: 'command', command: 'curl -X POST http://example.test/ping' }] }] },
+    })).toBe(false);
   });
 });

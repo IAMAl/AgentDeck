@@ -204,6 +204,45 @@ export function removeHooks(settings: any): any {
   return settings;
 }
 
+/**
+ * Pure logic: does any AgentDeck hook still carry an unbounded `curl`?
+ *
+ * Two shapes qualify, both written by installers that predate the timeout fix
+ * — including an older App Store app, which owns the very same
+ * `~/.claude/settings.json` a current CLI writes:
+ *   - a fire-and-forget POST with no `--max-time` (hangs on a daemon that
+ *     holds the socket without replying, blowing Claude's ~1.5s SessionEnd
+ *     abort budget → `SessionEnd hook [...] failed: Hook cancelled`)
+ *   - a `/health` probe with no `--connect-timeout` (burns the same budget
+ *     before the POST even starts)
+ *
+ * `PreToolUse`/`Stop` are exempt: they are request-response by design and
+ * carry their own long `--max-time`. The Windows PowerShell form is bounded
+ * by `-TimeoutSec` and has no `curl` to match.
+ */
+export function hasUnboundedHookCurl(settings: any): boolean {
+  const lines = (cmd: string) => cmd.split('\n');
+  for (const event of HOOK_EVENTS) {
+    for (const group of settings?.hooks?.[event] ?? []) {
+      const handlers = [group, ...(Array.isArray(group?.hooks) ? group.hooks : [])];
+      for (const handler of handlers) {
+        const cmd: unknown = handler?.command;
+        if (typeof cmd !== 'string' || !cmd.includes('/hooks/')) continue;
+
+        const probe = lines(cmd).find((l) => l.includes('curl') && l.includes('/health'));
+        if (probe && !probe.includes('--connect-timeout')) return true;
+
+        if (event === 'PreToolUse' || event === 'Stop') continue;
+        const post = lines(cmd).find(
+          (l) => l.includes('curl') && l.includes('-X POST') && l.includes('/hooks/'),
+        );
+        if (post && !post.includes('--max-time')) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /** Pure logic: migrate old hook formats to v2.1 matcher-group format. */
 export function migrateHooks(settings: any): { settings: any; migrated: boolean } {
   let migrated = false;
@@ -383,6 +422,16 @@ export function migrateHooksIfNeeded(home: string = homedir()): void {
     // overlays on ESC/tool failure. Existing installs predate this lifecycle
     // event, so refresh the AgentDeck-owned hook set once when it is absent.
     if (!settings.hooks?.PostToolUseFailure) {
+      applyHooks(settings);
+      migrated = true;
+    }
+
+    // Migration 7: bound curl calls left unbounded by a pre-fix installer.
+    // Migrations 1-6 all miss this shape — such hooks already read daemon.json,
+    // already echo Stop, already carry PostToolUseFailure; they just hang. This
+    // is the self-heal path for a machine where an older App Store build keeps
+    // rewriting the same settings.json the CLI installs into.
+    if (hasUnboundedHookCurl(settings)) {
       applyHooks(settings);
       migrated = true;
     }

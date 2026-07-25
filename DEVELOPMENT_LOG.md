@@ -40,6 +40,15 @@ App Store 로 설치된 `/Applications/AgentDeck.app`(1.0.2 / build 3901)이고,
 - **(2) 중복 제거**: `bridge/src/hook-migration.ts` **삭제**, `bridge/src/index.ts`
   가 `@agentdeck/hooks` 의 `migrateHooksIfNeeded` 를 직접 쓴다. 미러는 4곳 →
   **3곳**(hooks 정본 / setup 인라인 / Swift). CLAUDE.md 불변식도 갱신.
+- **(3) Migration 7 — unbounded curl 자가치유**: 1.0.x 혼용 점검에서 구멍이
+  나왔다. 구버전 App Store 앱이 쓴 `settings.json`(daemon.json 조회 O,
+  Stop request-response O, PostToolUseFailure O — **타임아웃만 없음**)은
+  마이그레이션 1~6 조건에 하나도 안 걸려 **8개 중 0개 수리**됐다(실측).
+  `hasUnboundedHookCurl()` 을 추가해 fire-and-forget POST 에 `--max-time` 이
+  없거나 `/health` 프로브에 `--connect-timeout` 이 없으면 전면 재생성한다 →
+  같은 픽스처로 **6/6 복구** 확인. PreToolUse/Stop 은 설계상 롱 타임아웃이라
+  제외, Windows PowerShell 폼은 `-TimeoutSec` 로 이미 bounded 라 매칭 대상
+  아님. 라이브 `settings.json` 사본에 돌려 무변경(idempotent)도 확인.
 
 검증: `pnpm build` green, `vitest run` 112 files / 1905 tests green(신규 5개 —
 설치 대상 파일, 레거시 sweep 시 사용자 키 보존, 이전, 우리 훅이 없는
@@ -57,6 +66,11 @@ settings.json 사본에 마이그레이션을 돌려 **byte-identical**(체크�
 - 마이그레이션은 레거시 엔트리를 **복사하지 않고 재생성**한다. 옛 파일에 있던
   커맨드는 정의상 낡았으므로(타임아웃 없음 등) 그대로 옮기면 낡은 상태가
   연장될 뿐이다.
+- **마이그레이션 조건은 "무엇이 바뀌었나"가 아니라 "무엇이 틀렸나"로 쓴다.**
+  1~6 은 전부 특정 릴리스의 변경점을 추적하는 조건이었고, 그래서 "우리가
+  아는 모든 기능은 갖췄지만 타임아웃만 없는" 조합을 통과시켰다. 7 은 결함
+  자체(`--max-time` 부재)를 본다. 파일을 **공동 소유**하는 주체(구버전 앱)가
+  있는 한, 설치기는 자기가 쓴 결과가 남아 있다고 가정하면 안 된다.
 - 중복 구현은 "동기화 주석"으로 못 막는다 — hook-migration.ts 는 주석까지
   달아두고도 분기 하나가 누락돼 있었다. 워크스페이스 의존이 가능한 곳
   (bridge)은 import 로 없애고, 부트스트랩이라 불가능한 곳(setup)만 복제로
