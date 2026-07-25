@@ -2872,6 +2872,17 @@ final class DaemonServer {
             return
         }
 
+        // Peripheral primitive from a sensor-bearing board (t_embed NFC etc.):
+        // log + relay to dashboard clients (Node parity; boards never get it
+        // back — peripheral_event is not display-forwardable).
+        if type == "peripheral_event" {
+            let kind = cmd["kind"] as? String ?? "?"
+            let detail = (cmd["uid"] as? String) ?? (cmd["code"] as? String) ?? ""
+            DaemonLogger.shared.debug("Daemon", "peripheral_event: \(kind) \(detail)")
+            broadcastRaw(cmd)
+            return
+        }
+
         // Independent on-demand review (REVIEW deck button). Judges the
         // session's TRAJECTORY with Apple Intelligence — no git, no cwd
         // access, no agent control, so every session type qualifies. Must

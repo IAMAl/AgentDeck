@@ -955,6 +955,14 @@ static void sendDeviceInfo() {
     {
         // Battery telemetry for the dashboard downstream rail (gauge-validated;
         // absent fields mean "no gauge answer", not 0%).
+        // Capability advertisement — only what this firmware actually exposes
+        // today (grow as ir/subghz land).
+        {
+            JsonArray caps = resp["capabilities"].to<JsonArray>();
+            caps.add("battery");
+            caps.add("nfc");
+            caps.add("audio");
+        }
         Input::PowerStatus ps = Input::powerStatus();
         if (ps.valid) {
             resp["batteryPercent"] = ps.soc;
@@ -972,7 +980,9 @@ static void sendDeviceInfo() {
     resp["otaFreeSketchSpace"] = ota.freeSketchSpace;
     if (!ota.supported) resp["otaReason"] = ota.reason;
 
-    char buf[512];
+    // 768: the t_embed capabilities array + battery telemetry pushed the frame
+    // past the old 512 (serializeJson truncates silently on overflow).
+    char buf[768];
     serializeJson(resp, buf, sizeof(buf));
     // Both transports: serial for the USB-attached identify flow, WS so a
     // WiFi-only board (InkDeck) is registrable by the daemon without a cable.

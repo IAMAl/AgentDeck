@@ -33,6 +33,7 @@
 #include "ui/knob/chime.h"
 #include "input/encoder.h"
 #include "input/power_monitor.h"
+#include "input/nfc_reader.h"
 #else
 #include "ui/display.h"
 #include "ui/screens/splash.h"
@@ -322,6 +323,7 @@ static void uiTask(void* param) {
     UI::displayInit();
     Input::encoderInit(BOARD_PIN_ENC_A, BOARD_PIN_ENC_B, BOARD_PIN_ENC_KEY);
     Input::powerInit();
+    Input::nfcInit();
     Ring::init();
     Knob::create();
 
@@ -350,6 +352,22 @@ static void uiTask(void* param) {
 
         // Battery/charger poll (I2C, self-throttled to every ~5s)
         Input::powerPoll(now);
+
+        // NFC tag tap → peripheral primitive (daemon maps meaning via config)
+        {
+            char uid[24];
+            if (Input::nfcPoll(now, uid, sizeof(uid))) {
+                char evt[112];
+                snprintf(evt, sizeof(evt),
+                         "{\"type\":\"peripheral_event\",\"board\":\"t_embed\","
+                         "\"kind\":\"nfc_tag\",\"uid\":\"%s\"}", uid);
+                Net::queueOutbound(evt);
+                char note[40];
+                snprintf(note, sizeof(note), "NFC %s", uid);
+                Knob::notify(note);
+                s_lastInputMs = now;  // a tap is an interaction — wake the panel
+            }
+        }
 
         // Awaiting edge: a session just entered a genuine response-wait →
         // pager chime + panel wake (derived from sessions_list; no new event).

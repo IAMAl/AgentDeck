@@ -513,7 +513,7 @@ export interface WifiProvisionMessage {
 export interface DeviceInfoMessage {
   type: 'device_info';
   // "86box" | "round_amoled" | "ips_35" | "ips_10" | "ttgo_t_display"
-  // | "ulanzi_tc001" | "inkdeck" (wire strings — see esp32/src/net/protocol.cpp)
+  // | "ulanzi_tc001" | "inkdeck" | "t_embed" (wire strings — see esp32/src/net/protocol.cpp)
   // | "xteink_x3" | "xteink_x4" (external CrossPoint fork; see docs/esp32-client-contract.md)
   board: string;
   version: string;       // firmware version (FIRMWARE_VERSION — bumped rarely)
@@ -535,6 +535,43 @@ export interface DeviceInfoMessage {
   otaSlotSize?: number;
   otaFreeSketchSpace?: number;
   otaReason?: string;
+  /**
+   * Peripheral capability advertisement (docs/esp32-companion-concepts.md
+   * § Peripheral primitives) — what this board can sense/actuate beyond its
+   * panel, e.g. "battery" | "nfc" | "ir_rx" | "ir_tx" | "subghz_rx" | "audio".
+   * Absent on boards that predate the field.
+   */
+  capabilities?: string[];
+  /** Battery state of charge 0-100 (boards with a fuel gauge, e.g. t_embed). */
+  batteryPercent?: number;
+  /** Charger reports active charging. */
+  batteryCharging?: boolean;
+  /** Charger reports external (USB) power good. */
+  usbPowered?: boolean;
+  /** Gauge-read failure diagnostic (Wire error code) when battery fields are absent. */
+  batteryDiag?: number;
+}
+
+/**
+ * Raw peripheral sensing primitive (device → daemon). One frame shape for
+ * everything a peripheral-rich board senses; the daemon maps events to
+ * existing commands via user config rather than the firmware growing bespoke
+ * features. Kinds: "nfc_tag" (uid), "ir_rx" (protocol/code),
+ * "subghz_rx" (freq/rssi/code).
+ */
+export interface PeripheralEventMessage {
+  type: 'peripheral_event';
+  /** Board wire string, e.g. "t_embed" — lets the daemon attribute the sensor. */
+  board?: string;
+  kind: 'nfc_tag' | 'ir_rx' | 'subghz_rx';
+  /** NFC tag UID as uppercase hex, e.g. "04A1B2C3". */
+  uid?: string;
+  /** IR protocol name / raw code (hex string). */
+  protocol?: string;
+  code?: string;
+  /** Sub-GHz capture metadata. */
+  freq?: number;
+  rssi?: number;
 }
 
 export interface WifiProvisionAckMessage {
@@ -599,7 +636,8 @@ export type ESP32ToHostMessage =
   | WifiProvisionAckMessage
   | WifiStatusMessage
   | Esp32OtaAckCommand
-  | Esp32OtaErrorCommand;
+  | Esp32OtaErrorCommand
+  | PeripheralEventMessage;
 
 /**
  * On-demand independent review lifecycle. Triggered by the REVIEW deck button

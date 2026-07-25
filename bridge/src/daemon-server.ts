@@ -2904,6 +2904,16 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       );
       return;
     }
+    // Peripheral primitive from a sensor-bearing board (t_embed NFC etc.):
+    // log + relay to dashboard clients. Boards never receive it back
+    // (peripheral_event is not serial-forwardable), and command mapping
+    // (tag → focus/approve) comes later as daemon-side config.
+    if ((cmd.type as string) === 'peripheral_event') {
+      const p = cmd as any;
+      debug('daemon', `peripheral_event: ${p.kind} ${p.uid ?? p.code ?? ''} (${p.board ?? 'esp32'})`);
+      core.wsServer.broadcast(cmd as any);
+      return;
+    }
     if (cmd.type === 'query_usage') {
       fetchUsageRelayed(port).then((usage) => {
         if (usage) core.updateApiUsage(usage);

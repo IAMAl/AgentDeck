@@ -41,6 +41,10 @@
 #define BOARD_PIN_I2C_SDA    8
 #define BOARD_PIN_I2C_SCL    18
 
+// PN532 NFC (I2C 0x24) auxiliary pins
+#define BOARD_PIN_NFC_IRQ    17
+#define BOARD_PIN_NFC_RST    45
+
 // Speaker I2S (vendor "voice" pins; mic is a separate PDM pair 42/39)
 #define BOARD_PIN_SPK_BCLK   46
 #define BOARD_PIN_SPK_LRCLK  40

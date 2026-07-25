@@ -548,6 +548,10 @@ void create() {
     s_lastSig[0] = '\0';
 }
 
+void notify(const char* text) {
+    flash(text);
+}
+
 void onRotate(int detents) {
     if (detents == 0) return;
     lockState();

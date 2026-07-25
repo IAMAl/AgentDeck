@@ -114,6 +114,14 @@ static void sendDeviceInfoSerial() {
     {
         // Battery telemetry (mirrors protocol.cpp sendDeviceInfo — keep the
         // two device_info ladders in lockstep).
+        // Capability advertisement — only what this firmware actually exposes
+        // today (grow as ir/subghz land).
+        {
+            JsonArray caps = resp["capabilities"].to<JsonArray>();
+            caps.add("battery");
+            caps.add("nfc");
+            caps.add("audio");
+        }
         Input::PowerStatus ps = Input::powerStatus();
         if (ps.valid) {
             resp["batteryPercent"] = ps.soc;

@@ -128,3 +128,12 @@ A client with buttons must derive controls from the wire payload, never merely f
   first-party parser and the X3 port. See the port-sync sections in
   [esp32.md](esp32.md#downstream-client-port-sync) (AgentDeck side) and the fork's
   `.skills/SKILL.md` (fork side).
+
+## Peripheral primitives (optional, 2026-07-25)
+
+Boards with sensors beyond their panel may additionally:
+
+- Advertise `capabilities?: string[]` in `device_info` (e.g. `"battery"`, `"nfc"`, `"audio"`) plus battery telemetry (`batteryPercent`/`batteryCharging`/`usbPowered`, and `batteryDiag` when the gauge fails). Display-only clients may omit all of these.
+- Emit `peripheral_event` (device → daemon) for raw sensing: `{type:"peripheral_event", board, kind:"nfc_tag"|"ir_rx"|"subghz_rx", uid?|code?/protocol?|freq?/rssi?}`. The daemon logs and relays it to dashboard clients; meaning (tag → focus/approve) is daemon-side mapping config, never firmware policy. This frame is only deliverable over WiFi WS today — the daemon's serial path parses `device_info` only.
+
+Neither is required for a display-only client; the XTeink fork ignores both.
