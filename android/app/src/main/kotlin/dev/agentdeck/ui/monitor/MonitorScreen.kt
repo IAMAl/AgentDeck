@@ -959,16 +959,24 @@ private fun MonitorHUD(
         val featuredSession = awaiting.firstOrNull { it.id == dashState.sessionId } ?: awaiting.firstOrNull()
         if (featuredSession != null) {
             val isFocused = featuredSession.id == dashState.sessionId
-            // Only PTY-managed sessions expose Claude's real choices. Observed
-            // (hook-only) sessions carry no options and aren't remotely answerable,
-            // so render [] → "respond in terminal" rather than a fabricated Allow/Deny.
+            // Observed AskUserQuestion choices come from the per-session row and
+            // are rendered display-only; managed PTY choices remain actionable.
             val featured = buildAttentionFeatured(
                 session = featuredSession,
                 question = featuredSession.question ?: (if (isFocused) dashState.question else null),
-                options = if (isFocused) dashState.options else emptyList(),
-                promptType = if (isFocused) dashState.promptType else null,
+                options = if (featuredSession.controlMode == "observed") {
+                    featuredSession.options.orEmpty()
+                } else if (isFocused) {
+                    dashState.options
+                } else {
+                    emptyList()
+                },
+                promptType = featuredSession.promptType
+                    ?: (if (isFocused) dashState.promptType else null),
                 cursorIndex = if (isFocused) dashState.cursorIndex ?: 0 else 0,
-                navigable = if (isFocused) dashState.navigable ?: false else false,
+                navigable = featuredSession.controlMode != "observed"
+                    && isFocused
+                    && (dashState.navigable ?: false),
             )
             AttentionTheaterHUD(
                 featured = featured,

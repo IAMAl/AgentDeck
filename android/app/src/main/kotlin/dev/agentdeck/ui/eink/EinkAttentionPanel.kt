@@ -42,6 +42,7 @@ data class EinkAttentionFeatured(
     val promptType: String?,
     val cursorIndex: Int,
     val navigable: Boolean,
+    val actionable: Boolean = true,
     val queuedCount: Int,
 )
 
@@ -56,11 +57,20 @@ fun buildEinkAttentionFeatured(state: DashboardState): EinkAttentionFeatured? {
         projectName = featured.projectName,
         agentType = featured.agentType,
         modelName = featured.modelName,
-        question = if (isFocused) state.question else null,
-        options = if (isFocused) state.options else emptyList(),
-        promptType = if (isFocused) state.promptType else null,
+        question = featured.question ?: (if (isFocused) state.question else null),
+        options = if (featured.controlMode == "observed") {
+            featured.options.orEmpty()
+        } else if (isFocused) {
+            state.options
+        } else {
+            emptyList()
+        },
+        promptType = featured.promptType ?: (if (isFocused) state.promptType else null),
         cursorIndex = if (isFocused) state.cursorIndex ?: 0 else 0,
-        navigable = if (isFocused) state.navigable ?: false else false,
+        navigable = featured.controlMode != "observed"
+            && isFocused
+            && (state.navigable ?: false),
+        actionable = featured.controlMode != "observed",
         queuedCount = (sessions.size - 1).coerceAtLeast(0),
     )
 }
@@ -176,12 +186,22 @@ fun EinkAttentionPanel(
                         option = option,
                         indexLabel = option.shortcut?.uppercase() ?: (index + 1).toString(),
                         selected = featured.navigable && featured.cursorIndex == index,
+                        enabled = featured.actionable,
                         onClick = {
                             onFocusSession(featured.sessionId)
                             onSelectOption(index)
                         },
                     )
                 }
+            }
+            if (options.isNotEmpty() && !featured.actionable) {
+                Text(
+                    text = "Choose in your terminal",
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -192,6 +212,7 @@ private fun AttentionOptionRow(
     option: PromptOption,
     indexLabel: String,
     selected: Boolean,
+    enabled: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
@@ -202,7 +223,7 @@ private fun AttentionOptionRow(
                 color = if (selected) Color.Black else Color.DarkGray,
                 shape = RoundedCornerShape(4.dp),
             )
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

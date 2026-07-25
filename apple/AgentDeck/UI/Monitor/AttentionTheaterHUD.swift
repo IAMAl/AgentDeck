@@ -50,6 +50,7 @@ struct AttentionTheaterHUD: View {
     /// a yes/no/always trio that would silently go nowhere — `optionsContent`
     /// shows a "respond in the terminal" hint instead.
     private var effectiveOptions: [PromptOption] { options }
+    private var optionsAreActionable: Bool { session.controlMode != "observed" }
     private var hasFreeformInputOption: Bool { effectiveOptions.contains { $0.isFreeformInput } }
     private var attentionTitle: String { hasFreeformInputOption ? "INPUT NEEDED" : "ATTENTION" }
 
@@ -171,6 +172,11 @@ struct AttentionTheaterHUD: View {
             }
             .frame(maxHeight: 260)
         }
+        if !opts.isEmpty && !optionsAreActionable {
+            Text("Choose in the terminal to continue")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(TerrariumHUD.subtext)
+        }
     }
 
     private var subtitle: String {
@@ -260,6 +266,8 @@ struct AttentionTheaterHUD: View {
             }
         }
         .buttonStyle(.plain)
+        .disabled(!optionsAreActionable)
+        .opacity(optionsAreActionable ? 1 : 0.72)
     }
 
     private func freeformInputRow(_ option: PromptOption) -> some View {

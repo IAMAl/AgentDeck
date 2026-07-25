@@ -27,6 +27,7 @@ describe('Hook Installer', () => {
     it('uses `*` matcher for tool events and empty matcher for lifecycle events', () => {
       expect(buildHookEntry('PreToolUse').matcher).toBe('*');
       expect(buildHookEntry('PostToolUse').matcher).toBe('*');
+      expect(buildHookEntry('PostToolUseFailure').matcher).toBe('*');
       expect(buildHookEntry('Stop').matcher).toBe('');
       expect(buildHookEntry('SessionStart').matcher).toBe('');
     });
@@ -105,7 +106,7 @@ describe('Hook Installer', () => {
       for (const event of HOOK_EVENTS) {
         expect(result.hooks[event]).toHaveLength(1);
         const group = result.hooks[event][0];
-        const expectStar = ['PreToolUse', 'PostToolUse'].includes(event);
+        const expectStar = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event);
         expect(group.matcher).toBe(expectStar ? '*' : '');
         expect(group.hooks).toHaveLength(1);
         expect(group.hooks[0].command).toContain('AGENTDECK_PORT');

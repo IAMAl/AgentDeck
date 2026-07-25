@@ -844,8 +844,21 @@ export class SessionSlotManager {
         if (idx === 1) return { type: 'option', option: { label: 'Deny', shortcut: 'n', index: 1 }, optionIndex: 1 };
         return this.awaitingStatusCard(session, idx - 2, false);
       }
-      // Display-only awaiting (Notification overlay): answer in the terminal.
-      if (idx === 0) {
+      // AskUserQuestion carries real labels even though a hook-observed
+      // session has no response channel. Render each as an inert status tile
+      // so the deck mirrors the terminal without pretending taps will work.
+      const displayOption = session?.options?.[idx];
+      if (displayOption) {
+        return {
+          type: 'status',
+          label: truncateStr(displayOption.label, 16),
+          subtitle: idx === 0 ? 'answer in terminal' : undefined,
+          icon: 'option',
+          tone: 'warning',
+        };
+      }
+      // Generic display-only permission Notification.
+      if (idx === 0 && !session?.options?.length) {
         return {
           type: 'status', label: 'PERMIT?',
           subtitle: session?.question ? truncateStr(session.question, 18) : 'answer in terminal',

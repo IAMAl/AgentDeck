@@ -1,3 +1,5 @@
+import type { PromptOption } from '@agentdeck/shared';
+
 /**
  * Hook-driven awaiting overlay for observed (non-PTY) sessions.
  *
@@ -17,8 +19,21 @@
  * the `pushStateCache` TTL-map pattern in session-aggregator.ts.
  */
 
-interface AwaitingEntry {
+export type AwaitingKind = 'permission' | 'option';
+
+export interface AwaitingEntry {
+  kind: AwaitingKind;
+  state: 'awaiting_permission' | 'awaiting_option';
   question: string;
+  /** Structured AskUserQuestion choices. Display-only for observed sessions:
+   *  no requestId means devices must direct the user back to the terminal. */
+  options?: PromptOption[];
+  promptType?: 'multi_select';
+  /** Claude's stable tool call id. Option overlays resolve only when the
+   *  matching PostToolUse/PostToolUseFailure arrives (or a terminal lifecycle
+   *  event ends/supersedes the turn). Never expose this as requestId: that
+   *  would make devices fabricate actionable Allow/Deny controls. */
+  toolUseId?: string;
   /** Set when the awaiting state is an actionable, device-approvable PreToolUse
    *  gate (vs. a display-only Notification prompt). Devices render Allow/Deny
    *  and reply with permission_decision keyed by this id. */
@@ -54,7 +69,70 @@ const overlay = new Map<string, AwaitingEntry>();
 
 export function setAwaitingOverlay(sessionId: string, question: string, requestId?: string): void {
   const trimmed = (question || '').replace(/\s+/g, ' ').trim().slice(0, MAX_QUESTION_LEN);
-  overlay.set(sessionId, { question: trimmed, requestId, updatedAt: Date.now() });
+  overlay.set(sessionId, {
+    kind: 'permission',
+    state: 'awaiting_permission',
+    question: trimmed,
+    requestId,
+    updatedAt: Date.now(),
+  });
+}
+
+/** Notification permission prompts arrive several seconds after
+ * AskUserQuestion's structured PreToolUse. Preserve an existing option
+ * interaction instead of downgrading it to generic permission copy. */
+export function setPermissionNotificationOverlay(sessionId: string, question: string): boolean {
+  if (overlay.get(sessionId)?.kind === 'option') return false;
+  setAwaitingOverlay(sessionId, question);
+  return true;
+}
+
+/**
+ * Lift a direct-Claude AskUserQuestion PreToolUse payload into a structured,
+ * display-only option overlay. Claude supports one to four grouped questions,
+ * while SessionInfo currently carries one question/options set; show the first
+ * valid group rather than flattening unrelated groups into unsafe wire indices.
+ * Returns false for malformed payloads so callers can preserve normal tool
+ * processing instead of surfacing a dead prompt.
+ */
+export function setAskUserQuestionOverlay(
+  sessionId: string,
+  toolUseId: string | undefined,
+  toolInput: Record<string, unknown> | undefined,
+): boolean {
+  if (typeof toolUseId !== 'string' || !toolUseId) return false;
+  const rawQuestions = Array.isArray(toolInput?.questions) ? toolInput.questions : [];
+  const first = rawQuestions.find((value): value is Record<string, unknown> =>
+    isRecord(value) && typeof value.question === 'string' && value.question.trim().length > 0
+  );
+  if (!first) return false;
+  const rawQuestion = first.question;
+  if (typeof rawQuestion !== 'string') return false;
+
+  const rawOptions = Array.isArray(first.options) ? first.options : [];
+  const options: PromptOption[] = rawOptions.flatMap((value) => {
+    if (!isRecord(value) || typeof value.label !== 'string') return [];
+    const label = value.label.replace(/\s+/g, ' ').trim();
+    if (!label) return [];
+    return [{
+      index: 0, // re-indexed below after invalid/empty labels are removed
+      label: label.slice(0, MAX_QUESTION_LEN),
+    }];
+  }).map((option, index) => ({ ...option, index }));
+  if (options.length === 0) return false;
+
+  const question = rawQuestion.replace(/\s+/g, ' ').trim().slice(0, MAX_QUESTION_LEN);
+  const promptType = first.multiSelect === true ? 'multi_select' : undefined;
+  overlay.set(sessionId, {
+    kind: 'option',
+    state: 'awaiting_option',
+    question,
+    options,
+    ...(promptType ? { promptType } : {}),
+    toolUseId,
+    updatedAt: Date.now(),
+  });
+  return true;
 }
 
 /** Returns the overlay entry if it exists and is still fresh (< TTL). Stale
@@ -62,22 +140,38 @@ export function setAwaitingOverlay(sessionId: string, question: string, requestI
  *  overlay can compare it against the session's transcript recency. */
 export function getAwaitingOverlay(
   sessionId: string,
-): { question: string; requestId?: string; updatedAt: number } | undefined {
+): AwaitingEntry | undefined {
   const entry = overlay.get(sessionId);
   if (!entry) return undefined;
   if (Date.now() - entry.updatedAt > OVERLAY_TTL_MS) {
     overlay.delete(sessionId);
     return undefined;
   }
-  return { question: entry.question, requestId: entry.requestId, updatedAt: entry.updatedAt };
+  return {
+    ...entry,
+    options: entry.options?.map((option) => ({ ...option })),
+  };
 }
 
-/** Called on any subsequent hook for a session (tool_start/tool_end/
- *  user_prompt_submit/stop/session_end) — ANY later event means the prompt
- *  was answered, so the awaiting overlay should drop. Order-independent.
- *  Returns true if an entry was actually removed, so callers can skip a
- *  needless broadcast on the common (no-overlay) path. */
+/** Unconditionally clear an overlay at an authoritative lifecycle boundary.
+ *  Ordinary permission prompts may also use this after a subsequent tool hook;
+ *  structured AskUserQuestion callers must instead match tool_use_id through
+ *  clearAskUserQuestionOverlay. Returns true when an entry was removed. */
 export function clearAwaitingOverlay(sessionId: string): boolean {
+  return overlay.delete(sessionId);
+}
+
+/** Clear only the structured option interaction identified by Claude's
+ *  tool_use_id. An unrelated parallel tool hook must not dismiss the prompt. */
+export function clearAskUserQuestionOverlay(
+  sessionId: string,
+  toolUseId: string | undefined,
+): boolean {
+  const entry = overlay.get(sessionId);
+  if (!entry || entry.kind !== 'option') return false;
+  if (entry.toolUseId) {
+    if (!toolUseId || toolUseId !== entry.toolUseId) return false;
+  }
   return overlay.delete(sessionId);
 }
 
@@ -99,7 +193,15 @@ export function _resetAwaitingOverlay(): void {
  * advance, and they resolve through their own `onResolved` path.
  */
 export function applyAwaitingOverlayToObserved<
-  T extends { id: string; state?: string; question?: string; requestId?: string; lastActivityAt?: number },
+  T extends {
+    id: string;
+    state?: string;
+    question?: string;
+    requestId?: string;
+    options?: PromptOption[];
+    promptType?: string;
+    lastActivityAt?: number;
+  },
 >(sessions: T[]): T[] {
   return sessions.map((s) => {
     const uuid = s.id.replace(/^observed:(?:claude|codex):/, '');
@@ -108,6 +210,7 @@ export function applyAwaitingOverlayToObserved<
     // Display-only Notification prompt whose transcript has moved on since the
     // overlay was set → answered or ESC-dismissed. Drop it (no hook will).
     if (
+      ov.kind === 'permission' &&
       !ov.requestId &&
       typeof s.lastActivityAt === 'number' &&
       s.lastActivityAt > ov.updatedAt + RESOLVED_ACTIVITY_MARGIN_MS
@@ -115,8 +218,19 @@ export function applyAwaitingOverlayToObserved<
       clearAwaitingOverlay(uuid);
       return s;
     }
-    return { ...s, state: 'awaiting_permission', question: ov.question, requestId: ov.requestId };
+    return {
+      ...s,
+      state: ov.state,
+      question: ov.question,
+      requestId: ov.requestId,
+      ...(ov.options ? { options: ov.options } : {}),
+      ...(ov.promptType ? { promptType: ov.promptType } : {}),
+    };
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**

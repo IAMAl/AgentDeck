@@ -183,6 +183,7 @@ const HOOK_EVENTS = [
   'SessionEnd',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Stop',
   'Notification',
   'UserPromptSubmit',
@@ -246,7 +247,7 @@ function buildHookCommandWin(eventName: string): string {
 }
 
 function buildHookEntry(eventName: string) {
-  const needsToolMatcher = ['PreToolUse', 'PostToolUse'].includes(eventName);
+  const needsToolMatcher = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(eventName);
   const command = IS_WIN ? buildHookCommandWin(eventName) : buildHookCommand(eventName);
   return {
     matcher: needsToolMatcher ? '*' : '',

@@ -290,6 +290,12 @@ data class SessionInfo(
     val effortLevel: String? = null,
     val startedAt: String? = null,
     val question: String? = null,
+    // Observed AskUserQuestion choices are display-only when
+    // controlMode == "observed"; clients must not dispatch selection commands.
+    val options: List<PromptOption>? = null,
+    val promptType: String? = null,
+    val navigable: Boolean? = null,
+    val controlMode: String? = null,
     // Present when a gated PreToolUse permission is pending device approval —
     // the HUD renders Allow/Deny and replies with permissionDecision(requestId).
     val requestId: String? = null,

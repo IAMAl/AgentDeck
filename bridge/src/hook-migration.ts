@@ -7,6 +7,7 @@ const HOOK_EVENTS = [
   'SessionEnd',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Stop',
   'Notification',
   'UserPromptSubmit',
@@ -28,7 +29,7 @@ function buildHookCommand(eventName: string): string {
 }
 
 function buildHookEntry(eventName: string) {
-  const needsToolMatcher = ['PreToolUse', 'PostToolUse'].includes(eventName);
+  const needsToolMatcher = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(eventName);
   return {
     matcher: needsToolMatcher ? '*' : '',
     hooks: [{ type: 'command', command: buildHookCommand(eventName) }],
@@ -105,6 +106,15 @@ export function migrateHooksIfNeeded(): void {
 
     if (raw.includes('AGENTDECK_PORT') && !raw.includes('daemon.json')) {
       applyHooks(settings);
+      migrated = true;
+    }
+
+    // Structured AskUserQuestion overlays need the failure/interrupt boundary.
+    // Add only this missing event here: the legacy bridge-local applyHooks
+    // helper intentionally remains out of the normal refresh path.
+    if (!settings.hooks?.PostToolUseFailure) {
+      settings.hooks ??= {};
+      settings.hooks.PostToolUseFailure = [buildHookEntry('PostToolUseFailure')];
       migrated = true;
     }
 

@@ -202,9 +202,12 @@ struct MonitorScreen: View {
                     question: questionFor(featured),
                     queuedCount: queued,
                     options: attentionOptions(for: featured, isFocused: isFeaturedFocused),
-                    promptType: isFeaturedFocused ? stateHolder.state.promptType : nil,
+                    promptType: featured.promptType
+                        ?? (isFeaturedFocused ? stateHolder.state.promptType : nil),
                     cursorIndex: isFeaturedFocused ? stateHolder.state.cursorIndex : 0,
-                    navigable: isFeaturedFocused ? stateHolder.state.navigable : false,
+                    navigable: featured.controlMode == "observed"
+                        ? false
+                        : (isFeaturedFocused ? stateHolder.state.navigable : false),
                     respond: { index in respondToAwaiting(index, session: featured) },
                     onFocus: { stateHolder.sendCommand(.focusSession(sessionId: featured.id)) }
                 )
@@ -318,11 +321,13 @@ struct MonitorScreen: View {
         return nil
     }
 
-    /// Options to render in the attention HUD. Only PTY-managed sessions expose
-    /// Claude's real choices; mirror the focused session's live options ONLY when
-    /// they genuinely belong to it. Observed (hook-only) sessions have no real
-    /// options and no PTY to drive, so they render [] → "respond in terminal".
+    /// Options to render in the attention HUD. Hook-observed AskUserQuestion
+    /// sessions carry a per-session display-only copy; managed PTY sessions
+    /// continue to use the focused aggregate state.
     private func attentionOptions(for session: SessionInfo, isFocused: Bool) -> [PromptOption] {
+        if session.controlMode == "observed" {
+            return session.options ?? []
+        }
         // Borrow the aggregate live options only when the latest awaiting
         // state_update is attributed to THIS session (a managed PTY session).
         // Showing leftover options from another session would render dead,

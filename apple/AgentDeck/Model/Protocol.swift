@@ -471,8 +471,14 @@ struct SessionInfo: Codable, Sendable, Identifiable {
     var currentTool: String?
     var groupSize: Int?
     var foldedSessionIds: [String]?
-    /// Awaiting prompt question text (PTY-managed session: parsed header).
+    /// Awaiting prompt question text (managed PTY or observed hook overlay).
     var question: String?
+    /// Per-session prompt choices. Observed AskUserQuestion entries carry
+    /// these for display only; `controlMode == "observed"` must stay inert.
+    var options: [PromptOption]?
+    var promptType: PromptType?
+    var navigable: Bool?
+    var controlMode: String?
     /// Deprecated wire-compat field. The observed device-approval gate was removed
     /// (2026-06-27); nothing sets this anymore. Kept so older clients still decode.
     var requestId: String?

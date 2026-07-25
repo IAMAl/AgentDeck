@@ -24,7 +24,16 @@ import { PassiveSessionObserver } from './passive-observer.js';
 import { SessionTimelineRelay } from './session-timeline-relay.js';
 import { SessionFocusRelay } from './session-focus-relay.js';
 import { updatePushState } from './session-aggregator.js';
-import { setAwaitingOverlay, clearAwaitingOverlay, getAwaitingOverlay, isPermissionNotification, applyAwaitingOverlayToObserved } from './awaiting-overlay.js';
+import {
+  setAwaitingOverlay,
+  setPermissionNotificationOverlay,
+  setAskUserQuestionOverlay,
+  clearAwaitingOverlay,
+  clearAskUserQuestionOverlay,
+  getAwaitingOverlay,
+  isPermissionNotification,
+  applyAwaitingOverlayToObserved,
+} from './awaiting-overlay.js';
 import { registerPending, resolvePending, sweepStalePending, drainAllPending, isPendingRequest } from './permission-resolver.js';
 import {
   shouldHoldPreToolUse, gateReleased, buildGateQuestion,
@@ -1176,6 +1185,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         const eventMap: Record<string, string> = {
           SessionStart: 'session_start', SessionEnd: 'session_end',
           PreToolUse: 'tool_start', PostToolUse: 'tool_end',
+          PostToolUseFailure: 'tool_failure',
           Stop: 'stop', UserPromptSubmit: 'user_prompt_submit',
           Notification: 'notification',
         };
@@ -1197,17 +1207,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         } else if (mapped === 'tool_end') {
           core.stateMachine.handleHookEvent('PostToolUse', json);
         }
-        // Per-session awaiting overlay (observed/direct-`claude` sessions),
-        // display-only. Claude emits Notification with `notification_type:
-        // "permission_prompt"` only when a permission prompt is actually shown
-        // to the user (auto-approved tools fire PreToolUse but never this), so
-        // it is a genuine "waiting for explicit response" signal — unlike the
-        // removed PreToolUse gate. No requestId is ever set: surfaces render
-        // awaiting + question with the respond-in-terminal fallback, never a
-        // fabricated Allow/Deny. Keyed by Claude's own session_id and merged
-        // into the observed-session list at enrich time (awaiting-overlay.ts).
+        // Per-session awaiting overlay for observed/direct-`claude` sessions.
+        // Permission prompts stay Notification-driven and display-only unless
+        // the precision PreToolUse gate below owns a real requestId.
+        // AskUserQuestion is different: its PreToolUse payload already carries
+        // question/options/tool_use_id, so preserve that structured lifecycle
+        // as awaiting_option until the matching PostToolUse/Failure. This avoids
+        // both the generic "Claude needs your permission" downgrade and the
+        // transcript-mtime false resolution that affected a live 17-minute
+        // choice wait. No requestId is fabricated: observed surfaces remain
+        // respond-in-terminal only.
         const claudeSid = typeof json.session_id === 'string' ? json.session_id : undefined;
         if (claudeSid) {
+          const toolName = typeof json.tool_name === 'string' ? json.tool_name : '';
+          const toolUseId = typeof json.tool_use_id === 'string' ? json.tool_use_id : undefined;
+          const toolInput = (json.tool_input && typeof json.tool_input === 'object')
+            ? json.tool_input as Record<string, unknown> : undefined;
           if (mapped === 'notification') {
             const message = typeof json.message === 'string' ? json.message : '';
             const notificationType = typeof json.notification_type === 'string' ? json.notification_type : undefined;
@@ -1216,13 +1231,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
               // releases were real prompts, so nothing gets learned as
               // auto-approved (observed-steering learner).
               notePermissionPromptShown(claudeSid);
-              setAwaitingOverlay(claudeSid, message);
-              // Broadcast immediately rather than waiting for the 2s debounce
-              // or the 5s observer tick, so the prompt surfaces within one frame.
+              // AskUserQuestion emits this generic permission notification
+              // several seconds after its structured PreToolUse. Never replace
+              // the real question/options with the generic message.
+              if (setPermissionNotificationOverlay(claudeSid, message)) {
+                // Broadcast immediately rather than waiting for the 2s debounce
+                // or the 5s observer tick, so the prompt surfaces within one frame.
+                core.broadcastSessionsList().catch(() => {});
+              }
+            }
+          } else if (mapped === 'tool_start' && toolName === 'AskUserQuestion') {
+            if (setAskUserQuestionOverlay(claudeSid, toolUseId, toolInput)) {
+              debug('daemon', `AskUserQuestion awaiting_option set: sid=${claudeSid} tool=${toolUseId ?? 'unknown'}`);
               core.broadcastSessionsList().catch(() => {});
             }
           } else if (
-            mapped === 'tool_start' || mapped === 'tool_end' ||
+            mapped === 'tool_start' || mapped === 'tool_end' || mapped === 'tool_failure' ||
             mapped === 'user_prompt_submit' || mapped === 'stop' ||
             mapped === 'session_start' || mapped === 'session_end'
           ) {
@@ -1232,22 +1256,39 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             // never held again this session. User prompt / session end clear
             // pending STOP + queued directives (the user took over).
             if (mapped === 'tool_end') {
-              noteToolEnd(claudeSid, typeof json.tool_name === 'string' ? json.tool_name : undefined);
+              noteToolEnd(claudeSid, toolName || undefined);
             } else if (mapped === 'user_prompt_submit') {
               if (clearOnUserPrompt(claudeSid)) core.broadcastSessionsList().catch(() => {});
             } else if (mapped === 'session_end') {
               clearSteeringSession(claudeSid);
             }
-            // Any subsequent hook means the prompt was answered — drop the
-            // overlay. Only rebroadcast if there was actually one to clear
-            // (direct-`claude` sessions fire tool hooks constantly).
-            // EXCEPT while a held gate is still pending: parallel tool calls
-            // fire their own PreToolUse/PostToolUse hooks, and clearing here
-            // would strip the Allow/Deny UI out from under the open request
-            // (its own onResolved clears the overlay when it settles).
-            const heldOverlay = getAwaitingOverlay(claudeSid);
-            const gateStillPending = Boolean(heldOverlay?.requestId && isPendingRequest(heldOverlay.requestId));
-            if (!gateStillPending && clearAwaitingOverlay(claudeSid)) {
+
+            const currentOverlay = getAwaitingOverlay(claudeSid);
+            let cleared = false;
+            if (
+              (mapped === 'tool_end' || mapped === 'tool_failure') &&
+              toolName === 'AskUserQuestion'
+            ) {
+              cleared = clearAskUserQuestionOverlay(claudeSid, toolUseId);
+              if (cleared) {
+                debug('daemon', `AskUserQuestion awaiting_option cleared by ${eventName}: sid=${claudeSid} tool=${toolUseId ?? 'unknown'}`);
+              }
+            } else if (
+              mapped === 'user_prompt_submit' || mapped === 'stop' ||
+              mapped === 'session_start' || mapped === 'session_end'
+            ) {
+              // Authoritative turn/session boundary supersedes every overlay.
+              cleared = clearAwaitingOverlay(claudeSid);
+            } else if (currentOverlay?.kind !== 'option') {
+              // Permission overlay: any subsequent tool hook means the prompt
+              // was answered. Held gates are owned by their resolver and must
+              // survive unrelated parallel tool hooks.
+              const gateStillPending = Boolean(
+                currentOverlay?.requestId && isPendingRequest(currentOverlay.requestId)
+              );
+              if (!gateStillPending) cleared = clearAwaitingOverlay(claudeSid);
+            }
+            if (cleared) {
               core.broadcastSessionsList().catch(() => {});
             }
           }

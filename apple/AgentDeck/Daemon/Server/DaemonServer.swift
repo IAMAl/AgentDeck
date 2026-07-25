@@ -470,17 +470,17 @@ final class DaemonServer {
     /// overwrite their awaiting_permission overlay from parallel tool hooks
     /// while the device decision is pending (≤ hold timeout).
     private var heldGateSessionIds: Set<String> = []
+    /// Structured direct-Claude AskUserQuestion waits, keyed by the stable
+    /// tool_use_id. This id stays daemon-local: exposing it as requestId would
+    /// make devices fabricate actionable permission controls for an observed
+    /// terminal that AgentDeck cannot safely type into.
+    private var pendingAskToolUseIdBySession: [String: String] = [:]
 
-    // Observed-session attention history: the held PreToolUse device-approval
-    // gate was removed on 2026-06-27 and stays removed — PreToolUse fires even
-    // for tools Claude auto-approves, so gating on it produced false attention
-    // + a fabricated Allow/Deny. The *display-only* Notification overlay was
-    // restored on 2026-07-05: Claude emits `notification_type:
-    // "permission_prompt"` only when a permission prompt is actually shown to
-    // the user, so it is a genuine "waiting for explicit response" signal.
-    // Observed sessions surface awaiting + question with NO options/requestId
-    // (respond-in-terminal UX); accurate steering with real options still
-    // exists only on PTY-managed sessions (the CLI).
+    // Observed-session attention: ordinary permission prompts remain
+    // Notification-driven. AskUserQuestion is the safe exception because its
+    // PreToolUse payload contains the real question/options/tool_use_id; it is
+    // rendered as display-only awaiting_option and cleared by its matching
+    // PostToolUse/Failure. Neither path fabricates a requestId.
 
     // Debounce state for tool-boundary sessions_list broadcasts. State /
     // question transitions never ride this — see scheduleSessionsListBroadcast.
@@ -3296,6 +3296,7 @@ final class DaemonServer {
                 broadcastSessionsList()
             }
         case "session_start":
+            if let sessionId { pendingAskToolUseIdBySession.removeValue(forKey: sessionId) }
             _ = stateMachine.transition(trigger: "session_start", source: .hook)
             let projectName = ProjectNameResolver.projectName(fromHookPayload: json)
             if !projectName.isEmpty { stateMachine.projectName = projectName }
@@ -3328,6 +3329,7 @@ final class DaemonServer {
                 broadcastSessionsList()
             }
         case "user_prompt_submit":
+            if let sessionId { pendingAskToolUseIdBySession.removeValue(forKey: sessionId) }
             _ = stateMachine.transition(trigger: "user_prompt_submit", source: .hook)
             // Steering: the user re-engaged in the terminal — a pending soft
             // STOP is moot and queued deck directives are superseded.
@@ -3352,6 +3354,7 @@ final class DaemonServer {
             // (cross-session subtree contamination).
             appendClaudeCodeChatStart(json: json, sessionId: sessionId, taskId: apmeCollector?.activeTaskId(sessionId: sessionId))
         case "stop":
+            if let sessionId { pendingAskToolUseIdBySession.removeValue(forKey: sessionId) }
             _ = stateMachine.transition(trigger: "stop", source: .hook)
             updateSessionHookState(sessionId: sessionId, state: "idle", clearTool: true)
             // Timeline: close the turn. `last_assistant_message` is the hook
@@ -3390,30 +3393,62 @@ final class DaemonServer {
                 clearClaudeTurnAnchor(sid: sessionId)
                 claudeLastPromptTopicBySession.removeValue(forKey: sessionId)
                 claudeTranscriptPathBySession.removeValue(forKey: sessionId)
+                pendingAskToolUseIdBySession.removeValue(forKey: sessionId)
                 Task { await ObservedSteering.shared.clearSession(sessionId: sessionId) }
                 broadcastSessionsList()
             }
         case "tool_start":
             stateMachine.currentTool = json["tool_name"] as? String
             stateMachine.toolInput = json["tool_input"] as? String
-            updateSessionHookState(
-                sessionId: sessionId,
-                state: "processing",
-                currentTool: json["tool_name"] as? String
-            )
-        case "tool_end":
+            if let sessionId,
+               let ask = Self.askUserQuestionPresentation(from: json),
+               var entry = pushedSessionsById[sessionId] {
+                pendingAskToolUseIdBySession[sessionId] = ask.toolUseId
+                entry.state = "awaiting_option"
+                entry.currentTool = nil
+                entry.question = ask.question
+                entry.options = ask.options
+                entry.promptType = ask.promptType
+                entry.requestId = nil
+                pushedSessionsById[sessionId] = entry
+                upsertIntoCachedSessions(entry)
+                DaemonLogger.shared.debug(
+                    "Hook",
+                    "AskUserQuestion awaiting_option set for \(sessionId) tool=\(ask.toolUseId)"
+                )
+                broadcastSessionsList()
+            } else if sessionId.map({ pendingAskToolUseIdBySession[$0] != nil }) != true {
+                updateSessionHookState(
+                    sessionId: sessionId,
+                    state: "processing",
+                    currentTool: json["tool_name"] as? String
+                )
+            }
+        case "tool_end", "tool_failure":
             stateMachine.currentTool = nil; stateMachine.toolInput = nil
-            stateMachine.toolCalls += 1
+            if event == "tool_end" { stateMachine.toolCalls += 1 }
             // Steering learner: a PostToolUse right after an undecided gate
             // release with no permission_prompt Notification in between means
             // Claude auto-approved the call — never hold that signature again.
-            if let sessionId {
+            if event == "tool_end", let sessionId {
                 let tool = json["tool_name"] as? String
                 Task { await ObservedSteering.shared.noteToolEnd(sessionId: sessionId, tool: tool) }
             }
-            // Stay "processing" between tool boundaries — `stop` drops the
-            // session back to idle when the turn finishes.
-            updateSessionHookState(sessionId: sessionId, state: "processing", clearTool: true)
+            if let sessionId,
+               json["tool_name"] as? String == "AskUserQuestion",
+               let pendingId = pendingAskToolUseIdBySession[sessionId],
+               json["tool_use_id"] as? String == pendingId {
+                pendingAskToolUseIdBySession.removeValue(forKey: sessionId)
+                DaemonLogger.shared.debug(
+                    "Hook",
+                    "AskUserQuestion awaiting_option cleared by \(event) for \(sessionId) tool=\(pendingId)"
+                )
+                updateSessionHookState(sessionId: sessionId, state: "processing", clearTool: true)
+            } else if sessionId.map({ pendingAskToolUseIdBySession[$0] != nil }) != true {
+                // Stay "processing" between tool boundaries — `stop` drops the
+                // session back to idle when the turn finishes.
+                updateSessionHookState(sessionId: sessionId, state: "processing", clearTool: true)
+            }
         case "notification":
             // Display-only attention: Claude emits a Notification hook with
             // `notification_type: "permission_prompt"` only when it actually
@@ -3432,6 +3467,9 @@ final class DaemonServer {
                 // Steering learner: a genuine terminal prompt appeared — recent
                 // undecided gate releases were real prompts, learn nothing.
                 Task { await ObservedSteering.shared.notePermissionPromptShown(sessionId: sessionId) }
+                // AskUserQuestion emits this generic permission notification
+                // after its structured PreToolUse. Preserve the real prompt.
+                guard pendingAskToolUseIdBySession[sessionId] == nil else { break }
                 let q = String(message.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
                 if entry.state != "awaiting_permission" || entry.question != q {
                     entry.state = "awaiting_permission"
@@ -4630,6 +4668,60 @@ final class DaemonServer {
         return trimmed
     }
 
+    /// Parse the first valid AskUserQuestion group from a Claude PreToolUse
+    /// payload. SessionInfo carries one question/options set, so grouped
+    /// questions are not flattened into unsafe cross-question wire indices.
+    /// The tool_use_id is mandatory: without it the display-only overlay could
+    /// not distinguish its own completion from unrelated parallel tool hooks.
+    nonisolated static func askUserQuestionPresentation(
+        from json: [String: Any]
+    ) -> (
+        toolUseId: String,
+        question: String,
+        options: [[String: AnyCodable]],
+        promptType: String?
+    )? {
+        guard json["tool_name"] as? String == "AskUserQuestion",
+              let toolUseId = json["tool_use_id"] as? String, !toolUseId.isEmpty,
+              let toolInput = json["tool_input"] as? [String: Any],
+              let questions = toolInput["questions"] as? [[String: Any]] else {
+            return nil
+        }
+        for rawQuestion in questions {
+            guard let rawText = rawQuestion["question"] as? String else { continue }
+            let question = rawText
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            guard !question.isEmpty,
+                  let rawOptions = rawQuestion["options"] as? [[String: Any]] else {
+                continue
+            }
+            let labels = rawOptions.compactMap { raw -> String? in
+                guard let rawLabel = raw["label"] as? String else { return nil }
+                let label = rawLabel
+                    .components(separatedBy: .whitespacesAndNewlines)
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " ")
+                return label.isEmpty ? nil : String(label.prefix(120))
+            }
+            guard !labels.isEmpty else { continue }
+            let options = labels.enumerated().map { index, label in
+                [
+                    "index": AnyCodable(index),
+                    "label": AnyCodable(label),
+                ]
+            }
+            return (
+                toolUseId,
+                String(question.prefix(120)),
+                options,
+                rawQuestion["multiSelect"] as? Bool == true ? "multi_select" : nil
+            )
+        }
+        return nil
+    }
+
     /// Apply a per-session state/tool update coming from a hook event and
     /// broadcast the refreshed sessions list. No-op when the sessionId is
     /// nil or refers to a session we never registered via `session_start`.
@@ -4648,10 +4740,12 @@ final class DaemonServer {
         let oldTool = entry.currentTool
         let oldQuestion = entry.question
         entry.state = newState
-        // Any non-awaiting transition means a pending prompt was answered — drop
-        // the awaiting question so it doesn't linger.
-        if newState != "awaiting_permission" {
+        // Any non-awaiting transition means a pending prompt was answered —
+        // drop every prompt field so stale options cannot survive processing.
+        if !newState.hasPrefix("awaiting") {
             entry.question = nil
+            entry.options = nil
+            entry.promptType = nil
         }
         if clearTool {
             entry.currentTool = nil
@@ -5047,6 +5141,7 @@ final class DaemonServer {
         case "SessionEnd":   return "session_end"
         case "PreToolUse":   return "tool_start"
         case "PostToolUse":  return "tool_end"
+        case "PostToolUseFailure": return "tool_failure"
         case "Stop":         return "stop"
         case "UserPromptSubmit": return "user_prompt_submit"
         case "Notification": return "notification"

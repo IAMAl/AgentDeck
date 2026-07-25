@@ -15,7 +15,7 @@ import UniformTypeIdentifiers
 enum HookInstaller {
     private static let hookEvents = [
         "SessionStart", "SessionEnd", "PreToolUse",
-        "PostToolUse", "Stop", "Notification", "UserPromptSubmit",
+        "PostToolUse", "PostToolUseFailure", "Stop", "Notification", "UserPromptSubmit",
     ]
 
     /// Canonical install target: Claude Code 2.1+ only reads hooks from files
@@ -330,8 +330,8 @@ enum HookInstaller {
 
     private static func buildHookEntry(_ event: String) -> [String: Any] {
         // Tool-specific hooks need glob matcher "*" to fire. Empty "" means
-        // "match nothing" for PreToolUse/PostToolUse. Non-tool events ignore matcher.
-        let needsToolMatcher = ["PreToolUse", "PostToolUse"].contains(event)
+        // "match nothing" for tool events. Non-tool events ignore matcher.
+        let needsToolMatcher = ["PreToolUse", "PostToolUse", "PostToolUseFailure"].contains(event)
         return [
             "matcher": needsToolMatcher ? "*" : "",
             "hooks": [[

@@ -200,6 +200,7 @@ fun AttentionTheaterHUD(
                         label = option.label,
                         fill = horizontalFill(idx),
                         isCursor = featured.navigable && featured.cursorIndex == idx,
+                        enabled = featured.actionable,
                         modifier = Modifier.weight(1f),
                         onClick = { onRespond(idx) },
                     )
@@ -216,10 +217,19 @@ fun AttentionTheaterHUD(
                     TheaterListRow(
                         option = option,
                         isCursor = featured.navigable && featured.cursorIndex == idx,
+                        enabled = featured.actionable,
                         onClick = { onRespond(idx) },
                     )
                 }
             }
+        }
+        if (effectiveOptions.isNotEmpty() && !featured.actionable) {
+            Text(
+                text = "↳ Choose in the terminal to continue",
+                color = TerrariumColors.HUDSubtext,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }
@@ -275,6 +285,7 @@ data class AttentionFeatured(
     val promptType: String? = null,
     val cursorIndex: Int = 0,
     val navigable: Boolean = false,
+    val actionable: Boolean = true,
 )
 
 @Composable
@@ -282,6 +293,7 @@ private fun TheaterButton(
     label: String,
     fill: Color,
     isCursor: Boolean,
+    enabled: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -297,7 +309,7 @@ private fun TheaterButton(
                 shape = RoundedCornerShape(8.dp),
             )
             .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -315,6 +327,7 @@ private fun TheaterButton(
 private fun TheaterListRow(
     option: PromptOption,
     isCursor: Boolean,
+    enabled: Boolean,
     onClick: () -> Unit,
 ) {
     val fill = verticalFill(option)
@@ -330,7 +343,7 @@ private fun TheaterListRow(
                 shape = RoundedCornerShape(8.dp),
             )
             .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 9.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -405,6 +418,7 @@ fun buildAttentionFeatured(
         promptType = promptType,
         cursorIndex = cursorIndex,
         navigable = navigable,
+        actionable = session.controlMode != "observed",
     )
 }
 

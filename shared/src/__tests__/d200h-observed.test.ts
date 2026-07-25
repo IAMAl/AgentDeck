@@ -103,6 +103,21 @@ describe('D200H observed session detail', () => {
     expect(svgs).not.toContain('ALLOW');
   });
 
+  it('AskUserQuestion options are visible but inert for an observed session', () => {
+    const cells = detailCells(observedStateEvt({
+      state: 'awaiting_option',
+      question: 'Which cleanup window?',
+      options: [
+        { index: 0, label: '7 days' },
+        { index: 1, label: '14 days' },
+      ],
+    }));
+    expect(commandsOf(cells)).toHaveLength(0);
+    const svgs = [...cells.values()].map((c) => c.svg).join('');
+    expect(svgs).toContain('7 days');
+    expect(svgs).toContain('14 days');
+  });
+
   it('codex observed idle: REVIEW only — steering stays inert (notify-only hooks)', () => {
     const evt = {
       type: 'state_update', state: 'idle',

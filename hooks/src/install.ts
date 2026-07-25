@@ -28,6 +28,7 @@ export const HOOK_EVENTS = [
   'SessionEnd',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Stop',
   'Notification',
   'UserPromptSubmit',
@@ -132,10 +133,10 @@ export function buildHookEntry(eventName: string) {
     type: 'command',
     command,
   };
-  // Tool-specific hooks (PreToolUse, PostToolUse) need a glob matcher to fire.
+  // Tool-specific hooks need a glob matcher to fire.
   // Empty string "" means "match nothing" for tool events — use "" for non-tool
   // events (SessionStart, Stop, etc.) where matcher is ignored.
-  const needsToolMatcher = ['PreToolUse', 'PostToolUse'].includes(eventName);
+  const needsToolMatcher = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(eventName);
   return {
     matcher: needsToolMatcher ? '*' : '',
     hooks: [handler],
@@ -295,6 +296,14 @@ export function migrateHooksIfNeeded(): void {
     // Migration 5: upgrade fire-and-forget Stop hooks to the request-response
     // form (turn-end directive queue needs the response echoed to Claude).
     if (raw.includes('/hooks/Stop') && !/RESP=\$\(curl[^\n]*\/hooks\/Stop/.test(raw)) {
+      applyHooks(settings);
+      migrated = true;
+    }
+
+    // Migration 6: PostToolUseFailure closes structured AskUserQuestion
+    // overlays on ESC/tool failure. Existing installs predate this lifecycle
+    // event, so refresh the AgentDeck-owned hook set once when it is absent.
+    if (!settings.hooks?.PostToolUseFailure) {
       applyHooks(settings);
       migrated = true;
     }

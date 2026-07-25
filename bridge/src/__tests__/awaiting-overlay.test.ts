@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
   setAwaitingOverlay,
+  setPermissionNotificationOverlay,
+  setAskUserQuestionOverlay,
   getAwaitingOverlay,
   clearAwaitingOverlay,
+  clearAskUserQuestionOverlay,
   looksLikePermissionMessage,
   isPermissionNotification,
   shouldGatePreToolUse,
@@ -27,6 +30,61 @@ describe('awaiting-overlay', () => {
   it('carries an optional requestId (actionable PreToolUse gate)', () => {
     setAwaitingOverlay('sid-1b', 'Allow Bash: npm test?', 'req-123');
     expect(getAwaitingOverlay('sid-1b')).toMatchObject({ question: 'Allow Bash: npm test?', requestId: 'req-123' });
+  });
+
+  it('preserves a structured AskUserQuestion as a display-only option lifecycle', () => {
+    expect(setAskUserQuestionOverlay('sid-ask', 'toolu-ask-1', {
+      questions: [{
+        question: '응답 대기 PR/이슈에 stale nudge를 게시할까요?',
+        header: '유예기간',
+        options: [
+          { label: '14일 유예 후 close', description: '표준 유예' },
+          { label: '7일 유예 후 close', description: '빠른 정리' },
+          { label: '지금은 보고만', description: '게시 보류' },
+        ],
+        multiSelect: false,
+      }],
+    })).toBe(true);
+
+    expect(getAwaitingOverlay('sid-ask')).toMatchObject({
+      kind: 'option',
+      state: 'awaiting_option',
+      question: '응답 대기 PR/이슈에 stale nudge를 게시할까요?',
+      toolUseId: 'toolu-ask-1',
+      options: [
+        { index: 0, label: '14일 유예 후 close' },
+        { index: 1, label: '7일 유예 후 close' },
+        { index: 2, label: '지금은 보고만' },
+      ],
+    });
+    expect(getAwaitingOverlay('sid-ask')).not.toHaveProperty('promptType');
+    expect(getAwaitingOverlay('sid-ask')).not.toHaveProperty('requestId');
+  });
+
+  it('rejects malformed AskUserQuestion payloads instead of surfacing a dead prompt', () => {
+    expect(setAskUserQuestionOverlay('sid-bad', 'toolu-bad', {})).toBe(false);
+    expect(setAskUserQuestionOverlay('sid-bad', 'toolu-bad', {
+      questions: [{ question: 'No choices', options: [] }],
+    })).toBe(false);
+    expect(getAwaitingOverlay('sid-bad')).toBeUndefined();
+  });
+
+  it('does not let a generic permission Notification overwrite AskUserQuestion', () => {
+    setAskUserQuestionOverlay('sid-preserve', 'toolu-preserve', {
+      questions: [{
+        question: 'Which deadline?',
+        options: [{ label: '14 days' }, { label: '7 days' }],
+      }],
+    });
+    expect(setPermissionNotificationOverlay(
+      'sid-preserve',
+      'Claude needs your permission',
+    )).toBe(false);
+    expect(getAwaitingOverlay('sid-preserve')).toMatchObject({
+      kind: 'option',
+      state: 'awaiting_option',
+      question: 'Which deadline?',
+    });
   });
 
   it('returns undefined for an unknown session', () => {
@@ -158,6 +216,29 @@ describe('awaiting-overlay', () => {
       const out = applyAwaitingOverlayToObserved([observed('observed:claude:uuid-gate', 'processing')]);
       expect(out[0]).toMatchObject({ state: 'awaiting_permission', question: 'Allow Bash: ls?', requestId: 'req-xyz' });
     });
+
+    it('renders AskUserQuestion as awaiting_option with real choices and no actionable requestId', () => {
+      setAskUserQuestionOverlay('uuid-option', 'toolu-option', {
+        questions: [{
+          question: '유예기간은?',
+          options: [{ label: '14일' }, { label: '7일' }],
+          multiSelect: false,
+        }],
+      });
+      const out = applyAwaitingOverlayToObserved([
+        observed('observed:claude:uuid-option', 'processing'),
+      ]);
+      expect(out[0]).toMatchObject({
+        state: 'awaiting_option',
+        question: '유예기간은?',
+        requestId: undefined,
+        options: [
+          { index: 0, label: '14일' },
+          { index: 1, label: '7일' },
+        ],
+      });
+      expect(out[0]).not.toHaveProperty('promptType');
+    });
   });
 
   // The ESC-stuck fix: a display-only permission prompt fires no hook when the
@@ -224,6 +305,47 @@ describe('awaiting-overlay', () => {
       ]);
       expect(out[0]).toMatchObject({ state: 'awaiting_permission', requestId: 'req-held' });
       expect(getAwaitingOverlay(sid)).toBeDefined();
+    });
+
+    it('never drops AskUserQuestion on transcript mtime movement during a genuine wait', () => {
+      const sid = 'uuid-option-wait';
+      setAskUserQuestionOverlay(sid, 'toolu-wait', {
+        questions: [{
+          question: 'Pick a deadline',
+          options: [{ label: '14 days' }, { label: '7 days' }],
+        }],
+      });
+      const setAt = Date.now();
+      // Live regression: the file mtime advanced minutes after the generic
+      // permission Notification even though PostToolUse did not arrive for
+      // another 17 minutes. Option lifecycle must ignore raw mtime.
+      const out = applyAwaitingOverlayToObserved([
+        withActivity(`observed:claude:${sid}`, 'processing', setAt + 3 * 60_000),
+      ]);
+      expect(out[0]).toMatchObject({ state: 'awaiting_option', question: 'Pick a deadline' });
+      expect(getAwaitingOverlay(sid)).toBeDefined();
+    });
+  });
+
+  describe('AskUserQuestion tool lifecycle', () => {
+    beforeEach(() => {
+      setAskUserQuestionOverlay('sid-tool', 'toolu-current', {
+        questions: [{
+          question: 'Choose one',
+          options: [{ label: 'A' }, { label: 'B' }],
+        }],
+      });
+    });
+
+    it('ignores unrelated or stale tool completions', () => {
+      expect(clearAskUserQuestionOverlay('sid-tool', 'toolu-other')).toBe(false);
+      expect(clearAskUserQuestionOverlay('sid-tool', undefined)).toBe(false);
+      expect(getAwaitingOverlay('sid-tool')).toBeDefined();
+    });
+
+    it('clears only the matching PostToolUse/PostToolUseFailure id', () => {
+      expect(clearAskUserQuestionOverlay('sid-tool', 'toolu-current')).toBe(true);
+      expect(getAwaitingOverlay('sid-tool')).toBeUndefined();
     });
   });
 

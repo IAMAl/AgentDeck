@@ -5,6 +5,7 @@ import dev.agentdeck.net.PromptOption
 import dev.agentdeck.net.SessionInfo
 import dev.agentdeck.state.DashboardState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -75,6 +76,37 @@ class EinkAttentionPanelTest {
         assertEquals("claude-code", featured.agentType)
         assertEquals("Allow shell command?", featured.question)
         assertEquals("Allow", featured.options.single().label)
+    }
+
+    @Test
+    fun `observed AskUserQuestion choices are visible but not actionable`() {
+        val state = DashboardState(
+            agentState = AgentState.IDLE,
+            sessionId = "observed-ask",
+            siblingSessions = listOf(
+                SessionInfo(
+                    id = "observed-ask",
+                    port = 0,
+                    projectName = "AgentDeck",
+                    agentType = "claude-code",
+                    alive = true,
+                    state = "awaiting_option",
+                    question = "Which deadline?",
+                    options = listOf(
+                        PromptOption(label = "14 days", index = 0),
+                        PromptOption(label = "7 days", index = 1),
+                    ),
+                    controlMode = "observed",
+                ),
+            ),
+        )
+
+        val featured = buildEinkAttentionFeatured(state)!!
+
+        assertEquals("Which deadline?", featured.question)
+        assertEquals(listOf("14 days", "7 days"), featured.options.map { it.label })
+        assertFalse(featured.actionable)
+        assertFalse(featured.navigable)
     }
 
     private fun session(id: String, project: String, state: String): SessionInfo {
