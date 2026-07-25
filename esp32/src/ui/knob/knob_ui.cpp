@@ -53,6 +53,7 @@ struct SessionSnap {
     char requestId[40];
     char activity[80];
     char lastEventText[100];
+    char permissionMode[20];
     uint32_t elapsedSec;
     uint16_t port;
 };
@@ -150,6 +151,7 @@ static bool snapshotSession(int idx, SessionSnap& out) {
         strncpy(out.requestId, s.requestId, sizeof(out.requestId));
         strncpy(out.activity, s.activity, sizeof(out.activity));
         strncpy(out.lastEventText, s.lastEventText, sizeof(out.lastEventText));
+        strncpy(out.permissionMode, s.permissionMode, sizeof(out.permissionMode));
         out.elapsedSec = s.elapsedSec;
         out.port = s.port;
         ok = true;
@@ -270,7 +272,13 @@ static void buildMenu(const SessionSnap& s) {
     // PTY sessions only — observed terminals can't be typed into, and the
     // gateway has no mode.
     if (s.port > 0 && strcmp(s.agentType, "openclaw") != 0) {
-        addMenuItem("Mode (Shift+Tab)", MI_MODE, 0, false);
+        // INTENT dial: labeled once the roster carries the current mode.
+        char modeLabel[48];
+        if (s.permissionMode[0])
+            snprintf(modeLabel, sizeof(modeLabel), "Mode: %s", s.permissionMode);
+        else
+            snprintf(modeLabel, sizeof(modeLabel), "Mode (Shift+Tab)");
+        addMenuItem(modeLabel, MI_MODE, 0, false);
     }
     addMenuItem("Back", MI_BACK, 0, false);
 

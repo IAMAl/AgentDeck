@@ -1127,6 +1127,10 @@ actor ESP32Serial {
                             "promptType": lim(s["promptType"], 19),
                             "question": lim(s["question"], 159)
                         ]
+                        // Managed-session permission mode — knob INTENT label.
+                        if let pm = s["permissionMode"] as? String, !pm.isEmpty {
+                            o["permissionMode"] = lim(pm, 19)
+                        }
                         if let p = s["port"] { o["port"] = p }
                         if let es = s["elapsedSec"] { o["elapsedSec"] = es }
                         if let op = s["options"] { o["options"] = op }

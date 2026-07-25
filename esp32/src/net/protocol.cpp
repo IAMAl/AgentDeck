@@ -353,6 +353,9 @@ static void handleSessionsList(JsonObject& obj) {
         strncpy(g_state.sessions[i].requestId, s["requestId"] | "",
                 sizeof(g_state.sessions[i].requestId) - 1);
         g_state.sessions[i].requestId[sizeof(g_state.sessions[i].requestId) - 1] = '\0';
+        strncpy(g_state.sessions[i].permissionMode, s["permissionMode"] | "",
+                sizeof(g_state.sessions[i].permissionMode) - 1);
+        g_state.sessions[i].permissionMode[sizeof(g_state.sessions[i].permissionMode) - 1] = '\0';
         // Per-session options — lets an interactive surface answer with the
         // session-scoped select_option without global focus (knob detail view).
         g_state.sessions[i].optionCount = 0;

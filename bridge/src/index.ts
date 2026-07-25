@@ -805,7 +805,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     core.broadcastUsage();
 
     // Push state to daemon via internal WS
-    daemonWsClient.pushState(snapshot.state, snapshot.modelName ?? undefined, snapshot.effortLevel ?? undefined);
+    daemonWsClient.pushState(snapshot.state, snapshot.modelName ?? undefined, snapshot.effortLevel ?? undefined, snapshot.permissionMode ?? undefined);
 
     // Encoder + button state
     const encEvt = computeEncoderState();

@@ -12,6 +12,8 @@ export interface EnrichedSession {
   state?: string;
   modelName?: string;
   effortLevel?: string;
+  /** Claude Code permission mode (default/acceptEdits/plan/bypassPermissions) — managed sessions only. */
+  permissionMode?: string;
   startedAt?: string;
   controlMode?: 'managed' | 'observed';
   cwd?: string;
@@ -45,21 +47,21 @@ export interface EnrichedSession {
  * cache ages past LIVENESS_GRACE_MS without a successful probe/push, we stop treating it as
  * alive so devices (TRMNL e-ink, ESP32, Pixoo) prune ended sessions instead of showing them
  * forever (the registry only prunes on PID death, which lingers when the parent shell lives). */
-const siblingStateCache = new Map<string, { state: string; modelName?: string; effortLevel?: string; updatedAt: number }>();
+const siblingStateCache = new Map<string, { state: string; modelName?: string; effortLevel?: string; permissionMode?: string; updatedAt: number }>();
 const LIVENESS_GRACE_MS = 20_000;
 
 /** Push-channel state cache — populated by DaemonWsClient session_push_state messages */
-const pushStateCache = new Map<string, { state: string; modelName?: string; effortLevel?: string; updatedAt: number }>();
+const pushStateCache = new Map<string, { state: string; modelName?: string; effortLevel?: string; permissionMode?: string; updatedAt: number }>();
 
 /** Update push-channel cache (called from daemon-server when session_push_state arrives) */
-export function updatePushState(sessionId: string, state: string, modelName?: string, effortLevel?: string): void {
-  pushStateCache.set(sessionId, { state, modelName, effortLevel, updatedAt: Date.now() });
+export function updatePushState(sessionId: string, state: string, modelName?: string, effortLevel?: string, permissionMode?: string): void {
+  pushStateCache.set(sessionId, { state, modelName, effortLevel, permissionMode, updatedAt: Date.now() });
   // Also update sibling cache so it stays consistent
-  siblingStateCache.set(sessionId, { state, modelName, effortLevel, updatedAt: Date.now() });
+  siblingStateCache.set(sessionId, { state, modelName, effortLevel, permissionMode, updatedAt: Date.now() });
 }
 
 /** Check if push-channel has fresh state (< 30s old) */
-export function getPushState(sessionId: string): { state: string; modelName?: string; effortLevel?: string } | undefined {
+export function getPushState(sessionId: string): { state: string; modelName?: string; effortLevel?: string; permissionMode?: string } | undefined {
   const entry = pushStateCache.get(sessionId);
   if (!entry) return undefined;
   if (Date.now() - entry.updatedAt > 30_000) {
@@ -68,7 +70,7 @@ export function getPushState(sessionId: string): { state: string; modelName?: st
     pushStateCache.delete(sessionId);
     return undefined;
   }
-  return { state: entry.state, modelName: entry.modelName, effortLevel: entry.effortLevel };
+  return { state: entry.state, modelName: entry.modelName, effortLevel: entry.effortLevel, permissionMode: entry.permissionMode };
 }
 
 /** Clear cache entry when a session is removed (call from session-registry cleanup) */
@@ -125,7 +127,7 @@ export async function enrichSessionsWithState(
     if (s.id === ownSessionId) return { ...base, state: ownState, modelName: ownModelName, effortLevel: ownEffortLevel };
     // 1. Use fresh push-channel state if available (< 30s old)
     const pushed = getPushState(s.id);
-    if (pushed) return { ...base, state: pushed.state, modelName: pushed.modelName, effortLevel: pushed.effortLevel };
+    if (pushed) return { ...base, state: pushed.state, modelName: pushed.modelName, effortLevel: pushed.effortLevel, permissionMode: pushed.permissionMode };
     // 2. Fall back to HTTP polling
     try {
       const res = await fetch(`http://127.0.0.1:${s.port}/health`, { signal: AbortSignal.timeout(2000) });

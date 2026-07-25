@@ -463,6 +463,9 @@ export function prepareForSerial(event: BridgeEvent, _conn?: Pick<SerialConnecti
                 ? { lastEventHm: limitString(s.lastEventHm, 5) } : {}),
             }
           : {}),
+        // Managed-session permission mode — the knob's INTENT dial label.
+        ...(typeof s.permissionMode === 'string' && s.permissionMode
+          ? { permissionMode: limitString(s.permissionMode, 19) } : {}),
         options: sanitizeOptions(s.options),
       })),
     } as BridgeEvent;

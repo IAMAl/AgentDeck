@@ -24,6 +24,7 @@ export interface SessionPushState {
   state: string;
   modelName?: string;
   effortLevel?: string;
+  permissionMode?: string;
   projectName?: string;
   agentType?: string;
 }
@@ -80,7 +81,7 @@ export class DaemonWsClient {
   }
 
   /** Push state update to daemon */
-  pushState(state: string, modelName?: string, effortLevel?: string): void {
+  pushState(state: string, modelName?: string, effortLevel?: string, permissionMode?: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const msg: SessionPushState = {
       type: 'session_push_state',
@@ -88,6 +89,7 @@ export class DaemonWsClient {
       state,
       modelName,
       effortLevel,
+      permissionMode,
       projectName: this.projectName,
       agentType: this.agentType,
     };

@@ -70,6 +70,7 @@ struct SessionInfo {
     char question[160];     // awaiting prompt text for this session ("" when not awaiting)
     char promptType[20];    // "yes_no" / "multi_select" / "diff_review" / ...
     char requestId[40];     // gated PreToolUse request id → reply permission_decision
+    char permissionMode[20]; // managed-session Claude permission mode ("" when unknown)
     // Parsed per-session options from the enriched sessions_list (select_option
     // is session-scoped, so an interactive surface answers without global focus).
     SessionOption options[SESSION_OPTIONS_CAP];

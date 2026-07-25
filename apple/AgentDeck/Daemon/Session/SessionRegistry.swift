@@ -93,6 +93,7 @@ struct DaemonSessionEntry: Codable, Sendable, Identifiable {
     var state: String?
     var modelName: String?
     var effortLevel: String?
+    var permissionMode: String?  // Claude Code permission mode — managed sessions only (knob INTENT label)
     var currentTool: String?
     var options: [[String: AnyCodable]]?
     var navigable: Bool?

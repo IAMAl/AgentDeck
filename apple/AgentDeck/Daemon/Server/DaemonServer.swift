@@ -2681,10 +2681,12 @@ final class DaemonServer {
             DaemonLogger.shared.debug("Daemon", "session_push_state: unknown sessionId \(sessionId)")
             return
         }
-        if let state = cmd["state"] as? String { entry.state = state }
-        if let modelName = cmd["modelName"] as? String { entry.modelName = modelName }
-        if let effortLevel = cmd["effortLevel"] as? String { entry.effortLevel = effortLevel }
-        if let projectName = cmd["projectName"] as? String, !projectName.isEmpty {
+        // Recreate-for-projectName FIRST (the struct's `projectName` is a
+        // `let`), THEN apply the per-push fields. The old order applied the
+        // fields first and the recreate silently dropped them — every push
+        // that carried a projectName wiped state/modelName/effortLevel.
+        if let projectName = cmd["projectName"] as? String, !projectName.isEmpty,
+           projectName != entry.projectName {
             entry = DaemonSessionEntry(
                 id: entry.id,
                 port: entry.port,
@@ -2697,6 +2699,10 @@ final class DaemonServer {
                 startedAt: entry.startedAt
             )
         }
+        if let state = cmd["state"] as? String { entry.state = state }
+        if let modelName = cmd["modelName"] as? String { entry.modelName = modelName }
+        if let effortLevel = cmd["effortLevel"] as? String { entry.effortLevel = effortLevel }
+        if let permissionMode = cmd["permissionMode"] as? String { entry.permissionMode = permissionMode }
         evictCodexAnonymousIfNeeded(forIncomingSid: sessionId, agentType: entry.agentType)
         pushedSessionsById[sessionId] = entry
 
@@ -7403,6 +7409,7 @@ final class DaemonServer {
         if let st = s.state { d["state"] = st }
         if let mn = s.modelName { d["modelName"] = mn }
         if let ef = s.effortLevel { d["effortLevel"] = ef }
+        if let pm = s.permissionMode { d["permissionMode"] = pm }
         if let tool = s.currentTool { d["currentTool"] = tool }
         if let options = s.options {
             d["options"] = options.map { option in
