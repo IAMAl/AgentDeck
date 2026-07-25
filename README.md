@@ -19,7 +19,7 @@ session: it shows which agent is running, in which project, and whether it is
 working, waiting on you, or idle — and it repaints itself as that changes. Press a
 key to jump in.
 
-It started on an Elgato Stream Deck+ and now drives **22 surfaces** at once —
+It started on an Elgato Stream Deck+ and now drives **23 surfaces** at once —
 decks, tablets, e-ink readers, ESP32 panels, LED matrices, and your terminal.
 
 <p align="center">
@@ -139,7 +139,7 @@ Full build-from-source and manual steps: **[docs/install.md](docs/install.md)**.
 </table>
 
 <p align="center">
-  <strong><a href="https://puritysb.github.io/AgentDeck/hardware/">→ Browse all 22 surfaces, with live renderer previews</a></strong>
+  <strong><a href="https://puritysb.github.io/AgentDeck/hardware/">→ Browse all 23 surfaces, with live renderer previews</a></strong>
 </p>
 
 ---

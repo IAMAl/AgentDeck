@@ -51,6 +51,7 @@ Do not copy numeric specifications into domain guides. Link back to this matrix 
 | TTGO T-Display 1.14 | ESP32 display | ESP32 classic | ST7789 · 135×240 | USB serial · Wi-Fi WS | Yes |
 | Waveshare LCD 1.47 | ESP32 display | ESP32-C6 | ST7789 · 172×320 | USB serial · Wi-Fi WS | Yes |
 | IPS 10.1 | ESP32 display | ESP32-P4 + C6 | JD9365 MIPI-DSI · 800×1280 | USB serial · Wi-Fi WS | Yes |
+| T-Embed Companion Knob | ESP32 knob | ESP32-S3 | ST7789 · 320×170 + 8-LED ring | Wi-Fi WS · USB serial | Partial |
 | Ulanzi TC001 | ESP32 LED | ESP32 classic | WS2812B · 32×8 | USB serial · Wi-Fi WS | Partial |
 | InkDeck | ESP32 e-ink | XIAO ESP32-S3 Plus | UC8179 e-ink · 7.5″ · 800×480 | USB serial · Wi-Fi WS | Yes |
 | XTeink X3 | e-ink reader | ESP32-C3 | E-ink · 3.7″ · 528×792 | Wi-Fi WS | Partial |
@@ -71,7 +72,7 @@ Do not copy numeric specifications into domain guides. Link back to this matrix 
 
 `App Store` describes compatibility with the submitted Apple app and its Swift daemon, not whether third-party host software is bundled. Stream Deck and D200H still require their vendor applications.
 
-**Counted surfaces: 22.** Public surface-count claims (README, landing page) mirror this derivation: every row above except the protocol rows (SSE stream) counts. XTeink X3/X4 operate normally (both register with the daemon over Wi-Fi) but run the community CrossPoint fork — their Partial mark states that distribution limitation, see operational exceptions. Update this line and the mirrors together when rows change.
+**Counted surfaces: 23.** Public surface-count claims (README, landing page) mirror this derivation: every row above except the protocol rows (SSE stream) counts. XTeink X3/X4 operate normally (both register with the daemon over Wi-Fi) but run the community CrossPoint fork — their Partial mark states that distribution limitation, see operational exceptions. Update this line and the mirrors together when rows change.
 
 ## ESP32 board specification sheet
 
@@ -90,7 +91,7 @@ Rows are ordered by overall capability, applied in this precedence: SoC class, t
 | JC3248W535 | `ips_35` · `ips35` | ESP32-S3 | 16 MB · 8 MB | 3.5″ IPS LCD · 480×320 | AXS15231B QSPI | AXS15231B touch (0x3B) | FAT data partition | Native USB JTAG | 3.5 MB | Shipping |
 | LilyGO T-Display-S3-Pro V1.1 · GC0308 | — | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | GC0308 camera · SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh | Native USB JTAG | — | Evaluation |
 | LilyGO T-Display-S3-Pro V1.1 · no camera | — | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh · camera POGO header | Native USB JTAG | — | Evaluation |
-| LilyGO T-Embed CC1101 | — | ESP32-S3-WROOM-1 | 16 MB · 8 MB | 1.9″ IPS LCD · 320×170 | ST7789 SPI | Rotary encoder · button | CC1101 sub-GHz · PN532 NFC (0x24) · IR TX/RX · 8× WS2812 · mic + speaker · BQ25896 (0x6B) · BQ27220 (0x55) · microSD · 1300 mAh | Native USB JTAG | — | Evaluation |
+| LilyGO T-Embed CC1101 | `t_embed` · `t_embed` | ESP32-S3-WROOM-1 | 16 MB · 8 MB | 1.9″ IPS LCD · 320×170 | ST7789 SPI | Rotary encoder · button | CC1101 sub-GHz · PN532 NFC (0x24) · IR TX/RX · 8× WS2812 · mic + speaker · BQ25896 (0x6B) · BQ27220 (0x55) · microSD · 1300 mAh | Native USB JTAG | 6 MB | Shipping |
 | JC3636W518 | `round_amoled` · `amoled` | ESP32-S3 | 8 MB · 8 MB | 1.8″ round AMOLED · 360×360 | ST77916 QSPI | CST816S touch | — | Native USB JTAG | 3 MB | Shipping |
 | Seeed TRMNL 7.5 DIY Kit | `inkdeck` · `inkdeck` | XIAO ESP32-S3 Plus | 8 MB · 8 MB | 7.5″ e-ink 1-bit · 800×480 | UC8179 | — | USB-powered only | Native USB CDC | 3.19 MB | Shipping |
 | XTeink X4 | `xteink_x4` · external fork | ESP32-C3 | 16 MB · none | 4.26″ e-ink · 480×800 portrait | SSD1677 | Page buttons | microSD · 650 mAh | Wi-Fi only | SD `update.bin` | Community fork |
@@ -99,11 +100,11 @@ Rows are ordered by overall capability, applied in this precedence: SoC class, t
 | LilyGO T-Display | `ttgo_t_display` · `ttgo` | ESP32 classic | 16 MB · none | 1.14″ IPS LCD · 135×240 | ST7789 SPI | 2 buttons | — | CH340 USB serial | 6 MB | Shipping |
 | Ulanzi TC001 | `ulanzi_tc001` · `led8x32` | ESP32 classic | 8 MB · none | WS2812B LED matrix · 32×8 | WS2812B | 3 buttons | Buzzer on GPIO 15 (silenced at boot) | CH340 USB serial | 3 MB | Shipping |
 
-The ordering is by panel and compute, so peripheral breadth does not drive it. On that separate axis the T-Embed CC1101 leads every board here: it is the only unit with a rotary encoder, and the only one carrying a sub-GHz radio, NFC, and infrared. It is also the only bidirectional-input candidate in the fleet — every Shipping board is output-only apart from touch. Role concepts for the two Evaluation boards — what each would become if promoted — are drafted in [ESP32 companion concepts](esp32-companion-concepts.md).
+The ordering is by panel and compute, so peripheral breadth does not drive it. On that separate axis the T-Embed CC1101 leads every board here: it is the only unit with a rotary encoder, and the only one carrying a sub-GHz radio, NFC, and infrared. Since 2026-07-25 it ships as the **Companion Knob** — the fleet's first bidirectional-input board (encoder-driven session steering: rotate to navigate, press to commit, long-press to back out); its NFC/IR/sub-GHz radios and the portable/voice modes remain future phases. Role concepts for those phases and for the remaining Evaluation board are drafted in [ESP32 companion concepts](esp32-companion-concepts.md).
 
 The XTeink readers are ESP32 boards and belong in this sheet, but they are the only rows AgentDeck neither builds nor flashes: one CrossPoint fork binary serves both models and picks `xteink_x3` or `xteink_x4` at runtime from an I2C IMU fingerprint. They reach the daemon over Wi-Fi only — there is no USB-serial path and no Wi-Fi OTA, so firmware arrives as an SD-card `update.bin`. Both are portrait in device coordinates: the X4 panel is quoted 800×480 on its datasheet (long axis first) but the firmware declares it 480×800, and CrossPoint boots portrait with orientation left as a user setting.
 
-OTA slot sizes are the measured `device_info.otaSlotSize` from live boards, matching `esp32/partitions/*.csv`. Evaluation units run vendor factory firmware and have no AgentDeck OTA layout; their shipped partition tables are single-app 4 MB (T-Display-S3-Pro) and dual-OTA 6.25 MB (T-Embed CC1101). Factory images and restore instructions live in [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md).
+OTA slot sizes are the measured `device_info.otaSlotSize` from live boards, matching `esp32/partitions/*.csv`. The remaining Evaluation unit (T-Display-S3-Pro) runs vendor factory firmware with a single-app 4 MB shipped partition table and has no AgentDeck OTA layout. Factory images and restore instructions — including the captured S3-Pro and T-Embed images — live in [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md).
 
 Operational exceptions:
 
@@ -116,6 +117,7 @@ Operational exceptions:
 - T-Display-S3-Pro ships in hardware revisions V1.0 and V1.1 that differ in backlight drive, with no runtime detection — the vendor selects it at compile time with `USING_DISPLAY_PRO_V1`. V1.0 is LEDC PWM with 255 levels; V1.1 is a constant-current driver pulsed on GPIO 48 with 16 levels. Both on-hand units are V1.1, so that flag must stay undefined for them. The vendor `platformio.ini` comment on this flag has its two revisions transposed; the `#ifdef` branches in `AdjustBacklight.ino` and `utilities.h` are authoritative.
 - T-Display-S3-Pro camera is a purchase option (`GC0308`, `OV5640`, or none) on a POGO shield header, not a board revision. Its SCCB lines share the I2C bus with touch, PMU, and the light sensor, so capture and touch responsiveness interact.
 - T-Embed CC1101 has a known upstream defect where the panel stays dark after flashing; the vendor ships a dedicated fix image and advises pressing `RST` on the back afterwards. Check this before diagnosing a hardware fault.
+- The T-Embed Companion Knob's steering round-trip (session-scoped `select_option` / `session_command`) is hardware-verified against the Node daemon; the Swift daemon forwards the same per-session option data but its steering path has not been live-verified yet — that pending verification is the knob's Partial mark in the surface matrix.
 
 ## Pixel displays and control decks
 

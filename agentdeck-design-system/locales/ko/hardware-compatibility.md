@@ -58,7 +58,7 @@ AgentDeck 대시보드 표면의 호환성을 한눈에 보기 위한 독자용 
 
 ## 핵심 제약
 
-- **집계 표면 수: 22.** 공개 표면 수(README, 랜딩)는 이 산정을 미러링한다 — 프로토콜 행(SSE stream)을 제외한 모든 행이 집계된다. XTeink X3/X4는 정상 운영되나(양쪽 데몬에 Wi-Fi 등록) 커뮤니티 CrossPoint 포크로 구동되며, 일부 표기는 그 배포 제약을 뜻한다.
+- **집계 표면 수: 23.** 공개 표면 수(README, 랜딩)는 이 산정을 미러링한다 — 프로토콜 행(SSE stream)을 제외한 모든 행이 집계된다. XTeink X3/X4는 정상 운영되나(양쪽 데몬에 Wi-Fi 등록) 커뮤니티 CrossPoint 포크로 구동되며, 일부 표기는 그 배포 제약을 뜻한다.
 - App Store 열은 제3자 호스트 앱의 번들 포함 여부가 아니라 제출된 Apple 앱과 Swift daemon의 호환성을 뜻한다.
 - D200H는 Ulanzi Studio plugin만 지원하고 direct-HID 경로는 폐기됐다.
 - Stream Deck 계열은 Elgato 앱이 필요하다.

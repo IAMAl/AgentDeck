@@ -86,7 +86,7 @@ route to a board; a client that never emits it never appears on the dashboard. F
 
 | Field | Notes |
 |---|---|
-| `board` | Canonical wire string, underscore convention. First-party: `ulanzi_tc001`, `inkdeck`, `ttgo_t_display`, `esp32_c6_147`, `round_amoled`, `86box`, `ips_10`, `ips_35`. External CrossPoint fork: `xteink_x3`, `xteink_x4` (one firmware, runtime-detected). Registration accepts **any** board string (the Node daemon coerces only a *missing* field to `unknown`); a board needs an `ESP32_OTA_BOARDS` entry **only** to be OTA-targetable by name — and only if it has an `esp32/` pio env, which the fork boards do not (they flash via SD `update.bin`). |
+| `board` | Canonical wire string, underscore convention. First-party: `ulanzi_tc001`, `inkdeck`, `ttgo_t_display`, `esp32_c6_147`, `round_amoled`, `86box`, `ips_10`, `ips_35`, `t_embed`. External CrossPoint fork: `xteink_x3`, `xteink_x4` (one firmware, runtime-detected). Registration accepts **any** board string (the Node daemon coerces only a *missing* field to `unknown`); a board needs an `ESP32_OTA_BOARDS` entry **only** to be OTA-targetable by name — and only if it has an `esp32/` pio env, which the fork boards do not (they flash via SD `update.bin`). |
 | `version` | `FIRMWARE_VERSION`. |
 | `buildHash` | `GIT_SHA` — the authoritative deploy-verification field (`version` alone can't distinguish a stale flash). |
 | `buildEpoch` | Build timestamp (uint32). |

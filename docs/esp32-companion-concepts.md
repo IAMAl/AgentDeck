@@ -6,6 +6,8 @@ The single most important fact shaping both concepts: **the daemon already speak
 
 ## T-Embed CC1101 — "Companion Knob"
 
+> **Status (2026-07-25): the docked steering-knob mode below is implemented and hardware-verified** — PlatformIO env `t_embed`, spec-sheet status Shipping, WiFi OTA verified (`agentdeck esp32-ota t_embed`). Steering is verified against the Node daemon; the Swift-daemon steering pass, the portable pager (incl. BLE phone relay), voice, and the peripheral primitives remain future phases, and their gap rows below stay live.
+
 The compatibility sheet already states the thesis: the T-Embed is the only unit in the fleet with a rotary encoder and the only bidirectional-input candidate — every Shipping board is output-only apart from touch. A rotary encoder is exactly the shape of the existing steering vocabulary: rotate = move a cursor, press = commit, long-press = back. The board is a **dual-mode companion**: docked on the desk it is a steering knob; unplugged it is a battery pager you carry around the house.
 
 ### Interaction grammar (both modes)
@@ -71,9 +73,9 @@ What has to exist before either concept runs. This is the implementation session
 | Gap | Where | Needed by |
 |---|---|---|
 | Serial has no device→daemon command channel; `ESP32ToHostMessage` covers device_info/provision/OTA only | `bridge/src/esp32-serial.ts` (`handleSerialLine`) + Swift twin | Both concepts if serial-attached; avoidable by requiring WiFi WS (the pager mode is WS-only by nature) |
-| `prepareForSerial` whitelist strips `requestId`, `prompt_options`, `review_*` before any ESP32 client sees them | `bridge/src/esp32-serial.ts` | Knob approve / option answering |
+| ~~`prepareForSerial` strips what the knob needs~~ — corrected 2026-07-25: both daemons already forward per-session `question`/`promptType`/`options`; only `requestId` is missing (neither daemon sends it), so approve/deny run the ips10 fallback (`select_option(0)`/`escape`) until it lands | `bridge/src/esp32-serial.ts` + Swift twin | Knob (works today; requestId later) |
 | Firmware outbound frames capped at ~200 bytes (`OUTBOX_LEN`) | `esp32/src/net/ws_client.cpp` | Any `respond`/`send_prompt`-class command |
-| No LVGL encoder indev, no `lv_group` focus model anywhere in the tree | `esp32/src/ui/` | Knob |
+| ~~No LVGL encoder indev~~ — closed 2026-07-25: the knob consumes encoder events directly (`src/input/encoder.cpp` ISR decode → `ui/knob/` grammar); no LVGL indev/`lv_group` was needed | `esp32/src/ui/knob/` | Knob (done) |
 | `device_info` has no capability advertisement beyond OTA — battery, NFC, audio cannot be announced | `shared/src/protocol.ts` | Pager battery reporting, peripheral primitives, voice |
 | No `peripheral_event` / `peripheral_command` frames — NFC, IR, and sub-GHz have no protocol representation in either direction | `shared/src/protocol.ts` + daemon mapping config | Peripheral primitives |
 | No BLE link on either end — firmware exposes no GATT service, and the mobile apps have no BLE central/relay role (plus the app-side relay needs a product-tier decision) | `esp32/` + `apple/` / `android/` | Phone-paired portable transport |
@@ -81,6 +83,6 @@ What has to exist before either concept runs. This is the implementation session
 | `apme_*` events stripped by the ESP32 forward filter | `SERIAL_FORWARDED_EVENTS` in `shared/src/protocol.ts` | Ticker APME page |
 | `voice` command is session-bridge-only, not routed by `daemon-server` | `bridge/src/index.ts` vs `bridge/src/daemon-server.ts` | Voice stage 1 |
 | New-board bring-up is a ~10-step compile-time checklist (board header, env, partitions, `display.cpp`, `main.cpp`, two duplicated board-string ladders, OTA list, docs) | `esp32/` | Both boards |
-| No factory-firmware backup exists for the T-Display-S3-Pro (T-Embed has four verified images with a byte-compared rollback target) | [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md) | Capture an S3-Pro backup before the first experimental flash |
+| ~~No factory-firmware backup for the T-Display-S3-Pro~~ — closed 2026-07-25: 16 MB image captured and spot-verified | [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md) | Done |
 
 Design-system constraints carry over unchanged: status colors are semantic and only amber awaiting animates ([DESIGN.md](../DESIGN.md)); brand marks come from the generated masks, never redrawn; both boards would join the counted-surfaces derivation only at promotion time, which is when their spec-sheet rows change status and the surface matrix — not this document — becomes the source of truth.
