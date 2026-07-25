@@ -263,6 +263,46 @@ function buildHookEntry(eventName: string) {
   };
 }
 
+/**
+ * Strip AgentDeck hooks out of the unwatched `~/.claude/settings.local.json`
+ * left behind by installs that predate the settings.json move. Inlined copy of
+ * `@agentdeck/hooks` `sweepLegacyHooks` — this package deliberately has no
+ * workspace deps because it bootstraps them.
+ */
+function sweepLegacyHooks(claudeDir: string) {
+  const legacyPath = join(claudeDir, 'settings.local.json');
+  if (!existsSync(legacyPath)) return;
+
+  try {
+    const raw = readFileSync(legacyPath, 'utf-8');
+    if (!raw.includes('AGENTDECK_PORT') && !raw.includes('localhost:9120')) return;
+
+    const settings: any = JSON.parse(raw);
+    if (!settings.hooks) return;
+
+    const isOurs = (h: any) =>
+      h.command?.includes('AGENTDECK_PORT') ||
+      h.command?.includes('localhost:9120') ||
+      (Array.isArray(h.hooks) &&
+        h.hooks.some(
+          (hh: any) =>
+            hh.command?.includes('AGENTDECK_PORT') || hh.command?.includes('localhost:9120'),
+        ));
+
+    for (const event of HOOK_EVENTS) {
+      if (!Array.isArray(settings.hooks[event])) continue;
+      settings.hooks[event] = settings.hooks[event].filter((h: any) => !isOurs(h));
+      if (settings.hooks[event].length === 0) delete settings.hooks[event];
+    }
+    if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+
+    writeFileSync(legacyPath, JSON.stringify(settings, null, 2) + '\n');
+    ok('Removed stale hooks from ~/.claude/settings.local.json (never read by Claude Code)');
+  } catch {
+    // Best effort — a malformed legacy file must not block a fresh install
+  }
+}
+
 function installHooks() {
   if (!which('claude')) {
     warn('Skipping Claude Code hooks because `claude` is not installed');
@@ -272,11 +312,17 @@ function installHooks() {
   info('Installing Claude Code hooks...');
 
   const claudeDir = join(homedir(), '.claude');
-  const settingsPath = join(claudeDir, 'settings.local.json');
+  // Watched by Claude Code at user scope. `settings.local.json` — the file this
+  // installer used to target — is resolved against the git root / cwd, so at
+  // user scope it is never read. Mirrors `@agentdeck/hooks` `claudeSettingsPaths`
+  // and Swift `HookInstaller.claudeSettingsFilename`.
+  const settingsPath = join(claudeDir, 'settings.json');
 
   if (!existsSync(claudeDir)) {
     mkdirSync(claudeDir, { recursive: true });
   }
+
+  sweepLegacyHooks(claudeDir);
 
   let settings: any = {};
   if (existsSync(settingsPath)) {

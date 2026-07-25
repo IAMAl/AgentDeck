@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
   HOOK_EVENTS,
   buildHookCommand,
@@ -7,6 +10,11 @@ import {
   applyHooks,
   removeHooks,
   migrateHooks,
+  claudeSettingsPaths,
+  installHooks,
+  uninstallHooks,
+  migrateHooksIfNeeded,
+  sweepLegacyHooks,
 } from '../install.js';
 
 describe('Hook Installer', () => {
@@ -369,5 +377,102 @@ describe('steering hook channels (request-response)', () => {
       .flatMap((h) => h.hooks).map((h) => h.command).join('\n');
     expect(stopCmd).toContain('RESP=$(curl');
     expect(stopCmd).toContain('/hooks/Stop');
+  });
+});
+
+describe('install target (~/.claude/settings.json)', () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'agentdeck-hooks-'));
+    mkdirSync(join(home, '.claude'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const read = (p: string) => JSON.parse(readFileSync(p, 'utf-8'));
+  const legacyHookFile = (extra: Record<string, unknown> = {}) => ({
+    ...extra,
+    hooks: {
+      SessionEnd: [
+        {
+          matcher: '',
+          hooks: [{
+            type: 'command',
+            // Pre-move shape: unwatched file, unbounded POST.
+            command: 'PORT="${AGENTDECK_PORT:-9120}"\ncurl -sf -X POST "http://127.0.0.1:$PORT/hooks/SessionEnd" -d @- || true',
+          }],
+        },
+      ],
+    },
+  });
+
+  it('installs into the watched settings.json, never settings.local.json', () => {
+    const { settings, legacy } = claudeSettingsPaths(home);
+    installHooks(home);
+
+    expect(existsSync(legacy)).toBe(false);
+    const written = read(settings);
+    for (const event of HOOK_EVENTS) {
+      expect(written.hooks[event]).toHaveLength(1);
+    }
+  });
+
+  it('strips AgentDeck hooks out of the legacy file while keeping the user keys', () => {
+    const { legacy } = claudeSettingsPaths(home);
+    writeFileSync(legacy, JSON.stringify(legacyHookFile({ permissions: { allow: ['Bash(ls *)'] } })));
+
+    expect(sweepLegacyHooks(home)).toBe(true);
+
+    const after = read(legacy);
+    expect(after.permissions).toEqual({ allow: ['Bash(ls *)'] });
+    expect(after.hooks).toBeUndefined();
+    // Nothing left to sweep on a second pass.
+    expect(sweepLegacyHooks(home)).toBe(false);
+  });
+
+  it('relocates pre-move installs from the legacy file into settings.json', () => {
+    const { settings, legacy } = claudeSettingsPaths(home);
+    writeFileSync(legacy, JSON.stringify(legacyHookFile()));
+
+    migrateHooksIfNeeded(home);
+
+    expect(read(legacy).hooks).toBeUndefined();
+    const relocated = read(settings);
+    for (const event of HOOK_EVENTS) {
+      expect(relocated.hooks[event]).toHaveLength(1);
+    }
+    // Relocation rebuilds from the current builder, so the bounded form lands
+    // even though the legacy entry was unbounded.
+    const sessionEnd = relocated.hooks.SessionEnd[0].hooks[0].command;
+    expect(sessionEnd).toContain('daemon.json');
+    if (process.platform !== 'win32') {
+      expect(sessionEnd).toContain('--max-time 0.8');
+    }
+  });
+
+  it('leaves a settings.json without AgentDeck hooks untouched', () => {
+    const { settings } = claudeSettingsPaths(home);
+    const user = { hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: 'echo hi' }] }] } };
+    writeFileSync(settings, JSON.stringify(user, null, 2));
+    const before = readFileSync(settings, 'utf-8');
+
+    migrateHooksIfNeeded(home);
+
+    expect(readFileSync(settings, 'utf-8')).toBe(before);
+  });
+
+  it('uninstalls from both the current and the legacy file', () => {
+    const { settings, legacy } = claudeSettingsPaths(home);
+    writeFileSync(legacy, JSON.stringify(legacyHookFile()));
+    installHooks(home);
+    expect(read(settings).hooks.SessionEnd).toHaveLength(1);
+
+    uninstallHooks(home);
+
+    expect(read(settings).hooks).toBeUndefined();
+    expect(read(legacy).hooks).toBeUndefined();
   });
 });

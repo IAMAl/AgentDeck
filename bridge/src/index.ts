@@ -52,7 +52,7 @@ import { fetchUsageFromApi, hasOAuthToken } from './usage-api.js';
 import { buildUsageEvent } from './usage-event.js';
 import { getLanIp } from '@agentdeck/shared';
 import { buildEnrichedSessionsList } from './session-aggregator.js';
-import { migrateHooksIfNeeded } from './hook-migration.js';
+import { migrateHooksIfNeeded } from '@agentdeck/hooks';
 import {
   initModules,
   stopModules,

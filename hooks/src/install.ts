@@ -248,44 +248,115 @@ export function migrateHooks(settings: any): { settings: any; migrated: boolean 
   return { settings, migrated };
 }
 
-/** File-system wrapper: install hooks into ~/.claude/settings.local.json */
-export function installHooks(): void {
-  const claudeDir = join(homedir(), '.claude');
-  const settingsPath = join(claudeDir, 'settings.local.json');
+/**
+ * Where the hooks go, and where they used to go.
+ *
+ * Claude Code only reads hooks from files it watches: `~/.claude/settings.json`
+ * (user-global), `<project>/.claude/settings.json`, and
+ * `<project>/.claude/settings.local.json`. The *local* path is resolved against
+ * the git root / cwd — so `~/.claude/settings.local.json`, which every node
+ * installer used to target, is loaded only when the home directory happens to
+ * be the project root. CLI-only installs therefore wrote hooks into a file
+ * Claude never read; they fired only for users who ALSO ran the macOS app,
+ * whose `HookInstaller` moved to the watched `settings.json` first.
+ *
+ * The legacy path is still swept on every install/migrate so the dead entries
+ * don't linger as orphans next to the live ones.
+ */
+export function claudeSettingsPaths(home: string = homedir()) {
+  const dir = join(home, '.claude');
+  return {
+    dir,
+    settings: join(dir, 'settings.json'),
+    legacy: join(dir, 'settings.local.json'),
+  };
+}
 
-  if (!existsSync(claudeDir)) {
-    mkdirSync(claudeDir, { recursive: true });
+function readSettings(path: string): any {
+  if (!existsSync(path)) return {};
+  return JSON.parse(readFileSync(path, 'utf-8'));
+}
+
+function writeSettings(path: string, settings: any): void {
+  writeFileSync(path, JSON.stringify(settings, null, 2) + '\n');
+}
+
+/**
+ * Strip AgentDeck hooks out of the unwatched `~/.claude/settings.local.json`.
+ * Returns true when the file actually carried them (i.e. this install predates
+ * the settings.json move). Never deletes the file — users may keep unrelated
+ * keys there.
+ */
+export function sweepLegacyHooks(home: string = homedir()): boolean {
+  const { legacy } = claudeSettingsPaths(home);
+  if (!existsSync(legacy)) return false;
+
+  const raw = readFileSync(legacy, 'utf-8');
+  if (!raw.includes('AGENTDECK_PORT') && !raw.includes('localhost:9120')) return false;
+
+  const settings = removeHooks(JSON.parse(raw));
+  writeSettings(legacy, settings);
+  return true;
+}
+
+/** File-system wrapper: install hooks into ~/.claude/settings.json */
+export function installHooks(home: string = homedir()): void {
+  const { dir, settings: settingsPath } = claudeSettingsPaths(home);
+
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 
-  let settings: any = {};
-  if (existsSync(settingsPath)) {
-    const content = readFileSync(settingsPath, 'utf-8');
-    settings = JSON.parse(content);
+  if (sweepLegacyHooks(home)) {
+    console.log('Removed stale hooks from ~/.claude/settings.local.json (never read by Claude Code)');
   }
 
+  const settings = readSettings(settingsPath);
   applyHooks(settings);
 
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  writeSettings(settingsPath, settings);
   console.log(`Hooks installed to ${settingsPath}`);
 }
 
-/** File-system wrapper: uninstall hooks from ~/.claude/settings.local.json */
-export function uninstallHooks(): void {
-  const settingsPath = join(homedir(), '.claude', 'settings.local.json');
+/** File-system wrapper: uninstall hooks from ~/.claude/settings.json (and the legacy file) */
+export function uninstallHooks(home: string = homedir()): void {
+  const { settings: settingsPath } = claudeSettingsPaths(home);
+  sweepLegacyHooks(home);
+
   if (!existsSync(settingsPath)) return;
 
-  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-  removeHooks(settings);
+  const settings = removeHooks(readSettings(settingsPath));
 
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  writeSettings(settingsPath, settings);
   console.log('Hooks uninstalled');
 }
 
-/** File-system wrapper: migrate old hook formats in ~/.claude/settings.local.json.
+/**
+ * Relocate hooks left behind in the unwatched `~/.claude/settings.local.json`
+ * into the watched `~/.claude/settings.json`. Returns true when it wrote
+ * anything, in which case the settings.json hooks come straight from the
+ * current builder and need no further migration.
+ */
+function relocateLegacyHooks(home: string = homedir()): boolean {
+  const { settings: settingsPath } = claudeSettingsPaths(home);
+  if (!sweepLegacyHooks(home)) return false;
+
+  const settings = readSettings(settingsPath);
+  const before = JSON.stringify(settings);
+  applyHooks(settings);
+  const after = JSON.stringify(settings);
+  if (before !== after) {
+    writeSettings(settingsPath, settings);
+  }
+  return true;
+}
+
+/** File-system wrapper: migrate old hook formats in ~/.claude/settings.json.
  *  Silently catches errors to avoid breaking session startup. */
-export function migrateHooksIfNeeded(): void {
+export function migrateHooksIfNeeded(home: string = homedir()): void {
   try {
-    const settingsPath = join(homedir(), '.claude', 'settings.local.json');
+    const { settings: settingsPath } = claudeSettingsPaths(home);
+    if (relocateLegacyHooks(home)) return;
     if (!existsSync(settingsPath)) return;
 
     const raw = readFileSync(settingsPath, 'utf-8');
@@ -317,7 +388,7 @@ export function migrateHooksIfNeeded(): void {
     }
 
     if (migrated) {
-      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      writeSettings(settingsPath, settings);
     }
   } catch {
     // Silently ignore — migration is best-effort, never block session startup
