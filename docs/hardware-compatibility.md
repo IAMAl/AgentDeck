@@ -52,9 +52,9 @@ Do not copy numeric specifications into domain guides. Link back to this matrix 
 | Waveshare LCD 1.47 | ESP32 display | ESP32-C6 | ST7789 · 172×320 | USB serial · Wi-Fi WS | Yes |
 | IPS 10.1 | ESP32 display | ESP32-P4 + C6 | JD9365 MIPI-DSI · 800×1280 | USB serial · Wi-Fi WS | Yes |
 | Ulanzi TC001 | ESP32 LED | ESP32 classic | WS2812B · 32×8 | USB serial · Wi-Fi WS | Partial |
-| InkDeck | ESP32 e-ink | XIAO ESP32-S3 Plus | UC8179 · 800×480 | USB serial · Wi-Fi WS | Yes |
-| XTeink X3 | e-ink reader | ESP32-C3 | 3.7-inch · 528×792 | Wi-Fi WS | Partial |
-| XTeink X4 | e-ink reader | ESP32-C3 | 800×480 | Wi-Fi WS | Partial |
+| InkDeck | ESP32 e-ink | XIAO ESP32-S3 Plus | UC8179 e-ink · 7.5″ · 800×480 | USB serial · Wi-Fi WS | Yes |
+| XTeink X3 | e-ink reader | ESP32-C3 | E-ink · 3.7″ · 528×792 | Wi-Fi WS | Partial |
+| XTeink X4 | e-ink reader | ESP32-C3 | SSD1677 e-ink · 4.26″ · 480×800 | Wi-Fi WS | Partial |
 | Divoom Pixoo64 | Commercial LED | Divoom controller | RGB LED · 64×64 | HTTP REST | Yes |
 | iDotMatrix | Commercial pixel display | BLE SoC | RGB · 32×32 | BLE GATT | Yes |
 | Divoom Timebox Mini | Commercial LED | BLE SoC | RGB LED · 11×11 | BLE GATT | Yes |
@@ -77,26 +77,31 @@ Do not copy numeric specifications into domain guides. Link back to this matrix 
 
 The AgentDeck firmware uses PlatformIO and Arduino. LVGL 9.2 drives LCD boards; TC001 uses FastLED; InkDeck uses its e-ink renderer. USB port names are not identities—probe `device_info_request` before flashing.
 
-Rows are ordered by overall capability, applied in this precedence: SoC class, then memory, then panel capability, then peripheral breadth. Boards of the same character sit together. Two status values appear:
+Rows are ordered by overall capability, applied in this precedence: SoC class, then memory, then panel capability, then peripheral breadth. Boards of the same character sit together, so the e-ink surfaces run consecutively by diagonal. Three status values appear:
 
 - **Shipping** — runs AgentDeck firmware from `esp32/`, and has a row in the surface matrix above.
+- **Community fork** — a counted surface that registers with the daemon and renders normally, but runs the external CrossPoint Reader fork rather than this repository's firmware.
 - **Evaluation** — hardware on hand that AgentDeck does not yet build firmware for. These rows are *not* counted as surfaces and carry no compatibility claim; they exist so board selection starts from measured facts rather than vendor copy.
 
-| Board | `device_info.board` · env | SoC | Flash · PSRAM | Panel · controller | Input | Notable peripherals | USB | OTA slot | Status |
-|---|---|---|---|---|---|---|---|---:|---|
-| JC8012P4A1C | `ips_10` · `ips10` | ESP32-P4NRW32 + C6 | 16 MB · 32 MB | JD9365 MIPI-DSI · 800×1280 | GSL3680 touch | ESP32-C6 Wi-Fi coprocessor | CH340 | 6 MB | Shipping |
-| ESP32-S3-4848S040 | `86box` · `box_86` | ESP32-S3 | 16 MB · 8 MB | ST7701 RGB IPS · 480×480 | GT911 touch | — | CH340 | 7.75 MB | Shipping |
-| JC3248W535 | `ips_35` · `ips35` | ESP32-S3 | 16 MB · 8 MB | AXS15231B QSPI IPS · 480×320 | AXS15231B touch (0x3B) | FAT data partition | Native USB JTAG | 3.5 MB | Shipping |
-| LilyGO T-Display-S3-Pro V1.1 · GC0308 | — | ESP32-S3R8 | 16 MB · 8 MB | ST7796U SPI IPS · 480×222 | CST226SE touch (0x5A) · 3 buttons | GC0308 camera · SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh | Native USB JTAG | — | Evaluation |
-| LilyGO T-Display-S3-Pro V1.1 · no camera | — | ESP32-S3R8 | 16 MB · 8 MB | ST7796U SPI IPS · 480×222 | CST226SE touch (0x5A) · 3 buttons | SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh · camera POGO header | Native USB JTAG | — | Evaluation |
-| LilyGO T-Embed CC1101 | — | ESP32-S3-WROOM-1 | 16 MB · 8 MB | ST7789 IPS · 320×170 | Rotary encoder · button | CC1101 sub-GHz · PN532 NFC (0x24) · IR TX/RX · 8× WS2812 · mic + speaker · BQ25896 (0x6B) · BQ27220 (0x55) · microSD · 1300 mAh | Native USB JTAG | — | Evaluation |
-| JC3636W518 | `round_amoled` · `amoled` | ESP32-S3 | 8 MB · 8 MB | ST77916 QSPI AMOLED · 360×360 round | CST816S touch | — | Native USB JTAG | 3 MB | Shipping |
-| Seeed TRMNL 7.5 DIY Kit | `inkdeck` · `inkdeck` | XIAO ESP32-S3 Plus | 8 MB · 8 MB | UC8179 e-ink · 800×480 | — | USB-powered only | Native USB CDC | 3.19 MB | Shipping |
-| Waveshare ESP32-C6-LCD-1.47 | `esp32_c6_147` · `esp32_c6_147` | ESP32-C6 | 4 MB · none | ST7789 · 172×320 | — | — | Native USB CDC | Single app | Shipping |
-| LilyGO T-Display | `ttgo_t_display` · `ttgo` | ESP32 classic | 16 MB · none | ST7789 SPI · 135×240 | 2 buttons | — | CH340 | 6 MB | Shipping |
-| Ulanzi TC001 | `ulanzi_tc001` · `led8x32` | ESP32 classic | 8 MB · none | WS2812B matrix · 32×8 | 3 buttons | Buzzer on GPIO 15 (silenced at boot) | CH340 | 3 MB | Shipping |
+| Board | `device_info.board` · env | SoC | Flash · PSRAM | Display | Controller | Input | Notable peripherals | Host link | OTA slot | Status |
+|---|---|---|---|---|---|---|---|---|---:|---|
+| JC8012P4A1C | `ips_10` · `ips10` | ESP32-P4NRW32 + C6 | 16 MB · 32 MB | 10.1″ IPS LCD · 800×1280 | JD9365 MIPI-DSI | GSL3680 touch | ESP32-C6 Wi-Fi coprocessor | CH340 USB serial | 6 MB | Shipping |
+| ESP32-S3-4848S040 | `86box` · `box_86` | ESP32-S3 | 16 MB · 8 MB | 4.0″ IPS LCD · 480×480 | ST7701 RGB | GT911 touch | — | CH340 USB serial | 7.75 MB | Shipping |
+| JC3248W535 | `ips_35` · `ips35` | ESP32-S3 | 16 MB · 8 MB | 3.5″ IPS LCD · 480×320 | AXS15231B QSPI | AXS15231B touch (0x3B) | FAT data partition | Native USB JTAG | 3.5 MB | Shipping |
+| LilyGO T-Display-S3-Pro V1.1 · GC0308 | — | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | GC0308 camera · SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh | Native USB JTAG | — | Evaluation |
+| LilyGO T-Display-S3-Pro V1.1 · no camera | — | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh · camera POGO header | Native USB JTAG | — | Evaluation |
+| LilyGO T-Embed CC1101 | — | ESP32-S3-WROOM-1 | 16 MB · 8 MB | 1.9″ IPS LCD · 320×170 | ST7789 SPI | Rotary encoder · button | CC1101 sub-GHz · PN532 NFC (0x24) · IR TX/RX · 8× WS2812 · mic + speaker · BQ25896 (0x6B) · BQ27220 (0x55) · microSD · 1300 mAh | Native USB JTAG | — | Evaluation |
+| JC3636W518 | `round_amoled` · `amoled` | ESP32-S3 | 8 MB · 8 MB | 1.8″ round AMOLED · 360×360 | ST77916 QSPI | CST816S touch | — | Native USB JTAG | 3 MB | Shipping |
+| Seeed TRMNL 7.5 DIY Kit | `inkdeck` · `inkdeck` | XIAO ESP32-S3 Plus | 8 MB · 8 MB | 7.5″ e-ink 1-bit · 800×480 | UC8179 | — | USB-powered only | Native USB CDC | 3.19 MB | Shipping |
+| XTeink X4 | `xteink_x4` · external fork | ESP32-C3 | 16 MB · none | 4.26″ e-ink · 480×800 portrait | SSD1677 | Page buttons | microSD · 650 mAh | Wi-Fi only | SD `update.bin` | Community fork |
+| XTeink X3 | `xteink_x3` · external fork | ESP32-C3 | 16 MB · none | 3.7″ e-ink · 528×792 portrait | — | Page buttons | I2C IMU (runtime model detect) · NFC · microSD · battery | Wi-Fi only | SD `update.bin` | Community fork |
+| Waveshare ESP32-C6-LCD-1.47 | `esp32_c6_147` · `esp32_c6_147` | ESP32-C6 | 4 MB · none | 1.47″ IPS LCD · 172×320 | ST7789 | — | — | Native USB CDC | Single app | Shipping |
+| LilyGO T-Display | `ttgo_t_display` · `ttgo` | ESP32 classic | 16 MB · none | 1.14″ IPS LCD · 135×240 | ST7789 SPI | 2 buttons | — | CH340 USB serial | 6 MB | Shipping |
+| Ulanzi TC001 | `ulanzi_tc001` · `led8x32` | ESP32 classic | 8 MB · none | WS2812B LED matrix · 32×8 | WS2812B | 3 buttons | Buzzer on GPIO 15 (silenced at boot) | CH340 USB serial | 3 MB | Shipping |
 
 The ordering is by panel and compute, so peripheral breadth does not drive it. On that separate axis the T-Embed CC1101 leads every board here: it is the only unit with a rotary encoder, and the only one carrying a sub-GHz radio, NFC, and infrared. It is also the only bidirectional-input candidate in the fleet — every Shipping board is output-only apart from touch.
+
+The XTeink readers are ESP32 boards and belong in this sheet, but they are the only rows AgentDeck neither builds nor flashes: one CrossPoint fork binary serves both models and picks `xteink_x3` or `xteink_x4` at runtime from an I2C IMU fingerprint. They reach the daemon over Wi-Fi only — there is no USB-serial path and no Wi-Fi OTA, so firmware arrives as an SD-card `update.bin`. Both are portrait in device coordinates: the X4 panel is quoted 800×480 on its datasheet (long axis first) but the firmware declares it 480×800, and CrossPoint boots portrait with orientation left as a user setting.
 
 OTA slot sizes are the measured `device_info.otaSlotSize` from live boards, matching `esp32/partitions/*.csv`. Evaluation units run vendor factory firmware and have no AgentDeck OTA layout; their shipped partition tables are single-app 4 MB (T-Display-S3-Pro) and dual-OTA 6.25 MB (T-Embed CC1101). Factory images and restore instructions live in [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md).
 

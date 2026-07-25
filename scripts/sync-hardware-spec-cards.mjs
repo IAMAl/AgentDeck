@@ -25,10 +25,11 @@ const EXPECTED_COLUMNS = [
   '`device_info.board` · env',
   'SoC',
   'Flash · PSRAM',
-  'Panel · controller',
+  'Display',
+  'Controller',
   'Input',
   'Notable peripherals',
-  'USB',
+  'Host link',
   'OTA slot',
   'Status',
 ];
@@ -88,8 +89,10 @@ const isBlank = (value) => !value || value === '—' || value === '-';
 function renderCard(row) {
   const board = row.Board;
   const status = row.Status;
-  const shipping = status === 'Shipping';
-  const badgeClass = shipping ? 'native' : 'experimental';
+  // Badge variants mirror the Devices page: kelp for first-party firmware,
+  // dark for the community fork, amber for hardware with no build yet.
+  const badgeClass =
+    status === 'Shipping' ? 'native' : status === 'Community fork' ? 'bridge' : 'experimental';
 
   // Identity line: firmware name + env for shipping boards, provenance otherwise.
   const identity = isBlank(row['`device_info.board` · env'])
@@ -99,9 +102,10 @@ function renderCard(row) {
   const specs = [
     ['SoC', row.SoC],
     ['Memory', row['Flash · PSRAM']],
-    ['Panel', row['Panel · controller']],
+    ['Display', row.Display],
+    ['Controller', row.Controller],
     ['Input', row.Input],
-    ['USB', row.USB],
+    ['Host link', row['Host link']],
     ['OTA slot', row['OTA slot']],
   ]
     .map(
@@ -122,14 +126,16 @@ function renderCard(row) {
 }
 
 function renderBlock(rows) {
-  const shipping = rows.filter((r) => r.Status === 'Shipping').length;
-  const evaluation = rows.length - shipping;
+  const count = (status) => rows.filter((r) => r.Status === status).length;
+  const shipping = count('Shipping');
+  const fork = count('Community fork');
+  const evaluation = count('Evaluation');
   return [
     BEGIN,
     `    <div class="grid spec-grid">`,
     rows.map(renderCard).join('\n'),
     `    </div>`,
-    `    <p class="spec-note"><strong>${rows.length} boards</strong> — ${shipping} shipping AgentDeck firmware, ${evaluation} on hand for evaluation. Ordered by overall capability: SoC class, then memory, then panel, then peripheral breadth. Evaluation boards are not counted as surfaces and carry no compatibility claim.</p>`,
+    `    <p class="spec-note"><strong>${rows.length} boards</strong> — ${shipping} running AgentDeck firmware, ${fork} on the community CrossPoint fork, ${evaluation} on hand for evaluation. Ordered by overall capability: SoC class, then memory, then panel, then peripheral breadth. Evaluation boards are not counted as surfaces and carry no compatibility claim.</p>`,
     `    ${END}`,
   ].join('\n');
 }
