@@ -26,10 +26,13 @@ struct Rect {
     bool empty() const { return w <= 0 || h <= 0; }
 };
 
+// Density comes from the SHORT edge alone. Orientation is the independent
+// `Layout::portrait` field, so a panel can be Compact in either orientation —
+// do not read these bands as landscape/portrait classes.
 enum class Density : uint8_t {
-    Compact,   // short landscape panels such as 800x480
-    Regular,   // portrait readers such as 528x792
-    Spacious,  // future large e-ink panels
+    Compact,   // short edge < 520px  — InkDeck 800x480, XTeink X4 480x800
+    Regular,   // short edge 520..759 — XTeink X3 528x792
+    Spacious,  // short edge >= 760px — future large e-ink panels
 };
 
 enum class StatusKind : uint8_t {

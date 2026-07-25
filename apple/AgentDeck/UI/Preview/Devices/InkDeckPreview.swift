@@ -27,7 +27,7 @@
 // re-pin whenever the firmware layout changes.
 //
 // SYNC-HASH esp32/src/ui/eink/eink_display.cpp a1be994f0e13760f3e635056ac8f3b80431844fc
-// SYNC-HASH esp32/src/ui/eink/eink_dashboard_layout.h 4a5ad793f08081d8ac96a02b53b473521f2c1f90
+// SYNC-HASH esp32/src/ui/eink/eink_dashboard_layout.h 9179d41777d6e2caff02735607ad7ca210de8bb8
 
 import SwiftUI
 
