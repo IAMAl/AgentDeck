@@ -42,7 +42,20 @@ describe('Hook Installer', () => {
       expect(cmd).toContain('Library/Containers/bound.serendipity.agent.deck/Data/Library/Application Support/AgentDeck/daemon.json');
       expect(cmd).toContain('group.bound.serendipity.agent.deck/daemon.json');
       expect(cmd).toContain('${PORT:-9120}');
-      expect(cmd).toContain('curl -sf -X POST "http://127.0.0.1:$PORT/hooks/SessionStart"');
+      expect(cmd).toContain('-X POST "http://127.0.0.1:$PORT/hooks/SessionStart"');
+    });
+
+    it('bounds the fire-and-forget POST so a wedged daemon cannot stall session exit', () => {
+      // SessionEnd hooks share one ~1.5s abort budget in Claude Code, and a
+      // restarting daemon holds the socket open without replying. Without both
+      // timeouts the hook gets killed mid-flight → "Hook cancelled" on exit.
+      for (const event of ['SessionStart', 'SessionEnd', 'PostToolUse', 'Notification'] as const) {
+        const cmd = buildHookCommand(event);
+        expect(cmd).toContain('--connect-timeout 0.2');
+        expect(cmd).toContain('--max-time 0.8');
+      }
+      // The health probe is bounded on connect too, for the same reason.
+      expect(buildHookCommand('SessionEnd')).toContain('--connect-timeout 0.2 --max-time 0.3');
     });
 
     it('emits newline-separated shell so if/then/for/do keywords are not mis-terminated by `;`', () => {

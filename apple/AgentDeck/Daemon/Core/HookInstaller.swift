@@ -296,7 +296,7 @@ enum HookInstaller {
             #"  for F in "$HOME/.agentdeck/daemon.json" "$HOME/Library/Containers/bound.serendipity.agent.deck/Data/Library/Application Support/AgentDeck/daemon.json" "$HOME/Library/Group Containers/group.bound.serendipity.agent.deck/daemon.json"; do"#,
             #"    [ -f "$F" ] || continue"#,
             #"    P=$(python3 -c "import json;d=json.load(open('$F'));print(d.get('httpPort') or d.get('port',''))" 2>/dev/null)"#,
-            #"    [ -n "$P" ] && curl -sf --max-time 0.3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { PORT="$P"; break; }"#,
+            #"    [ -n "$P" ] && curl -sf --connect-timeout 0.2 --max-time 0.3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { PORT="$P"; break; }"#,
             #"  done"#,
             #"fi"#,
             #"PORT="${PORT:-9120}""#,
@@ -322,8 +322,14 @@ enum HookInstaller {
             ]
             return lines.joined(separator: "\n")
         }
+        // Everything else is fire-and-forget telemetry — the reply (`{received:true}`)
+        // never steers Claude, so the POST must be bounded. Claude gives all
+        // SessionEnd hooks a single ~1.5s abort budget, and a daemon that is
+        // restarting keeps the socket open without answering: an unbounded curl
+        // there gets killed and Claude prints
+        // `SessionEnd hook [...] failed: Hook cancelled` on exit.
         let lines = preamble + [
-            "curl -sf -X POST \"http://127.0.0.1:$PORT/hooks/\(event)\" -H 'Content-Type: application/json' -d @- 2>/dev/null || true",
+            "curl -sf --connect-timeout 0.2 --max-time 0.8 -X POST \"http://127.0.0.1:$PORT/hooks/\(event)\" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true",
         ]
         return lines.joined(separator: "\n")
     }

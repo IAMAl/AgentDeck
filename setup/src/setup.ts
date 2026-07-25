@@ -203,7 +203,7 @@ function buildHookCommand(eventName: string): string {
     `  for F in "$HOME/.agentdeck/daemon.json" "$HOME/Library/Containers/bound.serendipity.agent.deck/Data/Library/Application Support/AgentDeck/daemon.json" "$HOME/Library/Group Containers/group.bound.serendipity.agent.deck/daemon.json"; do`,
     `    [ -f "$F" ] || continue`,
     `    P=$(python3 -c "import json;d=json.load(open('$F'));print(d.get('httpPort') or d.get('port',''))" 2>/dev/null)`,
-    `    [ -n "$P" ] && curl -sf --max-time 0.3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { PORT="$P"; break; }`,
+    `    [ -n "$P" ] && curl -sf --connect-timeout 0.2 --max-time 0.3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { PORT="$P"; break; }`,
     `  done`,
     `fi`,
     `PORT="\${PORT:-9120}"`,
@@ -223,8 +223,11 @@ function buildHookCommand(eventName: string): string {
       `printf '%s' "\${RESP:-}"`,
     ]).join('\n');
   }
+  // Fire-and-forget telemetry — bounded timeouts are mandatory so a restarting
+  // daemon can't hold the socket past Claude's ~1.5s SessionEnd abort budget.
+  // See hooks/src/install.ts.
   return preamble.concat([
-    `curl -sf -X POST "http://127.0.0.1:$PORT/hooks/${eventName}" -H 'Content-Type: application/json' -d @- 2>/dev/null || true`,
+    `curl -sf --connect-timeout 0.2 --max-time 0.8 -X POST "http://127.0.0.1:$PORT/hooks/${eventName}" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true`,
   ]).join('\n');
 }
 

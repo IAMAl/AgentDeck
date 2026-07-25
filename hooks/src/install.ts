@@ -61,7 +61,7 @@ export function buildHookCommand(eventName: string): string {
     `  for F in "$HOME/.agentdeck/daemon.json" "$HOME/Library/Containers/bound.serendipity.agent.deck/Data/Library/Application Support/AgentDeck/daemon.json" "$HOME/Library/Group Containers/group.bound.serendipity.agent.deck/daemon.json"; do`,
     `    [ -f "$F" ] || continue`,
     `    P=$(python3 -c "import json;d=json.load(open('$F'));print(d.get('httpPort') or d.get('port',''))" 2>/dev/null)`,
-    `    [ -n "$P" ] && curl -sf --max-time 0.3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { PORT="$P"; break; }`,
+    `    [ -n "$P" ] && curl -sf --connect-timeout 0.2 --max-time 0.3 "http://127.0.0.1:$P/health" >/dev/null 2>&1 && { PORT="$P"; break; }`,
     `  done`,
     `fi`,
     `PORT="\${PORT:-9120}"`,
@@ -88,8 +88,16 @@ export function buildHookCommand(eventName: string): string {
       `printf '%s' "\${RESP:-}"`,
     ]).join('\n');
   }
+  // Everything else is fire-and-forget telemetry: the daemon answers
+  // `{received:true}` and nothing in the reply steers Claude, so the POST must
+  // never outlive the host's patience. Short timeouts are mandatory, not an
+  // optimization — SessionEnd hooks share a single ~1.5s abort budget
+  // (Claude's `getSessionEndHookTimeoutMs()` floor), and a daemon that is
+  // restarting holds the socket open without replying. An unbounded curl there
+  // gets killed mid-flight and Claude prints `SessionEnd hook [...] failed:
+  // Hook cancelled` on exit.
   return preamble.concat([
-    `curl -sf -X POST "http://127.0.0.1:$PORT/hooks/${eventName}" -H 'Content-Type: application/json' -d @- 2>/dev/null || true`,
+    `curl -sf --connect-timeout 0.2 --max-time 0.8 -X POST "http://127.0.0.1:$PORT/hooks/${eventName}" -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true`,
   ]).join('\n');
 }
 
