@@ -98,6 +98,18 @@ struct TimelineEntry {
     char taskId[24];    // enclosing task id (links turn rows to their task header; "" = none)
 };
 
+#if defined(BOARD_T_EMBED)
+// Session-scoped timeline backfill for the knob's History scrub view. Kept
+// separate from the global timeline ring so a query_session_timeline reply
+// never clobbers the live feed.
+struct ScrubEntry {
+    char hm[6];
+    char type[16];
+    char text[100];
+};
+constexpr uint8_t KNOB_SCRUB_CAP = 12;
+#endif
+
 // ===== Main dashboard state =====
 struct DashboardState {
     // Connection
@@ -180,6 +192,14 @@ struct DashboardState {
     TimelineEntry timeline[TIMELINE_MAX_ENTRIES];
     uint8_t timelineHead;
     uint8_t timelineCount;
+
+#if defined(BOARD_T_EMBED)
+    // History scrub buffer (chronological ascending; filled by a session-scoped
+    // timeline_history reply matching scrubSessionId).
+    ScrubEntry scrub[KNOB_SCRUB_CAP];
+    uint8_t scrubCount;
+    char scrubSessionId[32];
+#endif
 
     // Creature states (derived from agent state)
     CreatureState creatureState;

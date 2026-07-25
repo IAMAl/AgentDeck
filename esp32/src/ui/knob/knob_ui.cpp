@@ -17,7 +17,7 @@
 
 // ── view model ──────────────────────────────────────────────────────────────
 
-enum class Mode : uint8_t { LIST, DETAIL };
+enum class Mode : uint8_t { LIST, DETAIL, SCRUB };
 
 enum MenuKind : uint8_t {
     MI_OPTION,    // select_option(optIndex)
@@ -26,6 +26,8 @@ enum MenuKind : uint8_t {
     MI_ESC,       // session escape
     MI_STOP,      // session interrupt
     MI_CONTINUE,  // send_prompt "go on"
+    MI_HISTORY,   // query_session_timeline -> History scrub view
+    MI_MODE,      // session_command switch_mode (Shift+Tab cycle; managed only)
     MI_BACK,      // leave detail
 };
 
@@ -36,7 +38,7 @@ struct MenuItem {
     bool recommended;
 };
 
-static constexpr uint8_t MENU_MAX = SESSION_OPTIONS_CAP + 3;
+static constexpr uint8_t MENU_MAX = SESSION_OPTIONS_CAP + 5;
 static constexpr uint8_t MENU_VISIBLE = 4;
 
 // Snapshot of the one session the UI is looking at (copied under lock).
@@ -52,6 +54,7 @@ struct SessionSnap {
     char activity[80];
     char lastEventText[100];
     uint32_t elapsedSec;
+    uint16_t port;
 };
 
 static Mode s_mode = Mode::LIST;
@@ -61,6 +64,9 @@ static int s_menuScroll = 0;
 static MenuItem s_menu[MENU_MAX];
 static uint8_t s_menuCount = 0;
 static char s_detailSessionId[32] = {0};  // session the detail view entered
+
+// History scrub cursor: -1 = pin to latest entry once the backfill lands.
+static int s_scrubIdx = -1;
 
 // Transient "sent" flash — one-frame-cheap optimistic press feedback.
 static char s_flashText[48] = {0};
@@ -114,6 +120,13 @@ static void sendGoOn(const char* sid) {
     Net::queueOutbound(buf);
 }
 
+static void sendHistoryQuery(const char* sid) {
+    char buf[112];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"query_session_timeline\",\"sessionId\":\"%s\"}", sid);
+    Net::queueOutbound(buf);
+}
+
 static void flash(const char* text) {
     strncpy(s_flashText, text, sizeof(s_flashText) - 1);
     s_flashText[sizeof(s_flashText) - 1] = '\0';
@@ -138,6 +151,7 @@ static bool snapshotSession(int idx, SessionSnap& out) {
         strncpy(out.activity, s.activity, sizeof(out.activity));
         strncpy(out.lastEventText, s.lastEventText, sizeof(out.lastEventText));
         out.elapsedSec = s.elapsedSec;
+        out.port = s.port;
         ok = true;
     }
     unlockState();
@@ -251,6 +265,13 @@ static void buildMenu(const SessionSnap& s) {
         // ladder is real.)
         addMenuItem("Go on", MI_CONTINUE, 0, false);
     }
+    addMenuItem("History", MI_HISTORY, 0, false);
+    // INTENT step 1: cycle the agent's permission mode (Shift+Tab). Managed
+    // PTY sessions only — observed terminals can't be typed into, and the
+    // gateway has no mode.
+    if (s.port > 0 && strcmp(s.agentType, "openclaw") != 0) {
+        addMenuItem("Mode (Shift+Tab)", MI_MODE, 0, false);
+    }
     addMenuItem("Back", MI_BACK, 0, false);
 
     if (s_menuIdx >= s_menuCount) s_menuIdx = s_menuCount - 1;
@@ -294,6 +315,22 @@ static void executeMenuItem(const SessionSnap& s, const MenuItem& m) {
             flash("sent: go on");
             s_mode = Mode::LIST;
             break;
+        case MI_HISTORY:
+            lockState();
+            g_state.scrubCount = 0;
+            strncpy(g_state.scrubSessionId, s.id, sizeof(g_state.scrubSessionId) - 1);
+            g_state.scrubSessionId[sizeof(g_state.scrubSessionId) - 1] = '\0';
+            unlockState();
+            sendHistoryQuery(s.id);
+            s_scrubIdx = -1;
+            s_mode = Mode::SCRUB;
+            break;
+        case MI_MODE:
+            // Blind cycle for now — the roster doesn't carry the current mode
+            // yet; when it does, this becomes a labeled INTENT dial.
+            sendSessionCommand(s.id, "switch_mode");
+            flash("sent: mode cycle");
+            break;  // stay in DETAIL so repeated cycling is one press each
         case MI_BACK:
         default:
             s_mode = Mode::LIST;
@@ -432,6 +469,40 @@ static void renderDetailBody(const SessionSnap& s) {
     }
 }
 
+static void renderScrubBody() {
+    lockState();
+    int scount = g_state.scrubCount;
+    ScrubEntry cur;
+    bool have = false;
+    int idx = s_scrubIdx < 0 ? scount - 1 : s_scrubIdx;
+    if (idx >= 0 && idx < scount) {
+        cur = g_state.scrub[idx];
+        have = true;
+    }
+    unlockState();
+
+    if (!have) {
+        lv_obj_t* l = makeLabel(s_body, &lv_font_montserrat_14, Theme::HUDDim,
+                                "Loading history...");
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, 0);
+        return;
+    }
+
+    Utf8::sanitizeLvglText(cur.text);
+
+    char head[48];
+    snprintf(head, sizeof(head), "%d/%d  %s  %s", idx + 1, scount,
+             cur.hm[0] ? cur.hm : "--:--", cur.type);
+    lv_obj_t* h = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDFaint, head);
+    lv_obj_align(h, LV_ALIGN_TOP_LEFT, 8, 2);
+
+    lv_obj_t* t = makeLabel(s_body, &font_kr_12, Theme::HUDText, cur.text);
+    lv_obj_set_width(t, 304);
+    lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+    lv_obj_set_height(t, 100);
+    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 8, 20);
+}
+
 // ── public API ──────────────────────────────────────────────────────────────
 
 namespace Knob {
@@ -475,6 +546,17 @@ void onRotate(int detents) {
     uint8_t count = g_state.sessionCount;
     unlockState();
 
+    if (s_mode == Mode::SCRUB) {
+        lockState();
+        int scount = g_state.scrubCount;
+        unlockState();
+        if (scount == 0) return;
+        if (s_scrubIdx < 0) s_scrubIdx = scount - 1;
+        s_scrubIdx += detents;  // CW = newer
+        if (s_scrubIdx < 0) s_scrubIdx = 0;
+        if (s_scrubIdx >= scount) s_scrubIdx = scount - 1;
+        return;
+    }
     if (s_mode == Mode::LIST) {
         if (count == 0) return;
         s_listIdx = (s_listIdx + detents) % (int)count;
@@ -491,11 +573,16 @@ void onKey(Input::KeyEvent evt) {
     if (evt == Input::KeyEvent::NONE) return;
 
     if (evt == Input::KeyEvent::LONG_PRESS) {
-        s_mode = Mode::LIST;
+        // Back one level: SCRUB -> DETAIL -> LIST.
+        s_mode = (s_mode == Mode::SCRUB) ? Mode::DETAIL : Mode::LIST;
         return;
     }
 
     // SHORT_PRESS
+    if (s_mode == Mode::SCRUB) {
+        s_mode = Mode::DETAIL;
+        return;
+    }
     if (s_mode == Mode::LIST) {
         SessionSnap s;
         if (!snapshotSession(s_listIdx, s)) return;
@@ -520,7 +607,7 @@ int selectedSessionIdx() {
     uint8_t count = g_state.sessionCount;
     unlockState();
     if (count == 0) return -1;
-    if (s_mode == Mode::DETAIL) {
+    if (s_mode == Mode::DETAIL || s_mode == Mode::SCRUB) {
         int idx = findSessionById(s_detailSessionId);
         return idx >= 0 ? idx : -1;
     }
@@ -542,7 +629,7 @@ void update(float dt) {
     // rebuild the menu (an answered prompt must not leave stale options up).
     SessionSnap detail;
     bool haveDetail = false;
-    if (s_mode == Mode::DETAIL) {
+    if (s_mode == Mode::DETAIL || s_mode == Mode::SCRUB) {
         int idx = findSessionById(s_detailSessionId);
         if (idx < 0 || !snapshotSession(idx, detail)) {
             s_mode = Mode::LIST;
@@ -564,7 +651,18 @@ void update(float dt) {
     // Content signature — cheap change detection; rebuild the body only when
     // something the user can see actually changed.
     char sig[256];
-    if (s_mode == Mode::DETAIL && haveDetail) {
+    if (s_mode == Mode::SCRUB && haveDetail) {
+        int scount, idx;
+        char curHead[24] = {0};
+        lockState();
+        scount = g_state.scrubCount;
+        idx = s_scrubIdx < 0 ? scount - 1 : s_scrubIdx;
+        if (idx >= 0 && idx < scount) strncpy(curHead, g_state.scrub[idx].text, sizeof(curHead) - 1);
+        unlockState();
+        snprintf(sig, sizeof(sig), "S|%s|%d|%d|%.20s|%d%d%d%d",
+                 detail.id, idx, scount, curHead,
+                 battBucket, pw.charging ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0);
+    } else if (s_mode == Mode::DETAIL && haveDetail) {
         buildMenu(detail);
         snprintf(sig, sizeof(sig), "D|%s|%s|%d|%d|%d|%.40s|%d|%s|%d%d%d%d",
                  detail.id, detail.state, s_menuIdx, s_menuScroll, s_menuCount,
@@ -610,7 +708,7 @@ void update(float dt) {
     }
 
     // Header
-    if (s_mode == Mode::DETAIL && haveDetail) {
+    if ((s_mode == Mode::DETAIL || s_mode == Mode::SCRUB) && haveDetail) {
         char left[64];
         // U+00B7 " · " is a tofu box on this font stack — LV_SYMBOL_BULLET is
         // the covered separator (see Utf8::sanitizeLvglText).
@@ -636,7 +734,9 @@ void update(float dt) {
 
     // Body
     lv_obj_clean(s_body);
-    if (s_mode == Mode::DETAIL && haveDetail) {
+    if (s_mode == Mode::SCRUB && haveDetail) {
+        renderScrubBody();
+    } else if (s_mode == Mode::DETAIL && haveDetail) {
         renderDetailBody(detail);
     } else {
         renderListBody(connected, count);
@@ -647,9 +747,12 @@ void update(float dt) {
         lv_label_set_text(s_footer, s_flashText);
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusGreen), 0);
     } else {
-        lv_label_set_text(s_footer, s_mode == Mode::DETAIL
-                                        ? "turn: choose " LV_SYMBOL_BULLET " press: send " LV_SYMBOL_BULLET " hold: back"
-                                        : "turn: session " LV_SYMBOL_BULLET " press: open");
+        const char* hint = "turn: session " LV_SYMBOL_BULLET " press: open";
+        if (s_mode == Mode::DETAIL)
+            hint = "turn: choose " LV_SYMBOL_BULLET " press: send " LV_SYMBOL_BULLET " hold: back";
+        else if (s_mode == Mode::SCRUB)
+            hint = "turn: older/newer " LV_SYMBOL_BULLET " press: back";
+        lv_label_set_text(s_footer, hint);
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::HUDFaint), 0);
     }
 }

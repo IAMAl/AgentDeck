@@ -618,6 +618,35 @@ static void handleTimelineEvent(JsonObject& obj) {
 static void handleTimelineHistory(JsonObject& obj) {
     JsonArray entries = obj["entries"].as<JsonArray>();
 
+#if defined(BOARD_T_EMBED)
+    // Session-scoped reply (query_session_timeline) → knob History scrub
+    // buffer, NOT the global ring — the reply is a backfill for one session
+    // and must not clobber the live feed.
+    {
+        const char* sid = obj["sessionId"] | "";
+        if (sid[0]) {
+            size_t total = entries.size();
+            size_t start = total > KNOB_SCRUB_CAP ? total - KNOB_SCRUB_CAP : 0;
+            lockState();
+            if (strcmp(g_state.scrubSessionId, sid) == 0) {
+                g_state.scrubCount = 0;
+                size_t i = 0;
+                for (JsonObject e : entries) {
+                    if (i++ < start) continue;
+                    if (g_state.scrubCount >= KNOB_SCRUB_CAP) break;
+                    ScrubEntry& se = g_state.scrub[g_state.scrubCount++];
+                    memset(&se, 0, sizeof(se));
+                    strncpy(se.hm, e["localHm"] | "", sizeof(se.hm) - 1);
+                    strncpy(se.type, e["type"] | "", sizeof(se.type) - 1);
+                    copyTextU8(se.text, sizeof(se.text), e["raw"] | "");
+                }
+            }
+            unlockState();
+            return;
+        }
+    }
+#endif
+
     lockState();
     // Reset timeline and load history
     g_state.timelineHead = 0;
