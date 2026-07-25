@@ -2421,7 +2421,8 @@ final class DaemonServer {
         // session's recent entries so a device that connected mid-session can fill
         // its Detail view without waiting for live events.
         if cmd["type"] as? String == "query_session_timeline" {
-            guard let sid = cmd["sessionId"] as? String, !sid.isEmpty else { return }
+            guard let rawSid = cmd["sessionId"] as? String, !rawSid.isEmpty else { return }
+            let sid = resolveDeviceSessionId(rawSid)
             let since = cmd["since"] as? Double
             Task { @DaemonActor [weak self] in
                 guard let self else { return }
@@ -2772,9 +2773,33 @@ final class DaemonServer {
     /// swallows a command that was meant for a session bridge or an observed
     /// Claude session. If a branch needs async work, hand it to a `Task` rather
     /// than making this function `async`.
+    /// Device clients with narrow id buffers (ESP32 `SessionInfo.id[32]`) echo
+    /// back session ids truncated by prepareForSerial's 31-char cap — observed
+    /// ids (`observed:claude:<uuid>`, 52 chars) always exceed it, so an
+    /// exact-match lookup silently dropped their commands. Restore the full id
+    /// by unique-prefix match against the known roster; an ambiguous prefix
+    /// stays as-is rather than guessing. Node twin:
+    /// `bridge/src/session-id-resolve.ts` (`resolveSessionIdPrefix`).
+    private func resolveDeviceSessionId(_ raw: String) -> String {
+        guard !raw.isEmpty else { return raw }
+        var known = Set<String>(["openclaw-gateway"])
+        known.formUnion(pushedSessionsById.keys)
+        known.formUnion(cachedSessions.map { $0.id })
+        if known.contains(raw) { return raw }
+        let matches = known.filter { $0.hasPrefix(raw) }
+        return matches.count == 1 ? matches[matches.startIndex] : raw
+    }
+
     private func handleCommand(_ cmd: [String: Any]) {
         guard let type = cmd["type"] as? String else { return }
         DaemonLogger.shared.debug("Daemon", "cmd: \(type)")
+        // Normalize a device-truncated sessionId ONCE at the entry point so
+        // every downstream branch (session_command, select_option,
+        // focus_session, review_run, observed steering) sees the full id.
+        var cmd = cmd
+        if let rawSid = cmd["sessionId"] as? String, !rawSid.isEmpty {
+            cmd["sessionId"] = resolveDeviceSessionId(rawSid)
+        }
 
         // Session bridge self-registration — must run BEFORE the gateway
         // adapter dispatch so that a gateway-driven mode doesn't swallow
