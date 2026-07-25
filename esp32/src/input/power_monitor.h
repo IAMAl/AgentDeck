@@ -14,6 +14,11 @@ struct PowerStatus {
     uint8_t soc;       // state of charge, 0-100 %
     bool usbPowered;   // charger power-good (VBUS present)
     bool charging;     // charger actively charging (pre/fast charge)
+    // Last-read diagnostics, surfaced through device_info so a failing I2C
+    // path is debuggable from the daemon without stealing the serial port.
+    // Wire codes: 0 ok, 2 NACK-addr, 3 NACK-data, 5 timeout; 100+n = requestFrom short read n.
+    uint8_t gaugeErr;
+    uint8_t chargerErr;
 };
 
 void powerInit();

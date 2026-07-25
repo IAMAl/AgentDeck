@@ -548,67 +548,10 @@ static lv_obj_t* makeTankGroup(lv_obj_t* parent, const char* name, uint32_t bran
 }
 
 #if defined(BOARD_IPS10)
-// Helper to sanitize UTF-8 strings by replacing or removing unsupported/broken symbols
-// that are not in Montserrat or Noto Sans KR ranges to avoid tofu boxes (empty rectangles).
+// Delegates to the shared LVGL-text sanitizer (util/utf8.h) — one map for
+// every LVGL surface, so the knob and the mosaic can never drift.
 static void sanitizeIps10Text(char* s) {
-    if (!s) return;
-    char* d = s;
-    while (*s) {
-        uint32_t cp = 0;
-        size_t len = 0;
-        uint8_t b1 = (uint8_t)s[0];
-        if (b1 < 0x80) {
-            cp = b1;
-            len = 1;
-        } else if ((b1 & 0xE0) == 0xC0) {
-            if ((uint8_t)s[1] == 0) break;
-            cp = ((b1 & 0x1F) << 6) | ((uint8_t)s[1] & 0x3F);
-            len = 2;
-        } else if ((b1 & 0xF0) == 0xE0) {
-            if ((uint8_t)s[1] == 0 || (uint8_t)s[2] == 0) break;
-            cp = ((b1 & 0x0F) << 12) | (((uint8_t)s[1] & 0x3F) << 6) | ((uint8_t)s[2] & 0x3F);
-            len = 3;
-        } else if ((b1 & 0xF8) == 0xF0) {
-            if ((uint8_t)s[1] == 0 || (uint8_t)s[2] == 0 || (uint8_t)s[3] == 0) break;
-            cp = ((b1 & 0x07) << 18) | (((uint8_t)s[1] & 0x3F) << 12) | (((uint8_t)s[2] & 0x3F) << 6) | ((uint8_t)s[3] & 0x3F);
-            len = 4;
-        } else {
-            s++;
-            continue;
-        }
-
-        if (cp == 0x2022) { // • (bullet)
-            *d++ = '-';
-        } else if (cp == 0x00B7) { // · (middle dot)
-            *d++ = '-';
-        } else if (cp == 0x2013 || cp == 0x2014) { // – or — (dash)
-            *d++ = '-';
-        } else if (cp == 0x201C || cp == 0x201D) { // “ or ”
-            *d++ = '"';
-        } else if (cp == 0x2018 || cp == 0x2019) { // ‘ or ’
-            *d++ = '\'';
-        } else if (cp == 0x2192) { // →
-            *d++ = '>';
-        } else if (cp == 0x2026) { // … (ellipsis)
-            *d++ = '.';
-            *d++ = '.';
-        } else {
-            bool allowed = (cp >= 0x20 && cp <= 0x7E) || 
-                           (cp == 0x0A) || (cp == 0x0D) || (cp == 0x09) || 
-                           (cp >= 0xAC00 && cp <= 0xD7A3) || 
-                           (cp >= 0xF000 && cp <= 0xF8FF) || 
-                           (cp == '#');
-            if (allowed) {
-                for (size_t i = 0; i < len; i++) {
-                    *d++ = s[i];
-                }
-            } else {
-                *d++ = ' ';
-            }
-        }
-        s += len;
-    }
-    *d = '\0';
+    Utf8::sanitizeLvglText(s);
 }
 
 // ───────── D1 detail overlay (tap a cell → header · activity log · actions) ─────────

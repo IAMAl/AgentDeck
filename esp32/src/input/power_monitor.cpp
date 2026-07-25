@@ -16,28 +16,42 @@ static constexpr uint8_t CMD_CURRENT = 0x0C;  // s16 mA, negative = discharging
 static constexpr uint8_t CHARGER_ADDR = 0x6B;
 static constexpr uint8_t CHARGER_REG_STATUS = 0x0B;
 
-static Input::PowerStatus s_status = {false, 0, false, false};
+static Input::PowerStatus s_status = {false, 0, false, false, 0, 0};
 static uint32_t s_lastPollMs = 0;
 static constexpr uint32_t POLL_INTERVAL_MS = 5000;
 
-static bool readU16(uint8_t addr, uint8_t cmd, uint16_t* out) {
+// One read attempt. `restart`: repeated-start (false to endTransmission) vs
+// full stop before the read phase. Returns 0 on success, a Wire error code
+// (2 NACK-addr / 3 NACK-data / 5 timeout), or 100+n for a short read of n.
+static uint8_t readBytes(uint8_t addr, uint8_t cmd, uint8_t* out, uint8_t n, bool restart) {
+    delayMicroseconds(70);  // BQ27220 bus-free time between transactions (t_BUF 66us)
     Wire.beginTransmission(addr);
     Wire.write(cmd);
-    if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom(addr, (uint8_t)2) != 2) return false;
-    uint8_t lo = Wire.read();
-    uint8_t hi = Wire.read();
-    *out = (uint16_t)((hi << 8) | lo);
+    uint8_t err = Wire.endTransmission(restart ? false : true);
+    if (err != 0) return err;
+    uint8_t got = Wire.requestFrom(addr, n);
+    if (got != n) return (uint8_t)(100 + got);
+    for (uint8_t i = 0; i < n; i++) out[i] = Wire.read();
+    return 0;
+}
+
+// Repeated-start first (TI convention), full-stop fallback (some cores/gauges
+// misbehave on restart). Records the LAST error for diagnostics.
+static bool readU16(uint8_t addr, uint8_t cmd, uint16_t* out, uint8_t* errOut) {
+    uint8_t b[2];
+    uint8_t err = readBytes(addr, cmd, b, 2, true);
+    if (err != 0) err = readBytes(addr, cmd, b, 2, false);
+    if (errOut) *errOut = err;
+    if (err != 0) return false;
+    *out = (uint16_t)((b[1] << 8) | b[0]);
     return true;
 }
 
-static bool readU8(uint8_t addr, uint8_t reg, uint8_t* out) {
-    Wire.beginTransmission(addr);
-    Wire.write(reg);
-    if (Wire.endTransmission(false) != 0) return false;
-    if (Wire.requestFrom(addr, (uint8_t)1) != 1) return false;
-    *out = Wire.read();
-    return true;
+static bool readU8(uint8_t addr, uint8_t reg, uint8_t* out, uint8_t* errOut) {
+    uint8_t err = readBytes(addr, reg, out, 1, true);
+    if (err != 0) err = readBytes(addr, reg, out, 1, false);
+    if (errOut) *errOut = err;
+    return err == 0;
 }
 
 namespace Input {
@@ -53,10 +67,11 @@ void powerPoll(uint32_t nowMs) {
     s_lastPollMs = nowMs;
 
     uint16_t soc = 0;
-    bool gaugeOk = readU16(GAUGE_ADDR, CMD_SOC, &soc) && soc <= 100;
+    uint8_t gaugeErr = 0, chargerErr = 0;
+    bool gaugeOk = readU16(GAUGE_ADDR, CMD_SOC, &soc, &gaugeErr) && soc <= 100;
 
     uint8_t chg = 0;
-    bool chargerOk = readU8(CHARGER_ADDR, CHARGER_REG_STATUS, &chg);
+    bool chargerOk = readU8(CHARGER_ADDR, CHARGER_REG_STATUS, &chg, &chargerErr);
     bool powerGood = chargerOk && (chg & 0x04);            // PG_STAT
     uint8_t chrgStat = (uint8_t)((chg >> 3) & 0x03);       // CHRG_STAT
     bool charging = chargerOk && (chrgStat == 1 || chrgStat == 2);
@@ -65,12 +80,14 @@ void powerPoll(uint32_t nowMs) {
     // doesn't answer (current is positive while charging on the BQ27220).
     if (!chargerOk && gaugeOk) {
         uint16_t rawCur = 0;
-        if (readU16(GAUGE_ADDR, CMD_CURRENT, &rawCur)) {
+        if (readU16(GAUGE_ADDR, CMD_CURRENT, &rawCur, nullptr)) {
             charging = ((int16_t)rawCur) > 20;
             powerGood = charging;
         }
     }
 
+    s_status.gaugeErr = gaugeErr;
+    s_status.chargerErr = chargerErr;
     s_status.valid = gaugeOk;
     s_status.soc = (uint8_t)soc;
     s_status.usbPowered = powerGood;

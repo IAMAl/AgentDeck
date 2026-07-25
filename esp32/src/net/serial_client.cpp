@@ -119,6 +119,8 @@ static void sendDeviceInfoSerial() {
             resp["batteryPercent"] = ps.soc;
             resp["batteryCharging"] = ps.charging;
             resp["usbPowered"] = ps.usbPowered;
+        } else {
+            resp["batteryDiag"] = ps.gaugeErr;  // Wire error code — see power_monitor.h
         }
     }
 #endif

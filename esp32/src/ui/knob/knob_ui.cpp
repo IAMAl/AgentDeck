@@ -8,6 +8,7 @@
 #include "../display.h"
 #include "../theme.h"
 #include "../agent_label.h"
+#include "../../util/utf8.h"
 
 #include <Arduino.h>
 #include <lvgl.h>
@@ -140,6 +141,16 @@ static bool snapshotSession(int idx, SessionSnap& out) {
         ok = true;
     }
     unlockState();
+    if (ok) {
+        // Daemon text can carry punctuation outside Montserrat + the Hangul-only
+        // Noto KR fallback (U+00B7 " · " above all) — sanitize once at snapshot
+        // time so no render path ever draws a tofu box.
+        Utf8::sanitizeLvglText(out.projectName);
+        Utf8::sanitizeLvglText(out.question);
+        Utf8::sanitizeLvglText(out.currentTool);
+        Utf8::sanitizeLvglText(out.activity);
+        Utf8::sanitizeLvglText(out.lastEventText);
+    }
     return ok;
 }
 
@@ -219,9 +230,11 @@ static void buildMenu(const SessionSnap& s) {
         unlockState();
 
         if (optCount > 0) {
-            for (uint8_t i = 0; i < optCount; i++)
+            for (uint8_t i = 0; i < optCount; i++) {
+                Utf8::sanitizeLvglText(opts[i].label);
                 addMenuItem(opts[i].label, MI_OPTION, opts[i].index,
                             opts[i].recommended);
+            }
         } else {
             // No parsed options (plain permission gate) — Approve/Deny pair.
             addMenuItem("Approve", MI_APPROVE, 0, true);
@@ -307,7 +320,7 @@ static void renderListBody(bool connected, uint8_t sessionCount) {
                                        : "No WiFi — provision over USB");
         lv_obj_align(l, LV_ALIGN_CENTER, 0, -10);
         char netline[64];
-        if (wifiUp) snprintf(netline, sizeof(netline), "WiFi ok · %s", Net::wifiLocalIP());
+        if (wifiUp) snprintf(netline, sizeof(netline), "WiFi ok " LV_SYMBOL_BULLET " %s", Net::wifiLocalIP());
         else snprintf(netline, sizeof(netline), "agentdeck wifi-setup");
         lv_obj_t* n = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDFaint, netline);
         lv_obj_align(n, LV_ALIGN_CENTER, 0, 14);
@@ -333,7 +346,7 @@ static void renderListBody(bool connected, uint8_t sessionCount) {
     fmtElapsed(s.elapsedSec, elapsed, sizeof(elapsed));
     char stateLine[64];
     snprintf(stateLine, sizeof(stateLine), "%s%s%s", statePhrase(s.state),
-             elapsed[0] ? " · " : "", elapsed);
+             elapsed[0] ? " " LV_SYMBOL_BULLET " " : "", elapsed);
     lv_obj_t* st = makeLabel(s_body, &lv_font_montserrat_12,
                              stateColorOf(s.state), stateLine);
     lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -8, 6);
@@ -599,7 +612,10 @@ void update(float dt) {
     // Header
     if (s_mode == Mode::DETAIL && haveDetail) {
         char left[64];
-        snprintf(left, sizeof(left), "%s · %s", agentShortLabel(detail.agentType),
+        // U+00B7 " · " is a tofu box on this font stack — LV_SYMBOL_BULLET is
+        // the covered separator (see Utf8::sanitizeLvglText).
+        snprintf(left, sizeof(left), "%s " LV_SYMBOL_BULLET " %s",
+                 agentShortLabel(detail.agentType),
                  detail.projectName[0] ? detail.projectName : "?");
         lv_label_set_text(s_headerLeft, left);
         lv_obj_set_style_text_font(s_headerLeft, &font_kr_12, 0);
@@ -632,8 +648,8 @@ void update(float dt) {
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusGreen), 0);
     } else {
         lv_label_set_text(s_footer, s_mode == Mode::DETAIL
-                                        ? "turn: choose · press: send · hold: back"
-                                        : "turn: session · press: open");
+                                        ? "turn: choose " LV_SYMBOL_BULLET " press: send " LV_SYMBOL_BULLET " hold: back"
+                                        : "turn: session " LV_SYMBOL_BULLET " press: open");
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::HUDFaint), 0);
     }
 }
