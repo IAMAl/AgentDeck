@@ -159,6 +159,8 @@
   .jump a { text-decoration:none; font-family:var(--font-mono); font-size:var(--t-kicker); padding:6px 10px; border-radius:var(--r-pill); }
   .jump a:hover { background:var(--tide-200); }
 
+  /* Jump links land below the sticky GNB instead of under it. */
+  section[id] { scroll-margin-top:var(--s-16); }
   .section-head { display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,44%); gap:var(--s-8); align-items:end; margin:var(--s-20) 0 var(--s-6); padding-bottom:var(--s-4); border-bottom:2px solid var(--tide-200); }
   h2 { font-size:clamp(30px,4vw,var(--t-h2)); letter-spacing:var(--tr-h2); line-height:1.08; margin:0; }
   .section-head p { color:var(--ink-500); margin:0; }
@@ -187,6 +189,14 @@
   .spec { padding-top:var(--s-2); border-top:1px solid var(--tide-200); }
   .spec span { display:block; font-family:var(--font-mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-500); }
   .spec strong { display:block; margin-top:2px; font-size:var(--t-caption); font-weight:600; }
+  /* Spec sheet cards — generated from docs/hardware-compatibility.md. */
+  .spec-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .spec-card .sub { font-family:var(--font-mono); font-size:var(--t-kicker); }
+  .spec-card .sub code { font-family:inherit; }
+  .spec-card .specs { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .periph { margin:0 0 var(--s-4); color:var(--ink-500); font-size:var(--t-caption); }
+  .periph span { display:block; font-family:var(--font-mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-500); margin-bottom:2px; }
+  .spec-note { margin:var(--s-6) 0 0; color:var(--ink-500); font-size:var(--t-caption); }
   .detail-link { margin-top:var(--s-12); padding:var(--s-6); border-radius:var(--r-2xl); background:var(--ink-900); color:var(--tide-300); display:flex; align-items:center; justify-content:space-between; gap:var(--s-6); }
   .detail-link h2 { color:var(--tide-50); font-size:24px; }
   .detail-link p { margin:4px 0 0; }
@@ -195,6 +205,7 @@
 
   @media (max-width:900px) {
     .grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .spec-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
     .hero-grid { grid-template-columns:1fr; gap:var(--s-6); }
     .section-head { grid-template-columns:1fr; gap:var(--s-2); }
   }
@@ -203,6 +214,7 @@
     /* GNB responsive rules live in the canonical GNB-CSS block above. */
     .wrap { padding:var(--s-12) var(--container-pad) var(--s-16); }
     .grid { grid-template-columns:1fr; }
+    .spec-grid { grid-template-columns:1fr; }
     .device.wide { grid-column:auto; }
     .detail-link { align-items:flex-start; flex-direction:column; }
   }
@@ -245,7 +257,7 @@
       <figure class="hero-shot"><img src="../media/setup-full.jpg" alt="A desk running AgentDeck on every surface at once — monitors, InkDeck e-ink, XTeink readers, Timebox Mini, Pixoo64, TC001, Stream Deck+, Ulanzi D200H, iPad, and phone" loading="eager" onerror="this.parentNode.style.display='none'"></figure>
     </div>
     <nav class="jump" aria-label="Device categories">
-      <a href="#controls" data-i18n="jump.controls">Control decks</a><a href="#apps" data-i18n="jump.apps">Apps &amp; terminal</a><a href="#esp32" data-i18n="jump.esp32">ESP32 displays</a><a href="#pixel" data-i18n="jump.pixel">Pixel displays</a>
+      <a href="#controls" data-i18n="jump.controls">Control decks</a><a href="#apps" data-i18n="jump.apps">Apps &amp; terminal</a><a href="#esp32" data-i18n="jump.esp32">ESP32 displays</a><a href="#pixel" data-i18n="jump.pixel">Pixel displays</a><a href="#specs" data-i18n="jump.specs">Board spec sheet</a>
     </nav>
   </header>
 
@@ -387,6 +399,77 @@
     </div>
   </section>
 
+  <section id="specs">
+    <div class="section-head"><h2 data-i18n="s.specs.h">ESP32 board spec sheet</h2><p data-i18n="s.specs.p">Every ESP32 board on hand, at a glance — generated from the compatibility matrix, so these values cannot drift from the source of truth.</p></div>
+<!-- SPEC-CARDS:BEGIN (generated from docs/hardware-compatibility.md by scripts/sync-hardware-spec-cards.mjs — do not edit by hand) -->
+    <div class="grid spec-grid">
+      <article class="device spec-card">
+        <div class="device-top"><h3>JC8012P4A1C</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>ips_10</code> · <code>ips10</code></p>
+        <p class="periph"><span>Peripherals</span>ESP32-C6 Wi-Fi coprocessor</p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-P4NRW32 + C6</strong></div><div class="spec"><span>Memory</span><strong>16 MB · 32 MB</strong></div><div class="spec"><span>Panel</span><strong>JD9365 MIPI-DSI · 800×1280</strong></div><div class="spec"><span>Input</span><strong>GSL3680 touch</strong></div><div class="spec"><span>USB</span><strong>CH340</strong></div><div class="spec"><span>OTA slot</span><strong>6 MB</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>ESP32-S3-4848S040</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>86box</code> · <code>box_86</code></p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-S3</strong></div><div class="spec"><span>Memory</span><strong>16 MB · 8 MB</strong></div><div class="spec"><span>Panel</span><strong>ST7701 RGB IPS · 480×480</strong></div><div class="spec"><span>Input</span><strong>GT911 touch</strong></div><div class="spec"><span>USB</span><strong>CH340</strong></div><div class="spec"><span>OTA slot</span><strong>7.75 MB</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>JC3248W535</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>ips_35</code> · <code>ips35</code></p>
+        <p class="periph"><span>Peripherals</span>FAT data partition</p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-S3</strong></div><div class="spec"><span>Memory</span><strong>16 MB · 8 MB</strong></div><div class="spec"><span>Panel</span><strong>AXS15231B QSPI IPS · 480×320</strong></div><div class="spec"><span>Input</span><strong>AXS15231B touch (0x3B)</strong></div><div class="spec"><span>USB</span><strong>Native USB JTAG</strong></div><div class="spec"><span>OTA slot</span><strong>3.5 MB</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>LilyGO T-Display-S3-Pro V1.1 · GC0308</h3><span class="badge experimental">Evaluation</span></div>
+        <p class="sub">Vendor factory firmware · no AgentDeck build yet</p>
+        <p class="periph"><span>Peripherals</span>GC0308 camera · SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh</p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-S3R8</strong></div><div class="spec"><span>Memory</span><strong>16 MB · 8 MB</strong></div><div class="spec"><span>Panel</span><strong>ST7796U SPI IPS · 480×222</strong></div><div class="spec"><span>Input</span><strong>CST226SE touch (0x5A) · 3 buttons</strong></div><div class="spec"><span>USB</span><strong>Native USB JTAG</strong></div><div class="spec"><span>OTA slot</span><strong>—</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>LilyGO T-Display-S3-Pro V1.1 · no camera</h3><span class="badge experimental">Evaluation</span></div>
+        <p class="sub">Vendor factory firmware · no AgentDeck build yet</p>
+        <p class="periph"><span>Peripherals</span>SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh · camera POGO header</p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-S3R8</strong></div><div class="spec"><span>Memory</span><strong>16 MB · 8 MB</strong></div><div class="spec"><span>Panel</span><strong>ST7796U SPI IPS · 480×222</strong></div><div class="spec"><span>Input</span><strong>CST226SE touch (0x5A) · 3 buttons</strong></div><div class="spec"><span>USB</span><strong>Native USB JTAG</strong></div><div class="spec"><span>OTA slot</span><strong>—</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>LilyGO T-Embed CC1101</h3><span class="badge experimental">Evaluation</span></div>
+        <p class="sub">Vendor factory firmware · no AgentDeck build yet</p>
+        <p class="periph"><span>Peripherals</span>CC1101 sub-GHz · PN532 NFC (0x24) · IR TX/RX · 8× WS2812 · mic + speaker · BQ25896 (0x6B) · BQ27220 (0x55) · microSD · 1300 mAh</p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-S3-WROOM-1</strong></div><div class="spec"><span>Memory</span><strong>16 MB · 8 MB</strong></div><div class="spec"><span>Panel</span><strong>ST7789 IPS · 320×170</strong></div><div class="spec"><span>Input</span><strong>Rotary encoder · button</strong></div><div class="spec"><span>USB</span><strong>Native USB JTAG</strong></div><div class="spec"><span>OTA slot</span><strong>—</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>JC3636W518</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>round_amoled</code> · <code>amoled</code></p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-S3</strong></div><div class="spec"><span>Memory</span><strong>8 MB · 8 MB</strong></div><div class="spec"><span>Panel</span><strong>ST77916 QSPI AMOLED · 360×360 round</strong></div><div class="spec"><span>Input</span><strong>CST816S touch</strong></div><div class="spec"><span>USB</span><strong>Native USB JTAG</strong></div><div class="spec"><span>OTA slot</span><strong>3 MB</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>Seeed TRMNL 7.5 DIY Kit</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>inkdeck</code> · <code>inkdeck</code></p>
+        <p class="periph"><span>Peripherals</span>USB-powered only</p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>XIAO ESP32-S3 Plus</strong></div><div class="spec"><span>Memory</span><strong>8 MB · 8 MB</strong></div><div class="spec"><span>Panel</span><strong>UC8179 e-ink · 800×480</strong></div><div class="spec"><span>Input</span><strong>—</strong></div><div class="spec"><span>USB</span><strong>Native USB CDC</strong></div><div class="spec"><span>OTA slot</span><strong>3.19 MB</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>Waveshare ESP32-C6-LCD-1.47</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>esp32_c6_147</code> · <code>esp32_c6_147</code></p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32-C6</strong></div><div class="spec"><span>Memory</span><strong>4 MB · none</strong></div><div class="spec"><span>Panel</span><strong>ST7789 · 172×320</strong></div><div class="spec"><span>Input</span><strong>—</strong></div><div class="spec"><span>USB</span><strong>Native USB CDC</strong></div><div class="spec"><span>OTA slot</span><strong>Single app</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>LilyGO T-Display</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>ttgo_t_display</code> · <code>ttgo</code></p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32 classic</strong></div><div class="spec"><span>Memory</span><strong>16 MB · none</strong></div><div class="spec"><span>Panel</span><strong>ST7789 SPI · 135×240</strong></div><div class="spec"><span>Input</span><strong>2 buttons</strong></div><div class="spec"><span>USB</span><strong>CH340</strong></div><div class="spec"><span>OTA slot</span><strong>6 MB</strong></div></div>
+      </article>
+      <article class="device spec-card">
+        <div class="device-top"><h3>Ulanzi TC001</h3><span class="badge native">Shipping</span></div>
+        <p class="sub"><code>ulanzi_tc001</code> · <code>led8x32</code></p>
+        <p class="periph"><span>Peripherals</span>Buzzer on GPIO 15 (silenced at boot)</p>
+        <div class="specs"><div class="spec"><span>SoC</span><strong>ESP32 classic</strong></div><div class="spec"><span>Memory</span><strong>8 MB · none</strong></div><div class="spec"><span>Panel</span><strong>WS2812B matrix · 32×8</strong></div><div class="spec"><span>Input</span><strong>3 buttons</strong></div><div class="spec"><span>USB</span><strong>CH340</strong></div><div class="spec"><span>OTA slot</span><strong>3 MB</strong></div></div>
+      </article>
+    </div>
+    <p class="spec-note"><strong>11 boards</strong> — 8 shipping AgentDeck firmware, 3 on hand for evaluation. Ordered by overall capability: SoC class, then memory, then panel, then peripheral breadth. Evaluation boards are not counted as surfaces and carry no compatibility claim.</p>
+    <!-- SPEC-CARDS:END -->
+  </section>
+
   <aside class="detail-link">
     <div><h2 data-i18n="detail.h">Need board-level detail?</h2><p data-i18n="detail.p">The canonical matrix covers SoC, display IC, touch controller, flash, PSRAM, transport, and platform tier.</p></div>
     <a href="../design-system/#hardware.compatibility" data-i18n="detail.a">Open compatibility SSOT</a>
@@ -411,6 +494,7 @@
         'jump.apps': '앱 & 터미널',
         'jump.esp32': 'ESP32 디스플레이',
         'jump.pixel': '픽셀 디스플레이',
+        'jump.specs': '보드 스펙 시트',
         's.controls.h': '컨트롤 데크',
         's.controls.p': '양방향 서피스입니다. 세션 상태를 보여주면서 터미널로 돌아가지 않고도 포커스·승인·중지·응답을 할 수 있습니다.',
         's.apps.h': '앱 & 터미널',
@@ -418,6 +502,8 @@
         's.esp32.h': 'ESP32 디스플레이',
         's.esp32.p': '네이티브 픽셀 그리드 위의 전용 펌웨어를 실제 세션 구동 중에 촬영했습니다. 픽셀 단위 펌웨어 프레임은 라이브 프리뷰에 있습니다.',
         's.pixel.h': '픽셀 디스플레이',
+        's.specs.h': 'ESP32 보드 스펙 시트',
+        's.specs.p': '보유한 모든 ESP32 보드를 한눈에 봅니다 — 호환성 매트릭스에서 생성되므로 정본과 어긋날 수 없습니다.',
         's.pixel.p': '소형 상용 디스플레이가 세션 상태와 사용량을 은은한 신호로 바꿉니다 — 데몬이 푸시한 화면을 실기로 촬영했습니다.',
         'd.sd': '버튼당 세션 하나 — 플러그인이 실제로 렌더링하는 키 그대로입니다. 15키·Mini·Stream Deck+ 프로필 번들.',
         'd.d200h': 'LCD 키를 갖춘 Deck Dock, Ulanzi Studio 플러그인으로 구동.',
@@ -454,6 +540,7 @@
         'jump.apps': 'アプリ & ターミナル',
         'jump.esp32': 'ESP32ディスプレイ',
         'jump.pixel': 'ピクセルディスプレイ',
+        'jump.specs': 'ボード仕様シート',
         's.controls.h': 'コントロールデッキ',
         's.controls.p': '双方向サーフェスです。セッション状態を表示しながら、ターミナルに戻らずにフォーカス・承認・停止・応答ができます。',
         's.apps.h': 'アプリ & ターミナル',
@@ -461,6 +548,8 @@
         's.esp32.h': 'ESP32ディスプレイ',
         's.esp32.p': 'ネイティブピクセルグリッド上の専用ファームウェアを、実際のセッション動作中に撮影しました。ピクセル単位のファームウェアフレームはライブプレビューにあります。',
         's.pixel.h': 'ピクセルディスプレイ',
+        's.specs.h': 'ESP32 ボード仕様シート',
+        's.specs.p': '手元にあるすべての ESP32 ボードを一覧できます。互換性マトリクスから生成されるため、正本とずれることはありません。',
         's.pixel.p': '小型の市販ディスプレイがセッション状態と使用量をさりげないシグナルに変えます — daemonがプッシュした画面を実機で撮影しました。',
         'd.sd': 'ボタンごとにセッションひとつ — プラグインが実際に描画するキーそのものです。15キー・Mini・Stream Deck+のプロファイル同梱。',
         'd.d200h': 'LCDキーを備えたDeck Dock、Ulanzi Studioプラグインで駆動。',

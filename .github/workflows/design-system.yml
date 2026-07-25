@@ -44,6 +44,11 @@ jobs:
       - name: Verify Pages GNB parity
         run: node scripts/sync-pages-nav.mjs --check
 
+      # The Devices page renders the ESP32 spec cards from the compatibility
+      # matrix. The Markdown table is the SSOT; the cards must not drift.
+      - name: Verify ESP32 spec-card parity
+        run: node scripts/sync-hardware-spec-cards.mjs --check
+
       # lint.sh is baseline-aware. The current count must be ≤ the snapshot
       # recorded in docs/design-lint-baseline.md. Lower is welcome (no action);
       # higher fails the PR with a delta report.
