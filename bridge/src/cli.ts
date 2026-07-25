@@ -183,6 +183,7 @@ const ESP32_OTA_BOARDS: Esp32OtaBoard[] = [
   { board: '86box', env: 'box_86', aliases: ['box_86', 'box_40'] },
   { board: 'ips_10', env: 'ips10', aliases: ['ips10', 'ips_101'] },
   { board: 't_embed', env: 't_embed', aliases: ['tembed', 'knob'] },
+  { board: 't_display_pro', env: 't_display_pro', aliases: ['tdisplaypro', 'ticker', 's3pro'] },
 ];
 
 // alias/board/env-key → { env, board }. Built from the SSOT above.

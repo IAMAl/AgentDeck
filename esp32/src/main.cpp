@@ -34,6 +34,10 @@
 #include "input/encoder.h"
 #include "input/power_monitor.h"
 #include "input/nfc_reader.h"
+#elif defined(BOARD_T_DISPLAY_PRO)
+#include "ui/display.h"
+#include "ui/ticker/ticker_ui.h"
+#include "input/light_sensor.h"
 #else
 #include "ui/display.h"
 #include "ui/screens/splash.h"
@@ -46,7 +50,7 @@
 DashboardState g_state;
 SemaphoreHandle_t g_stateMutex = nullptr;
 
-#if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK) && !defined(BOARD_T_EMBED)
+#if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK) && !defined(BOARD_T_EMBED) && !defined(BOARD_T_DISPLAY_PRO)
 // ===== Screen objects (LVGL boards only) =====
 static lv_obj_t* scrSplash = nullptr;
 static lv_obj_t* scrAquarium = nullptr;
@@ -272,7 +276,83 @@ static void networkTask(void* param) {
     }
 }
 
-#if defined(BOARD_T_EMBED)
+#if defined(BOARD_T_DISPLAY_PRO)
+// ===== UI task — Tide Ticker (Core 1) =====
+// 480x222 always-on strip: usage gauges + session ticker, 3-button paging,
+// LTR-553 auto-dim composed with the host display-sleep contract.
+static void tickerApplyBrightness(uint32_t now) {
+    static int lastApplied = -1;
+    int lux = Input::lightPollLux(now);
+    int base = 255;
+    if (lux >= 0) base = lux < 5 ? 60 : lux < 50 ? 140 : 255;
+
+    lockState();
+    bool hostOn = g_state.hostDisplayOn;
+    bool dimEnabled = g_state.hostDimEnabled;
+    uint8_t dimMode = g_state.hostDimMode;
+    uint8_t dimLevel = g_state.hostDimLevel;
+    unlockState();
+
+    int target = base;
+    if (!hostOn && dimEnabled) {
+        target = (dimMode == 0) ? 0 : (dimLevel < base ? dimLevel : base);
+    }
+    if (target != lastApplied) {
+        lastApplied = target;
+        UI::setBrightness(target);
+    }
+}
+
+static void uiTask(void* param) {
+    Serial.printf("[UI] Ticker task started on core %d\n", xPortGetCoreID());
+
+    UI::displayInit();
+    Input::lightInit();
+    Ticker::create();
+
+    pinMode(BOARD_PIN_BTN1, INPUT_PULLUP);
+    pinMode(BOARD_PIN_BTN2, INPUT_PULLUP);
+    pinMode(BOARD_PIN_BTN3, INPUT_PULLUP);
+    bool btnPrev[3] = {true, true, true};
+    uint32_t btnLastMs[3] = {0, 0, 0};
+    const int btnPins[3] = {BOARD_PIN_BTN1, BOARD_PIN_BTN2, BOARD_PIN_BTN3};
+
+    Serial.println("[UI] Ticker screen created, entering main loop");
+
+    uint32_t lastFrameMs = millis();
+    while (true) {
+        uint32_t now = millis();
+        uint32_t dt_ms = now - lastFrameMs;
+        float dt = dt_ms / 1000.0f;
+        lastFrameMs = now;
+        if (dt > 0.1f) dt = 0.1f;
+        if (dt_ms > 0) lv_tick_inc(dt_ms);
+
+        // Buttons (active LOW): BTN1 prev page, BTN2 next page, BTN3 auto-cycle
+        for (int b = 0; b < 3; b++) {
+            bool down = (digitalRead(btnPins[b]) == LOW);
+            if (down && btnPrev[b] && (uint32_t)(now - btnLastMs[b]) > 220) {
+                btnLastMs[b] = now;
+                if (b == 0) Ticker::prevPage();
+                else if (b == 1) Ticker::nextPage();
+                else Ticker::toggleAutoCycle();
+            }
+            btnPrev[b] = !down;
+        }
+
+        lockState();
+        g_state.applyPendingSessionClear(now);
+        unlockState();
+
+        tickerApplyBrightness(now);
+        Ticker::update(dt);
+        lv_timer_handler();
+
+        uint32_t work = millis() - now;
+        vTaskDelay(pdMS_TO_TICKS(work < RENDER_INTERVAL_MS ? (RENDER_INTERVAL_MS - work) : 1));
+    }
+}
+#elif defined(BOARD_T_EMBED)
 // ===== UI task — Companion Knob (Core 1) =====
 // Encoder-driven two-level steering UI + WS2812 session ring. No touch, no
 // terrarium — the knob render tree (ui/knob/) is the whole surface.
@@ -805,7 +885,7 @@ void setup() {
     pinMode(BOARD_PIN_PWR_EN, OUTPUT);
     digitalWrite(BOARD_PIN_PWR_EN, HIGH);
 #endif
-#if defined(BOARD_INKDECK) || defined(BOARD_IPS10) || defined(BOARD_T_EMBED)
+#if defined(BOARD_INKDECK) || defined(BOARD_IPS10) || defined(BOARD_T_EMBED) || defined(BOARD_T_DISPLAY_PRO)
     // RX 8192 — a 10-session enriched sessions_list is ~2.2-3.5KB; the old
     // 2048 truncated it mid-line ([Protocol] JSON error: InvalidInput).
     Serial.setRxBufferSize(8192);
@@ -851,6 +931,11 @@ void setup() {
     for (int i = 0; i < 30 && !Serial; i++) delay(100);
     delay(200);
     Serial.println("\n=== AgentDeck T-Embed Companion Knob ===");
+#elif defined(BOARD_T_DISPLAY_PRO)
+    // Native USB CDC: wait for host connection (up to 3 seconds)
+    for (int i = 0; i < 30 && !Serial; i++) delay(100);
+    delay(200);
+    Serial.println("\n=== AgentDeck T-Display-S3-Pro Tide Ticker ===");
 #else
     // Native USB CDC: wait for host connection (up to 3 seconds)
     for (int i = 0; i < 30 && !Serial; i++) delay(100);
@@ -869,6 +954,8 @@ void setup() {
         "InkDeck 7.5\" e-ink",
 #elif defined(BOARD_T_EMBED)
         "T-Embed Knob",
+#elif defined(BOARD_T_DISPLAY_PRO)
+        "T-Display-S3-Pro Ticker",
 #elif defined(BOARD_IPS35)
         "IPS 3.5\"",
 #elif defined(BOARD_BOX_86) || defined(BOARD_86_BOX)

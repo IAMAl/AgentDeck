@@ -324,6 +324,53 @@ public:
     }
 };
 
+#elif defined(BOARD_T_DISPLAY_PRO)
+// ===== LilyGO T-Display-S3-Pro: ST7796U 222x480 SPI (S3) =====
+// No Light_PWM: the V1.1 backlight is a pulse-stepped constant-current driver
+// (16 levels on GPIO 48) — see tdisplayProSetBacklightLevel below.
+class LGFX : public lgfx::LGFX_Device {
+public:
+    lgfx::Bus_SPI        _bus_instance;
+    lgfx::Panel_ST7796   _panel_instance;
+
+    LGFX() {
+        {
+            auto cfg = _bus_instance.config();
+            cfg.spi_host = SPI2_HOST;
+            cfg.dma_channel = 0;       // bring-up conservative: no DMA
+            cfg.freq_write = 40000000;
+            cfg.freq_read  = 16000000;
+            cfg.pin_sclk = BOARD_PIN_SPI_SCLK;
+            cfg.pin_mosi = BOARD_PIN_SPI_MOSI;
+            cfg.pin_miso = -1;
+            cfg.pin_dc   = BOARD_PIN_SPI_DC;
+            _bus_instance.config(cfg);
+        }
+        _panel_instance.setBus(&_bus_instance);
+
+        {
+            auto cfg = _panel_instance.config();
+            cfg.pin_cs           = BOARD_PIN_SPI_CS;
+            cfg.pin_rst          = BOARD_PIN_SPI_RST;
+            cfg.pin_busy         = -1;
+            cfg.memory_width     = 320;   // ST7796 GRAM
+            cfg.memory_height    = 480;
+            cfg.panel_width      = 222;
+            cfg.panel_height     = 480;
+            cfg.offset_x         = 49;    // (320-222)/2 — verify on hardware
+            cfg.offset_y         = 0;
+            cfg.offset_rotation  = 0;
+            cfg.dummy_read_bits  = 8;
+            cfg.readable         = false;
+            cfg.invert           = BOARD_INVERT;
+            cfg.rgb_order        = false;
+            _panel_instance.config(cfg);
+        }
+
+        setPanel(&_panel_instance);
+    }
+};
+
 #elif defined(BOARD_IPS35)
 // ===== JC3248W535: AXS15231B QSPI =====
 // Requires Arduino_Canvas wrapper — direct QSPI writes produce black screen.
@@ -983,6 +1030,13 @@ void displayInit() {
     tft.init();
     Serial.println("[Display] tft.init() complete");
 
+#if defined(BOARD_T_DISPLAY_PRO)
+    // Pulse-dimmed backlight (no Light_PWM): raise EN → driver powers on at
+    // full; setBrightness() steps levels from there.
+    pinMode(BOARD_PIN_BL, OUTPUT);
+    digitalWrite(BOARD_PIN_BL, HIGH);
+#endif
+
 #if defined(BOARD_TTGO) || defined(BOARD_ESP32_C6_147)
     // ST7789 SPI: Test panel rendering directly to check hardware/SPI alignment
     Serial.println("[Display] ===== TTGO PANEL TEST START =====");
@@ -1164,10 +1218,44 @@ lv_display_t* getDisplay() {
     return disp;
 }
 
+#if defined(BOARD_T_DISPLAY_PRO)
+// V1.1 backlight: AW9364-style stepped constant-current driver. Each fast
+// LOW→HIGH pulse on GPIO 48 steps one of 16 levels DOWN (wrapping); 0 = hold
+// LOW ≥3ms to power off. Verbatim port of the vendor AdjustBacklight.ino
+// algorithm (the vendor platformio.ini comment transposes V1.0/V1.1 — the
+// #ifdef branches are authoritative; on-hand units are V1.1).
+static void tdisplayProSetBacklightLevel(uint8_t value) {
+    static uint8_t s_level = 0;
+    constexpr uint8_t STEPS = 16;
+    if (value > STEPS) value = STEPS;
+    if (value == 0) {
+        digitalWrite(BOARD_PIN_BL, LOW);
+        delay(3);
+        s_level = 0;
+        return;
+    }
+    if (s_level == 0) {
+        digitalWrite(BOARD_PIN_BL, HIGH);
+        s_level = STEPS;
+        delayMicroseconds(30);
+    }
+    int from = STEPS - s_level;
+    int to = STEPS - value;
+    int num = (STEPS + to - from) % STEPS;
+    for (int i = 0; i < num; i++) {
+        digitalWrite(BOARD_PIN_BL, LOW);
+        digitalWrite(BOARD_PIN_BL, HIGH);
+    }
+    s_level = value;
+}
+#endif
+
 void setBrightness(int level) {
     if (level < 0) level = 0;
     if (level > 255) level = 255;
-#if defined(BOARD_AMOLED)
+#if defined(BOARD_T_DISPLAY_PRO)
+    tdisplayProSetBacklightLevel(level == 0 ? 0 : (uint8_t)(1 + (level * 15) / 255));
+#elif defined(BOARD_AMOLED)
     // AMOLED: simple on/off via BL pin (no PWM)
     digitalWrite(BOARD_PIN_BL, level > 0 ? HIGH : LOW);
 #elif defined(BOARD_IPS35)
