@@ -88,19 +88,61 @@ static void renderGaugeRow(lv_obj_t* parent, int y, const char* label,
 }
 
 static void renderUsagePage() {
-    float c5, c7, x5, x7;
-    char c5r[20], c7r[20], x5r[20], x7r[20];
+    // Only windows that exist render — a retired window (e.g. Codex 5h on
+    // current plans) disappears instead of showing a fabricated "--" row.
+    struct GaugeData { const char* label; float pct; char reset[20]; };
+    GaugeData rows[4];
+    uint8_t n = 0;
+    char subsLine[96] = {0};
+
     lockState();
-    c5 = g_state.fiveHourPercent;   strncpy(c5r, g_state.fiveHourReset, sizeof(c5r));
-    c7 = g_state.sevenDayPercent;   strncpy(c7r, g_state.sevenDayReset, sizeof(c7r));
-    x5 = g_state.codexPrimaryPercent;   strncpy(x5r, g_state.codexPrimaryReset, sizeof(x5r));
-    x7 = g_state.codexSecondaryPercent; strncpy(x7r, g_state.codexSecondaryReset, sizeof(x7r));
+    auto take = [&](const char* label, float pct, const char* reset) {
+        if (pct < 0.0f) return;
+        rows[n].label = label;
+        rows[n].pct = pct;
+        strncpy(rows[n].reset, reset, sizeof(rows[n].reset) - 1);
+        rows[n].reset[sizeof(rows[n].reset) - 1] = '\0';
+        n++;
+    };
+    take("Claude 5h", g_state.fiveHourPercent, g_state.fiveHourReset);
+    take("Claude 7d", g_state.sevenDayPercent, g_state.sevenDayReset);
+    take("Codex 5h", g_state.codexPrimaryPercent, g_state.codexPrimaryReset);
+    take("Codex 7d", g_state.codexSecondaryPercent, g_state.codexSecondaryReset);
+    // Account subscriptions (usage_update subscriptions[]) — the "what am I
+    // paying for" line other dashboards carry.
+    {
+        size_t off = 0;
+        for (uint8_t i = 0; i < g_state.subscriptionCount && off < sizeof(subsLine) - 24; i++) {
+            off += snprintf(subsLine + off, sizeof(subsLine) - off, "%s%s %s",
+                            i > 0 ? "  " LV_SYMBOL_BULLET "  " : "",
+                            g_state.subscriptions[i].name,
+                            g_state.subscriptions[i].until);
+        }
+    }
     unlockState();
 
-    renderGaugeRow(s_body, 4,   "Claude 5h", c5, c5r);
-    renderGaugeRow(s_body, 52,  "Claude 7d", c7, c7r);
-    renderGaugeRow(s_body, 100, "Codex 5h", x5, x5r);
-    renderGaugeRow(s_body, 148, "Codex 7d", x7, x7r);
+    bool haveSubs = subsLine[0] != '\0';
+    if (n == 0 && !haveSubs) {
+        lv_obj_t* l = makeLabel(s_body, &lv_font_montserrat_14, Theme::HUDDim,
+                                "Waiting for usage data...");
+        lv_obj_align(l, LV_ALIGN_CENTER, 0, 0);
+        return;
+    }
+
+    int areaH = haveSubs ? 174 : 198;
+    int pitch = n > 0 ? areaH / (n > 0 ? n : 1) : 0;
+    if (pitch > 52) pitch = 52;
+    for (uint8_t i = 0; i < n; i++) {
+        renderGaugeRow(s_body, 4 + i * pitch, rows[i].label, rows[i].pct, rows[i].reset);
+    }
+
+    if (haveSubs) {
+        Utf8::sanitizeLvglText(subsLine);
+        lv_obj_t* s = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDDim, subsLine);
+        lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(s, 460);
+        lv_obj_align(s, LV_ALIGN_BOTTOM_LEFT, 10, -3);
+    }
 }
 
 static uint32_t agentColor(const char* agentType) {
@@ -252,9 +294,10 @@ void update(float dt) {
         }
         uint8_t count = g_state.sessionCount;
         bool connected = g_state.wsConnected;
+        uint8_t subsCount = g_state.subscriptionCount;
         unlockState();
-        snprintf(sig, sizeof(sig), "%d|%d.%d.%d.%d|%d|%d%d%d|%s",
-                 s_page, c5, c7, x5, x7, count,
+        snprintf(sig, sizeof(sig), "%d|%d.%d.%d.%d|%d|%d|%d%d%d|%s",
+                 s_page, c5, c7, x5, x7, subsCount, count,
                  connected ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0, sess);
     }
     if (strcmp(sig, s_lastSig) == 0) return;
