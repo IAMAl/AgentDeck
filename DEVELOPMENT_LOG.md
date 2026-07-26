@@ -117,6 +117,18 @@ env `t_display_pro`. ST7796U 480×222 와이드 스트립. 초기 컨셉("미니
 - **tofu 재발의 원인은 새니타이저가 아니라 폰트였다**: 푸터 라벨이 몬세라트 전용이라 한글 전사문이 전부 사각형. 새니타이저를 통과해도 라벨 폰트가 그 스크립트를 담지 못하면 tofu 다.
 - serial 오디오는 아직 WiFi 전용. 진짜 병목은 대역폭이 아니라(네이티브 USB CDC 에서 115200 은 명목값) **serial 프로토콜에 바이너리 프레이밍이 없다는 것** — 길이 프리픽스를 넣으면 가능하다.
 
+### 8) 실기 테스트가 잡아낸 두 가지 (그리고 세션 id 키잉의 다섯 번째 복사본)
+
+사용자 실기 테스트: 텍스트는 전달됐지만 **Enter 가 안 먹었고**, 직접 Enter 를 눌러 응답을 받았는데 **재생이 안 왔다**.
+
+**재생 미작동 = 세션 id 키잉 불일치.** arm 은 기기가 보낸 `observed:claude:<uuid>` 로 저장되는데 타임라인 행의 `sessionId` 는 **bare uuid** 다. 문자열 비교가 영원히 실패 → 합성은 아무도 없는 곳을 향했다. 접두어 제거 로직은 이미 **4곳에 인라인**돼 있었고 **에이전트 목록이 셋 다 달랐다**(하나는 `antigravity` 누락, 다른 하나는 `codex-app` 누락, 또 하나는 claude|codex 만). 내 신규 사이트가 다섯 번째였고 아예 제거를 안 했다. → `shared/src/session-utils.ts` 에 `rawSessionId`/`sameSession` 단일 소스, 5곳 전부 교체, 양방향+전 접두어 테스트.
+
+**진단 자체가 막혔던 이유**: 음성 경로 로그가 전부 `debug()` 였고 데몬은 debug 파일을 열지 않는다 → "기기는 됐다는데 아무 일도 없다"를 리빌드 없이 진단할 수 없었다. 드물고 사용자 개시 이벤트이므로 `log()` 로 승격: transcript→세션, delivered/via/reason, spokenReply=armed/no, reply ready→N boards, spoke/FAILED.
+
+**검증 방법이 핵심이었다**: 마이크를 누를 수 없으니 **WS 클라이언트로 esp32 를 위장**해 `voice_begin`+PCM+`voice_end` 를 보내는 프로브를 만들었다(`device_info` 에 `audio_out` 광고 포함). 이걸로 스크래치 Claude Code 세션을 타깃으로 전 구간 재현 → `delivered=true via tmux` → `reply ready -> 1 board(s)` → `spoke reply (722526B, 175 chars)` + `audio_play_begin` + 바이너리 프레임 수신 확인. 데몬이 시리얼 포트를 잡고 있어 기기를 흉내낼 수 없던 제약을 WS 로 우회한 것.
+
+**Enter 는 재현하지 못했다.** 실측한 것: iTerm2 `write text` 는 raw 모드에서 **0x0d(CR)** 를 보낸다 — 즉 바이트는 맞다. ★그리고 **canonical 모드 프로브로는 이걸 알 수 없다**(`ICRNL` 이 CR→LF 로 바꿔서 내 첫 측정이 LF 로 보였다; `stty raw` 필수). tmux 경로는 실기 TUI 에서 제출 성공, iTerm2 경로도 하드닝 후 제출 성공(스크래치 세션 transcript 로 확인). 원자적 write 가 원인이라는 가설은 **검증 실패**(테스트 시점 세션이 턴 중이어서 상태가 달랐다) → 하드닝(텍스트/CR 분리 + 0.25s 페이싱)은 **확인된 수정이 아니라 가장 유력한 차이 제거**로 기록한다. `inject-test --text` 추가(그전엔 옵션 선택만 CLI 로 재현 가능).
+
 ### 7) ★플릿 전체 컴파일에서 드러난 것 — 내가 TTGO 를 깨뜨렸다 (그리고 원래도 깨져 있었다)
 
 음성 작업을 다 끝내고 `ttgo` 를 빌드하니 **`dram0_0_seg` overflowed by 16128 bytes** 로 링크 실패. 두 단계로 분해했다(추론이 아니라 각각 빌드해서):
