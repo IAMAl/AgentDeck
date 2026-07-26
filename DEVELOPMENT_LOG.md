@@ -28,6 +28,7 @@ Cadence 흐름: 타이머 웨이크 + "AgentDeck battery sync" 설정 on + boot-
 - 데몬 실서비스 검증: `/feed` 200(카드+actionClass+nextPullSec 900, 활성 세션 감지), `/outbox` 3케이스(unknown_card/applied/expired) 계약대로.
 - 재시작한 9120 데몬이 행 상태였음(20:47 기동분, /health 무응답) — kill 후 새 dist로 재기동하니 전 보드 재접속.
 - 딥슬립 cadence는 **하드웨어 전류/래치 거동 미검증** — 래치 hold 시 실제 슬립 전류와 타이머 웨이크 성공 여부는 설정 켠 실기에서 확인해야 한다(다음 세션 항목).
+- **OTA 배포 대기**: 세션 종료 시점에 X3·X4 모두 오프라인(데몬 /devices 18분 미등장 — 전원 꺼진 듯). 최종 펌웨어 ef8f9154가 `firmware/update.bin`에 스테이징돼 있음 — 보드가 켜지면 `agentdeck esp32-ota xteink_x4 --firmware ~/github/crosspoint-agentdeck/firmware/update.bin` (x3 동일) 후 재접속 buildHash로 판정.
 
 ## 2026-07-26 — XTeink M5.5 Deck 영속화 + OTA 수신 stall 타임아웃
 
