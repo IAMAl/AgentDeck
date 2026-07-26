@@ -47,7 +47,8 @@ import { resolveSessionIdPrefix } from './session-id-resolve.js';
 import { injectObservedSelection, injectObservedText } from './observed-inject.js';
 import {
   setSerialCommandSink, setSerialVoiceSink, sendSerialJson,
-  serialPortConnected, serialPortCapabilities,
+  serialPortConnected, serialPortCapabilities, serialPortBoard,
+  liveSerialPortForBoard, serialBoardsAttached,
 } from './esp32-serial.js';
 import { parsePeripheralMappings, resolvePeripheralAction, commandForAction } from './peripheral-mapping.js';
 import { DeviceVoiceCollector } from './device-voice.js';
@@ -182,6 +183,10 @@ interface WifiEsp32Device {
 }
 const wifiEsp32Devices = new Map<string, WifiEsp32Device>();
 const wifiEsp32Sockets = new Map<string, WebSocket>();
+/** What each ESP32 socket reported about itself, independent of whether the
+ *  single-path dedup kept it in the registry above. */
+const wsSelfBoard = new Map<WebSocket, string>();
+const wsSelfCaps = new Map<WebSocket, string[]>();
 
 interface OtaWaiter {
   stage: string;
@@ -2658,6 +2663,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // sender here so OTA can address the exact socket instead of broadcasting.
     if (msg.type === 'device_info') {
       core.wsServer.markEsp32Client(sender);
+      // Remember what this socket said about itself BEFORE registration, which
+      // is deliberately skipped when the same board is also live on USB serial
+      // (single-path dedup). Anything keyed off the WiFi registry would then see
+      // a board with no board string and no capabilities — that is what made a
+      // dictation from a USB-attached board fail to arm its spoken reply.
+      const selfBoard = typeof msg.board === 'string' ? msg.board : '';
+      if (selfBoard) wsSelfBoard.set(sender, selfBoard);
+      if (Array.isArray((msg as { capabilities?: unknown }).capabilities)) {
+        wsSelfCaps.set(sender, (msg as { capabilities: unknown[] })
+          .capabilities.filter((c): c is string => typeof c === 'string'));
+      }
       registerWifiEsp32(msg, sender);
       return true;
     }
@@ -3107,7 +3123,34 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // transcribes with Apple's on-device recognizer (bundled Swift helper) and
   // turns the text into a prompt for the session the board was pointing at.
   const deviceVoice = new DeviceVoiceCollector();
-  const voiceReply = new DeviceVoiceReplyRouter();
+  /**
+   * Reply router. The resolver lets a queued reply reach a board over whatever
+   * transport is live *now*: a board plugged in over USB parks its radio and
+   * drops the WebSocket it dictated over, and the answer must still arrive.
+   * Serial first, mirroring the single-path dedup policy used elsewhere.
+   */
+  const voiceReply = new DeviceVoiceReplyRouter(
+    () => Date.now(),
+    (ms) => new Promise((r) => setTimeout(r, ms)),
+    (deviceKey) => {
+      const serialPort = liveSerialPortForBoard(deviceKey);
+      if (serialPort) {
+        log(`[agentdeck] voice: routing reply for ${deviceKey} over serial ${serialPort}`);
+        return serialSinkFor(serialPort);
+      }
+      for (const [key, sock] of wifiEsp32Sockets) {
+        if (sock.readyState !== WebSocket.OPEN) continue;
+        const board = wifiEsp32Devices.get(key)?.board;
+        if (board === deviceKey || key === deviceKey) {
+          log(`[agentdeck] voice: routing reply for ${deviceKey} over ws ${key}`);
+          return stableSink(sock);
+        }
+      }
+      log(`[agentdeck] voice: no live transport for ${deviceKey}`
+        + ` (serial boards: ${serialBoardsAttached().join(',') || 'none'})`);
+      return null;
+    },
+  );
 
   /**
    * Wrap a board's socket as a reply sink. Capabilities come from the device
@@ -3119,7 +3162,19 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     send: (data) => { try { ws.send(data); } catch { /* closing */ } },
     sendBinary: (data) => { try { ws.send(data, { binary: true }); } catch { /* closing */ } },
     isOpen: () => ws.readyState === WebSocket.OPEN,
+    describe: () => 'ws',
+    deviceKey: () => {
+      const self = wsSelfBoard.get(ws);
+      if (self) return self;
+      for (const [key, registered] of wifiEsp32Sockets) {
+        if (registered !== ws) continue;
+        return wifiEsp32Devices.get(key)?.board ?? key;
+      }
+      return 'ws';
+    },
     capabilities: () => {
+      const self = wsSelfCaps.get(ws);
+      if (self) return self;
       for (const [key, registered] of wifiEsp32Sockets) {
         if (registered !== ws) continue;
         return wifiEsp32Devices.get(key)?.capabilities ?? [];
@@ -3196,7 +3251,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     if (upsert || !entry.sessionId) return;
     if (entry.type !== 'chat_response' && entry.type !== 'chat_end') return;
     const sessionId = String(entry.sessionId);
-    if (voiceReply.targetsFor(sessionId).length === 0) return;
+    if (voiceReply.targetsFor(sessionId).length === 0) {
+      // Only noisy while something is actually waiting — and this is exactly the
+      // case that used to fail silently: a completion row arrived, nothing
+      // matched it, and there was no way to tell a lost arming from a listener
+      // that never ran.
+      if (voiceReply.armedCount() > 0) {
+        log(`[agentdeck] voice: ${entry.type} for ${sessionId.slice(0, 32)} matched no`
+          + ` arming (armed: ${voiceReply.describeArmed()})`);
+      }
+      return;
+    }
 
     if (entry.type === 'chat_response') {
       const detail = typeof entry.detail === 'string' ? entry.detail : '';
@@ -3238,6 +3303,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         sendSerialJson(port, { type: 'audio_play_chunk', d: data.toString('base64') });
       },
       isOpen: () => serialPortConnected(port),
+      describe: () => `serial:${port.replace('/dev/cu.', '')}`,
+      deviceKey: () => serialPortBoard(port) ?? port,
       capabilities: () => serialPortCapabilities(port),
     };
     serialSinks.set(port, sink);
@@ -3318,7 +3385,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             log(`[agentdeck] voice: "${text.slice(0, 40)}" -> ${sessionId.slice(0, 32)}`
               + ` delivered=${delivered}${via ? ` via ${via}` : ''}`
               + `${deliverReason ? ` (${deliverReason})` : ''}`
-              + ` spokenReply=${armed ? 'armed' : 'no'}`);
+              + ` spokenReply=${armed ? `armed(${sink.describe()})` : 'no'}`
+              + ` [${sink.describe()} key=${sink.deviceKey()}`
+              + ` caps=${sink.capabilities().join('|') || 'none'}]`);
           }
           try {
             sink.send(JSON.stringify({
@@ -3356,6 +3425,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     voiceReply.sweep();
     for (const ws of sinkByWs.keys()) {
       if (ws.readyState !== WebSocket.OPEN) sinkByWs.delete(ws);
+    }
+    for (const ws of wsSelfBoard.keys()) {
+      if (ws.readyState === WebSocket.CLOSED) { wsSelfBoard.delete(ws); wsSelfCaps.delete(ws); }
     }
   }, 30_000).unref?.();
 

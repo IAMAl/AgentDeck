@@ -154,6 +154,28 @@ env `t_display_pro`. ST7796U 480×222 와이드 스트립. 초기 컨셉("미니
 - **tofu 재발의 원인은 새니타이저가 아니라 폰트였다**: 푸터 라벨이 몬세라트 전용이라 한글 전사문이 전부 사각형. 새니타이저를 통과해도 라벨 폰트가 그 스크립트를 담지 못하면 tofu 다.
 - serial 오디오는 아직 WiFi 전용. 진짜 병목은 대역폭이 아니라(네이티브 USB CDC 에서 115200 은 명목값) **serial 프로토콜에 바이너리 프레이밍이 없다는 것** — 길이 프리픽스를 넣으면 가능하다.
 
+### 9) 재생이 계속 안 온 진짜 이유 — arming 을 소켓에 묶었다
+
+tail 손실은 §8 수정으로 해결(전사가 "안녕하세요" 로 완전). 그런데 재생은 여전히 안 왔고, 로그가 원인을 드러냈다: 완료 행(`chat_end`)은 emit 됐는데 리스너가 아무 로그도 남기지 않음 = **arming 이 그 사이에 사라졌다**.
+
+★★**원인: arming 을 WebSocket 객체에 키잉했다.** 보드는 USB 연결 시 **serial-primary 로 전환하며 자기 WS 를 끊는다**(`main.cpp` 파킹 블록의 `wsDisconnect()`). 받아쓰기는 WS 로 도착 → 그 소켓에 arm → 몇 초 뒤 파킹이 소켓을 끊음 → 옛 `sweep()` 이 `!isOpen()` 으로 arming 을 evict → 답변은 아무도 없는 곳으로. **전송(transport)은 수명이 짧고 기기(device)는 길다** — arming 은 기기를 가리켜야 한다.
+
+수정 셋:
+1. `sweep()` 은 **TTL 만** 본다. 링크 blink 로 arming 을 버리지 않는다(liveness 는 스트리밍 시점에 확인).
+2. `ReplySink.deviceKey()` 추가 + 라우터에 `resolveLive(deviceKey)` 주입 → 스트리밍 시 원래 sink 가 죽었으면 **그 보드의 현재 살아있는 전송**(serial 우선, 없으면 WS)으로 재라우팅. 다른 곳의 single-path dedup 정책과 같은 우선순위.
+3. ★**capabilities 를 소켓 자기보고에서 읽는다.** `arm()` 은 `audio_out` 광고를 요구하는데, 그 조회가 WiFi 레지스트리 전용이었다 — 그런데 **같은 보드가 serial 에도 붙어 있으면 그 등록은 의도적으로 스킵된다**(dedup). 결과: USB 연결된 보드는 `spokenReply=no` 로 arm 자체가 실패. `device_info` 가 도착할 때 소켓별 board/caps 를 dedup 과 무관하게 기억해서 해결.
+
+**실기 검증**(WS 프로브로 파킹 재현 — arm 후 소켓 닫기):
+```
+armed(ws) [ws key=t_embed caps=…audio_out…]
+reply ready -> 1 board(s)
+routing reply for t_embed over serial /dev/cu.usbmodem2013401
+spoke reply (1347814B, 379 chars)
+```
+즉 **WS 로 arm 된 답변이 serial 로 실제 보드에 전달**됐다.
+
+**진단 로그가 이번 작업의 절반이었다**: `matched no arming (armed: ws->…)` 한 줄이 "리스너가 안 돌았나 vs arming 이 사라졌나"를 즉시 갈랐다. 이런 이벤트는 드물고 사용자 개시이므로 `log()` 가 맞다.
+
 ### 8) 실기 테스트가 잡아낸 두 가지 (그리고 세션 id 키잉의 다섯 번째 복사본)
 
 사용자 실기 테스트: 텍스트는 전달됐지만 **Enter 가 안 먹었고**, 직접 Enter 를 눌러 응답을 받았는데 **재생이 안 왔다**.
@@ -200,7 +222,7 @@ env `t_display_pro`. ST7796U 480×222 와이드 스트립. 초기 컨셉("미니
 교훈 둘: **보드 신원은 `board:` 문자열이나 포트 이름이 아니라 초기화 성공한 페리페럴로 확정하라**(T-Embed=PN532/PDM/게이지, S3-Pro=CST226SE). 그리고 **관측된 증상을 근본원인으로 승격하기 전에, 그 증상이 검증 대상 보드에서 나온 것인지 확인하라.**
 
 ### 남은 것
-**T-Embed 가 USB 버스에서 사라진 상태로 세션이 끝났다** — 물리 RST/재삽입 필요. **TTGO 는 여전히 728B DRAM 초과로 링크 실패**(기존 문제, §7). 보드에 올라가 있는 펌웨어는 97% 검증본이고, RX 16384 델타만 미플래시. 그리고: 재생 오디오의 **가청 품질은 사용자 확인 대기**(파이프라인은 기계적으로 검증됨), BLE 폰 릴레이(앱 작업 + 티어 결정 필요), sub-GHz 캡처(의도적 이연), GUI 앱 실물 프롬프트에서의 키 시맨틱 확인(`agentdeck inject-test --app`), NFC 태그 탭 end-to-end.
+**TTGO 는 여전히 728B DRAM 초과로 링크 실패**(기존 문제, §7). 재생 오디오의 **가청 품질**은 여전히 사용자 확인 대기(바이트/길이는 무손실 검증). 보드에 올라가 있는 펌웨어는 97% 검증본이고, RX 16384 델타만 미플래시. 그리고: 재생 오디오의 **가청 품질은 사용자 확인 대기**(파이프라인은 기계적으로 검증됨), BLE 폰 릴레이(앱 작업 + 티어 결정 필요), sub-GHz 캡처(의도적 이연), GUI 앱 실물 프롬프트에서의 키 시맨틱 확인(`agentdeck inject-test --app`), NFC 태그 탭 end-to-end.
 
 ---
 

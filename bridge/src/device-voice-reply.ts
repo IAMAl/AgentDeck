@@ -29,6 +29,16 @@ export interface ReplySink {
   isOpen(): boolean;
   /** Capability strings the board advertised in device_info. */
   capabilities(): string[];
+  /** Short transport label for logs, e.g. `serial:/dev/cu.usbmodem…` or `ws`. */
+  describe(): string;
+  /**
+   * Stable identity of the physical board behind this transport — NOT of the
+   * socket. A board is routinely reachable over both USB serial and WiFi, and
+   * it drops the WebSocket when serial becomes primary, so the transport a
+   * dictation arrived on may be gone by the time the reply exists. The reply
+   * follows the board.
+   */
+  deviceKey(): string;
 }
 
 export interface ArmedReply {
@@ -133,6 +143,8 @@ export class DeviceVoiceReplyRouter {
     private readonly now: () => number = () => Date.now(),
     private readonly sleep: (ms: number) => Promise<void> =
       (ms) => new Promise((r) => setTimeout(r, ms)),
+    /** Current live transport for a board, when its original one has gone. */
+    private readonly resolveLive: (deviceKey: string) => ReplySink | null = () => null,
   ) {}
 
   /**
@@ -168,12 +180,30 @@ export class DeviceVoiceReplyRouter {
     }
   }
 
-  /** Drop entries whose socket died or whose window closed. */
+  /**
+   * Drop armings that have gone stale. Deliberately does NOT evict on a closed
+   * transport: a board's link can blink between the dictation and the end of the
+   * turn — a serial connection gets recycled, a WebSocket reconnects — and
+   * dropping the arming then loses the reply permanently for a device that is
+   * about to be reachable again. Liveness is checked where it matters, at the
+   * moment of streaming.
+   */
   sweep(): void {
     const cutoff = this.now() - REPLY_ARM_TTL_MS;
     for (const [sink, entry] of this.armed) {
-      if (!sink.isOpen() || entry.armedAt < cutoff) this.armed.delete(sink);
+      if (entry.armedAt < cutoff) this.armed.delete(sink);
     }
+  }
+
+  /** How many armings are outstanding — for diagnostics only. */
+  armedCount(): number {
+    return this.armed.size;
+  }
+
+  /** Transport labels of everything currently armed, for diagnostics. */
+  describeArmed(): string {
+    return [...this.armed].map(([sink, e]) =>
+      `${sink.describe()}->${e.sessionId.slice(0, 12)}`).join(', ') || '(none)';
   }
 
   /** Boards currently waiting on this session's reply. */
@@ -192,8 +222,14 @@ export class DeviceVoiceReplyRouter {
    * single dictation yields a single spoken reply rather than narrating every
    * subsequent turn of that session.
    */
-  async stream(sink: ReplySink, wav: Buffer, spokenText: string): Promise<boolean> {
-    this.armed.delete(sink);
+  async stream(armedSink: ReplySink, wav: Buffer, spokenText: string): Promise<boolean> {
+    this.armed.delete(armedSink);
+    // Follow the board, not the socket: a USB-attached board parks its WiFi and
+    // closes the WebSocket the dictation came in on, so by now the same device is
+    // very likely reachable over serial instead.
+    const sink = armedSink.isOpen()
+      ? armedSink
+      : this.resolveLive(armedSink.deviceKey()) ?? armedSink;
     if (this.streaming.has(sink)) return false; // one utterance at a time per board
     const parsed = pcmFromWav(wav);
     if (!parsed || !sink.isOpen()) return false;

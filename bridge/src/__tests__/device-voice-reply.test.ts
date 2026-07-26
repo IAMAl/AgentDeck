@@ -40,6 +40,8 @@ function fakeSink(caps: string[] = ['audio_out']) {
     sendBinary: (d) => { binary.push(Buffer.from(d)); },
     isOpen: () => open,
     capabilities: () => caps,
+    describe: () => 'fake',
+    deviceKey: () => 't_embed',
   };
   return sink;
 }
@@ -143,12 +145,16 @@ describe('DeviceVoiceReplyRouter', () => {
     expect(r.targetsFor('session-a').length).toBe(0);
   });
 
-  it('drops armings whose socket died', () => {
+  it('keeps an arming across a transport blip, and refuses to stream while down', async () => {
+    // A serial link gets recycled and a WebSocket reconnects; losing the reply
+    // because the link blinked mid-turn would be worse than a late reply.
     const r = new DeviceVoiceReplyRouter(() => 1000, noSleep);
     const sink = fakeSink();
     r.arm(sink, 'session-a');
     sink.close();
-    expect(r.targetsFor('session-a')).toEqual([]);
+    expect(r.targetsFor('session-a')).toEqual([sink]);
+    expect(await r.stream(sink, wav(64), 'hi')).toBe(false);
+    expect(sink.json).toEqual([]);
   });
 
   it('streams begin, paced PCM frames, then end', async () => {
@@ -273,5 +279,43 @@ describe('long-running turns', () => {
     r.refresh(['observed:codex:long-3']); // prefixed form refreshes bare key
     now += REPLY_ARM_TTL_MS - 10;
     expect(r.targetsFor('long-3')).toEqual([sink]);
+  });
+});
+
+describe('following the board across transports', () => {
+  const noSleep = async () => {};
+
+  // The real failure: a USB-attached board dictates over WiFi, then parks its
+  // radio and closes that socket. The reply must still arrive, over serial.
+  it('streams to the board\'s current transport when the armed one is gone', async () => {
+    const dead = fakeSink();
+    const live = fakeSink();
+    const r = new DeviceVoiceReplyRouter(() => 1000, noSleep,
+      (key) => (key === 't_embed' ? live : null));
+    r.arm(dead, 'observed:codex:s1');
+    dead.close();
+    const ok = await r.stream(dead, wav(PCM_FRAME_BYTES), 'hi');
+    expect(ok).toBe(true);
+    expect(live.binary.length).toBe(1);
+    expect(dead.binary).toEqual([]);
+    expect(JSON.parse(live.json[0]).type).toBe('audio_play_begin');
+  });
+
+  it('gives up when the board is not reachable at all', async () => {
+    const dead = fakeSink();
+    const r = new DeviceVoiceReplyRouter(() => 1000, noSleep, () => null);
+    r.arm(dead, 's1');
+    dead.close();
+    expect(await r.stream(dead, wav(PCM_FRAME_BYTES), 'hi')).toBe(false);
+  });
+
+  it('prefers the armed transport while it is still open', async () => {
+    const armed = fakeSink();
+    const other = fakeSink();
+    const r = new DeviceVoiceReplyRouter(() => 1000, noSleep, () => other);
+    r.arm(armed, 's1');
+    await r.stream(armed, wav(PCM_FRAME_BYTES), 'hi');
+    expect(armed.binary.length).toBe(1);
+    expect(other.binary).toEqual([]);
   });
 });

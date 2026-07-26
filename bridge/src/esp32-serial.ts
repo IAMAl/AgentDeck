@@ -756,6 +756,13 @@ export function liveSerialPortForBoard(board: string): string | undefined {
   return conn?.port;
 }
 
+/** Board strings of every live serial connection — diagnostics for reply routing. */
+export function serialBoardsAttached(): string[] {
+  return connections
+    .filter((c) => c.connected)
+    .map((c) => `${String(c.deviceInfo?.board ?? '?')}@${c.port.replace('/dev/cu.', '')}`);
+}
+
 /** Capabilities the board on this port advertised (empty when unidentified). */
 export function serialPortCapabilities(port: string): string[] {
   const conn = connections.find((c) => c.port === port);
