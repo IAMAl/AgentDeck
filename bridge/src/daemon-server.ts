@@ -3101,6 +3101,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     if (upsert || entry.type !== 'chat_response' || !entry.sessionId) return;
     const targets = voiceReply.targetsFor(entry.sessionId);
     if (targets.length === 0) return;
+    log(`[agentdeck] voice: reply ready for ${String(entry.sessionId).slice(0, 32)}`
+      + ` -> ${targets.length} board(s)`);
     const voiceCfg = loadDaemonSettings().voice as
       { locale?: unknown; speakReplies?: unknown } | undefined;
     if (voiceCfg?.speakReplies === false) return;  // opt-out, default on
@@ -3109,6 +3111,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     if (!spoken) {
       // A code-only answer has nothing worth reading aloud; say that instead of
       // spelling out punctuation, so the user still knows the turn finished.
+      log('[agentdeck] voice: reply held nothing speakable — skipped');
       for (const sink of targets) {
         try { sink.send(JSON.stringify({ type: 'voice_reply_skipped' })); } catch { /* closing */ }
         // Consume the arming either way: the dictation was answered, and
@@ -3126,12 +3129,11 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         const wav = await readFile(out);
         for (const sink of targets) {
           const ok = await voiceReply.stream(sink, wav, spoken);
-          debug('voice', ok
-            ? `spoke reply to board (${wav.length}B, ${spoken.length} chars)`
-            : 'reply stream aborted (board gone or already speaking)');
+          log(`[agentdeck] voice: ${ok ? 'spoke' : 'FAILED to speak'} reply`
+            + ` (${wav.length}B, ${spoken.length} chars)`);
         }
       } catch (err) {
-        debug('voice', `reply synthesis failed: ${String(err).slice(0, 140)}`);
+        log(`[agentdeck] voice: reply synthesis failed: ${String(err).slice(0, 140)}`);
       } finally {
         await rm(out, { force: true }).catch(() => {});
       }
@@ -3230,13 +3232,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
               delivered = true;
               via = 'session-bridge';
             }
-            debug('voice', delivered
-              ? `delivered via ${via} to ${sessionId.slice(0, 24)}`
-              : `NOT delivered to ${sessionId.slice(0, 24)}: ${deliverReason ?? 'unknown'}`);
             // Only a delivered prompt earns a spoken reply: arming on a
             // dropped one would read out whatever that session happened to
             // answer someone else.
-            if (delivered) voiceReply.arm(sink, sessionId);
+            const armed = delivered ? voiceReply.arm(sink, sessionId) : false;
+            // Logged at info level rather than debug: these are rare,
+            // user-initiated events, and the silence made "the board said sent
+            // but nothing happened" undiagnosable without a rebuild.
+            log(`[agentdeck] voice: "${text.slice(0, 40)}" -> ${sessionId.slice(0, 32)}`
+              + ` delivered=${delivered}${via ? ` via ${via}` : ''}`
+              + `${deliverReason ? ` (${deliverReason})` : ''}`
+              + ` spokenReply=${armed ? 'armed' : 'no'}`);
           }
           try {
             sink.send(JSON.stringify({

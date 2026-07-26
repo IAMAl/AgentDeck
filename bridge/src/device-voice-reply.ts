@@ -18,6 +18,8 @@
  * buffer measured in seconds and cost the tail of every long answer.
  */
 
+import { rawSessionId } from '@agentdeck/shared';
+
 export interface ReplySink {
   /** Send a JSON control frame. */
   send(data: string): void;
@@ -138,7 +140,10 @@ export class DeviceVoiceReplyRouter {
   arm(sink: ReplySink, sessionId: string): boolean {
     if (!sessionId) return false;
     if (!sink.capabilities().includes('audio_out')) return false;
-    this.armed.set(sink, { sessionId, armedAt: this.now() });
+    // Store the bare uuid: devices speak the prefixed `observed:<agent>:<uuid>`
+    // form while timeline rows are keyed by the uuid alone, so keying on what
+    // the device sent means the completion never matches what was armed.
+    this.armed.set(sink, { sessionId: rawSessionId(sessionId), armedAt: this.now() });
     return true;
   }
 
@@ -157,9 +162,10 @@ export class DeviceVoiceReplyRouter {
   /** Boards currently waiting on this session's reply. */
   targetsFor(sessionId: string): ReplySink[] {
     this.sweep();
+    const raw = rawSessionId(sessionId);
     const out: ReplySink[] = [];
     for (const [sink, entry] of this.armed) {
-      if (entry.sessionId === sessionId) out.push(sink);
+      if (entry.sessionId === raw) out.push(sink);
     }
     return out;
   }

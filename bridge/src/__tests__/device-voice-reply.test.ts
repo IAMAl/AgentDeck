@@ -197,3 +197,40 @@ describe('DeviceVoiceReplyRouter', () => {
     expect(r.targetsFor('session-a')).toEqual([]);
   });
 });
+
+describe('session-id keying across the two forms', () => {
+  const noSleep = async () => {};
+
+  // The bug this guards: devices send `observed:<agent>:<uuid>` while timeline
+  // rows carry the bare uuid, so arming under one and looking up under the other
+  // silently matched nothing and the reply was synthesized for no one.
+  it('matches a bare-uuid completion against a prefixed arming', () => {
+    const r = new DeviceVoiceReplyRouter(() => 1000, noSleep);
+    const sink = fakeSink();
+    r.arm(sink, 'observed:claude:1222c7e8-f613-4940-8cb2-9056b46fe1cc');
+    expect(r.targetsFor('1222c7e8-f613-4940-8cb2-9056b46fe1cc')).toEqual([sink]);
+  });
+
+  it('matches in the other direction too', () => {
+    const r = new DeviceVoiceReplyRouter(() => 1000, noSleep);
+    const sink = fakeSink();
+    r.arm(sink, 'abc-123');
+    expect(r.targetsFor('observed:codex:abc-123')).toEqual([sink]);
+  });
+
+  it.each(['claude', 'codex', 'codex-app', 'opencode', 'antigravity'])(
+    'normalizes the %s prefix', (agent) => {
+      const r = new DeviceVoiceReplyRouter(() => 1000, noSleep);
+      const sink = fakeSink();
+      r.arm(sink, `observed:${agent}:u-1`);
+      expect(r.targetsFor('u-1')).toEqual([sink]);
+    });
+
+  it('still keeps different sessions apart', () => {
+    const r = new DeviceVoiceReplyRouter(() => 1000, noSleep);
+    const sink = fakeSink();
+    r.arm(sink, 'observed:claude:aaa');
+    expect(r.targetsFor('observed:claude:bbb')).toEqual([]);
+    expect(r.targetsFor('bbb')).toEqual([]);
+  });
+});

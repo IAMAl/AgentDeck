@@ -17,7 +17,7 @@ import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { EnrichedSession } from './session-aggregator.js';
 import { resolveProjectNameFromCwdCached } from './utils/project-name.js';
-import { stripUnsafeText } from '@agentdeck/shared';
+import { stripUnsafeText, rawSessionId } from '@agentdeck/shared';
 import {
   parseAntigravityTranscript,
   antigravityDefaultModel,
@@ -640,7 +640,7 @@ function dedupeObservedSessions(
 
   return observed.filter((session) => {
     if (managedIds.has(session.id)) return false;
-    const rawId = session.id.replace(/^observed:(?:claude|codex|opencode|antigravity):/, '');
+    const rawId = rawSessionId(session.id);
     if (managedIds.has(rawId)) return false;
     return !managedPids.some((pid) => pid === session.pid || isDescendantOf(session.pid, pid, byPid));
   });

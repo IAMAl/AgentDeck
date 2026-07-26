@@ -1,4 +1,5 @@
 import type { PromptOption } from '@agentdeck/shared';
+import { rawSessionId } from '@agentdeck/shared';
 
 /**
  * Hook-driven awaiting overlay for observed (non-PTY) sessions.
@@ -204,7 +205,7 @@ export function applyAwaitingOverlayToObserved<
   },
 >(sessions: T[]): T[] {
   return sessions.map((s) => {
-    const uuid = s.id.replace(/^observed:(?:claude|codex):/, '');
+    const uuid = rawSessionId(s.id);
     const ov = getAwaitingOverlay(uuid);
     if (!ov) return s;
     // Display-only Notification prompt whose transcript has moved on since the

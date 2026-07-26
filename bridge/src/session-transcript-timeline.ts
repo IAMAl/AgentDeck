@@ -26,14 +26,8 @@ import { readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import type { TimelineEntry, TimelineEntryType } from '@agentdeck/shared';
+import { rawSessionId } from '@agentdeck/shared';
 import { debug } from './logger.js';
-
-/** Strip the `observed:<agent>:` prefix that `sessions_list` puts on
- *  passively-observed session ids — the transcript file is named by the bare
- *  uuid. Managed/relayed ids pass through unchanged. */
-function rawSessionId(sessionId: string): string {
-  return sessionId.replace(/^observed:(?:claude|codex|opencode|antigravity):/, '');
-}
 
 /** Candidate `~/.claude` config roots (mirrors the bridge's discovery). The
  *  `CLAUDE_CONFIG_DIR` env can point elsewhere; fall back to `~/.claude`. */

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   agentTypeRank, sortSessions, assignDisplayNames, naturalLabelCompare, foldCodexSessionsForDisplay,
-  isOpenClawSessionActive, hasOpenClawSession,
+  isOpenClawSessionActive, hasOpenClawSession, rawSessionId, sameSession,
 } from '../session-utils.js';
 import type { FoldableSession } from '../session-utils.js';
 
@@ -261,5 +261,29 @@ describe('groupSessionsByProject', () => {
       'proj-x-long-task-name-a',
       'proj-x-long-task-name-b',
     ]);
+  });
+});
+
+describe('rawSessionId / sameSession', () => {
+  it('strips every observed agent prefix', () => {
+    for (const agent of ['claude', 'codex', 'codex-app', 'opencode', 'antigravity']) {
+      expect(rawSessionId(`observed:${agent}:u-9`)).toBe('u-9');
+    }
+  });
+
+  it('leaves managed and already-bare ids alone', () => {
+    expect(rawSessionId('u-9')).toBe('u-9');
+    expect(rawSessionId('openclaw-gateway')).toBe('openclaw-gateway');
+    // Only a leading prefix is stripped — not an occurrence mid-string.
+    expect(rawSessionId('x-observed:claude:u-9')).toBe('x-observed:claude:u-9');
+  });
+
+  it('sameSession bridges the two keying forms', () => {
+    expect(sameSession('observed:claude:u-9', 'u-9')).toBe(true);
+    expect(sameSession('u-9', 'observed:opencode:u-9')).toBe(true);
+    expect(sameSession('observed:claude:u-9', 'observed:codex:u-9')).toBe(true);
+    expect(sameSession('u-9', 'u-8')).toBe(false);
+    expect(sameSession(undefined, 'u-9')).toBe(false);
+    expect(sameSession('u-9', '')).toBe(false);
   });
 });

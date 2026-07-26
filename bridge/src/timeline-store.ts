@@ -5,7 +5,7 @@
  */
 
 import type { TimelineEntry } from './types.js';
-import { deduplicateEntry, formatDurationSec, normalizeTimelineEntryForStorage } from '@agentdeck/shared';
+import { deduplicateEntry, formatDurationSec, normalizeTimelineEntryForStorage, rawSessionId } from '@agentdeck/shared';
 import { readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync } from 'fs';
 import { dirname } from 'path';
 
@@ -403,7 +403,7 @@ export class BridgeTimelineStore {
     // sessions_list ids for passively-observed sessions are prefixed
     // ("observed:claude:<uuid>") while timeline entries are keyed by the raw uuid,
     // so accept either form.
-    const raw = sessionId.replace(/^observed:(?:claude|codex|codex-app|opencode|antigravity):/, '');
+    const raw = rawSessionId(sessionId);
     const matched = this.entries.filter(
       (e) => (e.sessionId === sessionId || e.sessionId === raw) && (since == null || e.ts > since),
     );

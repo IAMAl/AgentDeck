@@ -9,6 +9,32 @@
  * Rank agent states by priority (lower = higher priority).
  * processing=0, awaiting=1, idle=2, disconnected=3, unknown=4.
  */
+/**
+ * Observed-session id prefixes. A passively-observed session is keyed
+ * `observed:<agent>:<uuid>` in `sessions_list` and on devices, but timeline
+ * entries, transcripts and hook payloads are keyed by the bare uuid — so any
+ * code matching one against the other must normalize first.
+ *
+ * This exists because the same regex was inlined in four places with three
+ * different agent lists (one omitted `antigravity`, another `codex-app`), and a
+ * fifth site that skipped stripping altogether silently never matched: a spoken
+ * reply was armed under the prefixed id and looked up under the bare one, so the
+ * reply was synthesized for nobody. Add agents here, not at the call sites.
+ */
+export const OBSERVED_SESSION_PREFIX_RE =
+  /^observed:(?:claude|codex|codex-app|opencode|antigravity):/;
+
+/** Bare uuid form of a session id — unchanged when it has no observed prefix. */
+export function rawSessionId(sessionId: string): string {
+  return sessionId.replace(OBSERVED_SESSION_PREFIX_RE, '');
+}
+
+/** True when the two ids denote the same session in either keying form. */
+export function sameSession(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  return a === b || rawSessionId(a) === rawSessionId(b);
+}
+
 export function stateRank(state: string | undefined): number {
   switch (state) {
     case 'processing': return 0;

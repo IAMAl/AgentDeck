@@ -979,19 +979,28 @@ program
   .option('--app <name>', 'Hosting app for GUI sessions, e.g. Claude / ChatGPT')
   .option('--label <label>', 'Option label — app hosts press the matching button first')
   .option('-i, --index <n>', 'Zero-based option index (Down presses)', '0')
+  .option('--text <text>', 'Type this text and submit it, instead of picking an option')
   .action(async (opts) => {
     if (!opts.tty && !opts.app) {
       console.error('Give --tty <ttysNNN> or --app <Name>. Find a session\'s tty with:');
       console.error("  ps -eo pid=,tty=,command= | grep -E ' claude| codex'");
       process.exit(1);
     }
-    const { injectObservedSelection } = await import('./observed-inject.js');
+    const { injectObservedSelection, injectObservedText } =
+      await import('./observed-inject.js');
     const index = parseInt(opts.index, 10) || 0;
-    const result = await injectObservedSelection(
-      { tty: opts.tty, appName: opts.app, label: opts.label }, index,
-    );
+    // --text exercises the dictation path (voice → prompt), which submits a
+    // whole line; without it only the option-picking path was testable, and
+    // "the text arrived but nothing was submitted" had no repro.
+    const result = opts.text
+      ? await injectObservedText({ tty: opts.tty, appName: opts.app }, opts.text)
+      : await injectObservedSelection(
+        { tty: opts.tty, appName: opts.app, label: opts.label }, index,
+      );
     if (result.ok) {
-      console.log(`Delivered via ${result.via} (index ${index}).`);
+      console.log(opts.text
+        ? `Delivered via ${result.via} (text).`
+        : `Delivered via ${result.via} (index ${index}).`);
     } else {
       console.error(`Not delivered: ${result.reason}`);
       process.exit(2);

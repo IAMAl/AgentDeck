@@ -383,19 +383,32 @@ export async function injectObservedText(
     const paneId = parseTmuxPanes(stdout).get(tty);
     if (paneId) {
       await execFileAsync('tmux', ['send-keys', '-t', paneId, '-l', line], { timeout: 2_000 });
+      // Same beat as above: process spawn alone happens to provide ~50 ms, which
+      // is not a guarantee worth relying on for the keystroke that commits.
+      await new Promise((r) => setTimeout(r, 250));
       await execFileAsync('tmux', ['send-keys', '-t', paneId, 'Enter'], { timeout: 2_000 });
       return { ok: true, via: 'tmux' };
     }
   } catch { /* no tmux server — fall through */ }
 
-  // iTerm2: `write text` types the line and appends the return that submits it.
+  // iTerm2: type the line, pause, then submit with an explicit carriage return.
+  //
+  // `write text "..."` alone would do both — measured in raw mode it delivers
+  // the text followed by 0x0d, which is the right byte (0x0a would land as a
+  // newline *inside* the prompt instead of submitting it; the tty's ICRNL
+  // translation hides that difference from any canonical-mode probe, so test
+  // this with `stty raw` or the reading is meaningless). It is split anyway
+  // because a TUI that treats one burst as a paste can absorb a trailing return
+  // as content, and the same missing beat cost us the option keys earlier.
   const iterm = [
     'tell application "iTerm2"',
     '  repeat with w in windows',
     '    repeat with t in tabs of w',
     '      repeat with s in sessions of t',
     `        if tty of s is "/dev/${tty}" then`,
-    `          write s text "${escapeAppleScript(line)}"`,
+    `          write s text "${escapeAppleScript(line)}" newline NO`,
+    '          delay 0.25',
+    '          write s text (ASCII character 13) newline NO',
     '          return "ok"',
     '        end if',
     '      end repeat',
