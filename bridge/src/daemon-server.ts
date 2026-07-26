@@ -44,7 +44,7 @@ import {
   notePermissionPromptShown, noteToolEnd, steeringSnapshot,
 } from './observed-steering.js';
 import { resolveSessionIdPrefix } from './session-id-resolve.js';
-import { injectObservedSelection } from './observed-inject.js';
+import { injectObservedSelection, injectObservedText } from './observed-inject.js';
 import { setSerialCommandSink } from './esp32-serial.js';
 import { parsePeripheralMappings, resolvePeripheralAction, commandForAction } from './peripheral-mapping.js';
 import { DeviceVoiceCollector } from './device-voice.js';
@@ -2708,16 +2708,43 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             // Always tell the board what was heard, even when it is empty or
             // unroutable — a device that shows nothing is indistinguishable
             // from a broken mic.
-            try {
-              sender.send(JSON.stringify({ type: 'voice_result', text, sessionId }));
-            } catch { /* client disconnecting */ }
+            let delivered = false;
+            let via: string | undefined;
+            let deliverReason: string | undefined;
             if (text && sessionId) {
-              handleDeviceCommand({
-                type: 'session_command',
-                sessionId,
-                command: { type: 'send_prompt', text },
-              } as unknown as PluginCommand);
+              if (sessionId.startsWith('observed:')) {
+                // Any observed agent (claude, codex, …): type the dictated line
+                // into the terminal that owns the session. session_command only
+                // knew how to route observed *Claude*, so a Codex target was
+                // silently dropped — the board said "sent" and nothing arrived.
+                const obs = passiveSessionObserver.collect([])
+                  .find((s) => s.id === sessionId) as
+                    { tty?: string; appName?: string } | undefined;
+                const r = await injectObservedText(
+                  { tty: obs?.tty, appName: obs?.appName }, text);
+                delivered = r.ok;
+                via = r.via;
+                deliverReason = r.reason;
+              } else {
+                handleDeviceCommand({
+                  type: 'session_command',
+                  sessionId,
+                  command: { type: 'send_prompt', text },
+                } as unknown as PluginCommand);
+                delivered = true;
+                via = 'session-bridge';
+              }
+              debug('voice', delivered
+                ? `delivered via ${via} to ${sessionId.slice(0, 24)}`
+                : `NOT delivered to ${sessionId.slice(0, 24)}: ${deliverReason ?? 'unknown'}`);
             }
+            try {
+              sender.send(JSON.stringify({
+                type: 'voice_result', text, sessionId, delivered,
+                ...(via ? { via } : {}),
+                ...(deliverReason ? { deliverReason } : {}),
+              }));
+            } catch { /* client disconnecting */ }
           } catch (err) {
             const reason = String(err).slice(0, 160);
             debug('voice', `transcription failed: ${reason}`);

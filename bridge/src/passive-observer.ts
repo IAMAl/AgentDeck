@@ -466,6 +466,7 @@ function collectClaudeSessions(processes: ProcInfo[]): ObservedSession[] {
 }
 
 async function collectCodexSessions(processes: ProcInfo[]): Promise<ObservedSession[]> {
+  const byPid = new Map(processes.map((p) => [p.pid, p]));
   const codex = processes.filter((p) =>
     cmdHasBinary(p.command, 'codex') &&
     !p.command.includes('app-server') &&
@@ -496,6 +497,10 @@ async function collectCodexSessions(processes: ProcInfo[]): Promise<ObservedSess
       pid: proc.pid,
       projectName: cwd ? projectNameFromCwd(cwd) : 'Codex',
       agentType: 'codex-cli',
+      // Same injection targets as observed Claude: answering or dictating into
+      // a Codex session means typing into the terminal that owns it.
+      tty: proc.tty,
+      appName: proc.tty ? undefined : resolveHostApp(proc.pid, byPid),
       alive: true,
       state,
       modelName: parsed.modelName,

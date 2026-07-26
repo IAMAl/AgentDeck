@@ -353,3 +353,81 @@ export async function injectObservedSelection(
   }
   return { ok: false, reason: `no reachable UI in ${appName}` };
 }
+
+/**
+ * Type a whole line of text into the session's terminal and submit it — the
+ * delivery path for a dictated prompt. Same host ladder as
+ * `injectObservedSelection`, but writing text instead of arrow keys.
+ *
+ * Only terminal hosts are supported: typing free text into a GUI app's focused
+ * field is far riskier (no way to know what has focus), and a spoken prompt
+ * that lands in the wrong place is worse than one that is refused.
+ */
+export async function injectObservedText(
+  target: InjectTarget,
+  text: string,
+): Promise<InjectResult> {
+  const trimmed = text.trim();
+  if (!trimmed) return { ok: false, reason: 'empty text' };
+  // Newlines would submit early and split the prompt across turns.
+  const line = trimmed.replace(/[\r\n]+/g, ' ');
+  const { tty } = target;
+  if (!tty) return { ok: false, reason: 'no tty for session (text injection is terminal-only)' };
+
+  // tmux: -l sends the payload literally, then a separate Enter submits it.
+  try {
+    const { stdout } = await execFileAsync(
+      'tmux', ['list-panes', '-a', '-F', '#{pane_tty}\t#{pane_id}'],
+      { encoding: 'utf8', timeout: 2_000 },
+    );
+    const paneId = parseTmuxPanes(stdout).get(tty);
+    if (paneId) {
+      await execFileAsync('tmux', ['send-keys', '-t', paneId, '-l', line], { timeout: 2_000 });
+      await execFileAsync('tmux', ['send-keys', '-t', paneId, 'Enter'], { timeout: 2_000 });
+      return { ok: true, via: 'tmux' };
+    }
+  } catch { /* no tmux server — fall through */ }
+
+  // iTerm2: `write text` types the line and appends the return that submits it.
+  const iterm = [
+    'tell application "iTerm2"',
+    '  repeat with w in windows',
+    '    repeat with t in tabs of w',
+    '      repeat with s in sessions of t',
+    `        if tty of s is "/dev/${tty}" then`,
+    `          write s text "${escapeAppleScript(line)}"`,
+    '          return "ok"',
+    '        end if',
+    '      end repeat',
+    '    end repeat',
+    '  end repeat',
+    'end tell',
+    'return "notfound"',
+  ].join('\n');
+  if (await runOsa(iterm, 5_000) === 'ok') return { ok: true, via: 'iterm2' };
+
+  // Terminal.app: `do script … in <tab>` types into that tab and returns.
+  const term = [
+    'set done to false',
+    'tell application "Terminal"',
+    '  repeat with w in windows',
+    '    repeat with t in tabs of w',
+    `      if tty of t is "/dev/${tty}" then`,
+    `        do script "${escapeAppleScript(line)}" in t`,
+    '        set done to true',
+    '        exit repeat',
+    '      end if',
+    '    end repeat',
+    '    if done then exit repeat',
+    '  end repeat',
+    'end tell',
+    'if done then',
+    '  return "ok"',
+    'else',
+    '  return "notfound"',
+    'end if',
+  ].join('\n');
+  if (await runOsa(term, 5_000) === 'ok') return { ok: true, via: 'terminal-app' };
+
+  return { ok: false, reason: `no reachable terminal for ${tty}` };
+}

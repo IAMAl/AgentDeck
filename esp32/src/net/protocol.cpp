@@ -1048,9 +1048,11 @@ void parseMessage(const char* json, size_t length) {
         // device that displays nothing is indistinguishable from a dead mic.
         const char* text = obj["text"] | "";
         const char* err = obj["error"] | "";
-        char note[64];
+        bool delivered = obj["delivered"] | false;
+        char note[96];
         if (err[0]) snprintf(note, sizeof(note), "voice error");
         else if (!text[0]) snprintf(note, sizeof(note), "heard nothing");
+        else if (!delivered) snprintf(note, sizeof(note), "NOT sent: \"%s\"", text);
         else snprintf(note, sizeof(note), "\"%s\"", text);
         Utf8::utf8TrimEnd(note);
         Knob::notify(note);

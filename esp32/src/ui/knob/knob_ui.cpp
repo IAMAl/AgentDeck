@@ -554,7 +554,9 @@ void create() {
     lv_obj_set_size(s_body, 320, 126);
     lv_obj_align(s_body, LV_ALIGN_TOP_LEFT, 0, 22);
 
-    s_footer = makeLabel(s_scr, &lv_font_montserrat_12, Theme::HUDFaint, "");
+    // Korean-capable face: voice transcripts render here, and montserrat alone
+    // drew them as tofu boxes.
+    s_footer = makeLabel(s_scr, &font_kr_12, Theme::HUDFaint, "");
     lv_obj_align(s_footer, LV_ALIGN_BOTTOM_LEFT, 8, -3);
 
     lv_screen_load(s_scr);
@@ -832,7 +834,7 @@ void update(float dt) {
     // speaking, the one thing they need on screen is who is listening.
     if (listening) {
         char line[72];
-        snprintf(line, sizeof(line), LV_SYMBOL_AUDIO " listening -> %s", s_listeningLabel);
+        snprintf(line, sizeof(line), LV_SYMBOL_BULLET " listening -> %s", s_listeningLabel);
         lv_label_set_text(s_footer, line);
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusAmber), 0);
     } else if (flashOn) {
