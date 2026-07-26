@@ -13,9 +13,10 @@ function jsonl(records: unknown[]): string {
 
 describe('passive-observer parsers', () => {
   it('parses ps output without depending on fixed command columns', () => {
+    // ps columns: pid ppid rss tty command (tty added for observed-answer injection)
     const rows = parseProcessTable([
-      ' 123 1 20480 /opt/homebrew/bin/codex --model gpt-5.4',
-      ' 456 123 1024 /bin/zsh -lc claude',
+      ' 123 1 20480 ttys004 /opt/homebrew/bin/codex --model gpt-5.4',
+      ' 456 123 1024 ?? /bin/zsh -lc claude',
       'not a process row',
     ].join('\n'));
 
@@ -24,12 +25,14 @@ describe('passive-observer parsers', () => {
         pid: 123,
         ppid: 1,
         rssKb: 20480,
+        tty: 'ttys004',
         command: '/opt/homebrew/bin/codex --model gpt-5.4',
       },
       {
         pid: 456,
         ppid: 123,
         rssKb: 1024,
+        tty: undefined,
         command: '/bin/zsh -lc claude',
       },
     ]);

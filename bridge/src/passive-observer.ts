@@ -31,6 +31,8 @@ export type ObservedState = 'idle' | 'processing';
 export interface ProcInfo {
   pid: number;
   ppid: number;
+  /** Controlling terminal short name ("ttys008") or "??" for none. */
+  tty?: string;
   rssKb: number;
   command: string;
 }
@@ -84,6 +86,8 @@ interface ClaudeSessionFile {
 }
 
 export interface ObservedSession extends EnrichedSession {
+  /** Controlling terminal ("ttys008") — the observed-answer injection target. */
+  tty?: string;
   controlMode: 'observed';
   pid: number;
   cwd?: string;
@@ -156,13 +160,14 @@ export class PassiveSessionObserver {
 export function parseProcessTable(output: string): ProcInfo[] {
   const rows: ProcInfo[] = [];
   for (const line of output.split('\n')) {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/);
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/);
     if (!match) continue;
     rows.push({
       pid: Number(match[1]),
       ppid: Number(match[2]),
       rssKb: Number(match[3]),
-      command: match[4] ?? '',
+      tty: match[4] === '??' ? undefined : match[4],
+      command: match[5] ?? '',
     });
   }
   return rows.filter((p) => p.pid > 0 && p.command.length > 0);
@@ -383,7 +388,7 @@ export function parseCodexRollout(raw: string): TranscriptSummary & { sessionId?
 
 async function collectProcessInfo(): Promise<ProcInfo[]> {
   try {
-    const { stdout } = await execFileAsync('ps', ['-ww', '-eo', 'pid=,ppid=,rss=,command='], {
+    const { stdout } = await execFileAsync('ps', ['-ww', '-eo', 'pid=,ppid=,rss=,tty=,command='], {
       encoding: 'utf8',
       timeout: 2_000,
       maxBuffer: 2 * 1024 * 1024,
@@ -419,6 +424,7 @@ function collectClaudeSessions(processes: ProcInfo[]): ObservedSession[] {
       startedAt: new Date(sessionFile.startedAt).toISOString(),
       controlMode: 'observed',
       cwd: sessionFile.cwd,
+      tty: proc.tty,
       currentTask: summary.currentTask,
       goal: summary.goal,
       contextPercent: summary.contextPercent,

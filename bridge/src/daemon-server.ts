@@ -44,6 +44,7 @@ import {
   notePermissionPromptShown, noteToolEnd, steeringSnapshot,
 } from './observed-steering.js';
 import { resolveSessionIdPrefix } from './session-id-resolve.js';
+import { injectObservedSelection } from './observed-inject.js';
 import { enqueueOpenCodeCommand, pollOpenCodeCommands } from './opencode-steering.js';
 import { runSessionReview, reviewSnapshot } from './review-runner.js';
 
@@ -2710,6 +2711,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           ? command.index === 0
           : command.value === 'y' || command.value === 'yes';
         resolvePending(ov.requestId, allow ? 'allow' : 'deny');
+        return;
+      }
+      // No held gate — a live TUI prompt (AskUserQuestion / selector) is on
+      // the user's screen. Type the selection into the terminal itself
+      // (tmux/iTerm2 by tty) — no hold, no timeout, no auto-proceed: if the
+      // terminal isn't reachable the prompt simply stays for the user.
+      if (type === 'select_option' && typeof command.index === 'number') {
+        const idx = command.index as number;
+        const obs = passiveSessionObserver.collect([])
+          .find((s) => s.id === `observed:claude:${uuid}`);
+        const tty = (obs as { tty?: string } | undefined)?.tty;
+        injectObservedSelection(tty, idx).then((r) => {
+          debug('daemon', r.ok
+            ? `observed selection injected via ${r.via} (idx ${idx}, ${uuid.slice(0, 8)})`
+            : `observed selection NOT injected: ${r.reason} (${uuid.slice(0, 8)})`);
+        }).catch(() => {});
       }
       return;
     }
