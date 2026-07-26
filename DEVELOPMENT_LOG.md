@@ -23,8 +23,12 @@ X3 전송 중 데몬이 죽자(chunk #2898/5233) 수신기가 `rx.active` 를 �
 ### 실기 배포 관찰 (버그 아님, 운영 지식)
 
 - **플래시 실패와 성공은 원격에서 정반대 신호**: 실패=재부팅 없음 → 기기가 **구 buildHash 로 계속 접속 유지**. 성공=ESP.restart → **일시 오프라인**. "OTA complete"(전송+검증 ack)는 플래시 성공을 의미하지 않는다 — 판정은 반드시 재접속 후 buildHash.
-- X4: d98d7abd 플래시+재부팅+재접속까지 원격 실증(M5.5 라이브). X3: 1차 플래시 실패(88aaf098 유지 접속— X4 의 지난 1차 실패와 동일 패턴, SD `/agentdeck.log` 의 `error stage=flash err=…` 라인 회수 과제 유효), 2차는 재부팅까지 확인·복귀는 실기 확인 필요(재부팅 후 Wi-Fi 는 대시보드 액티비티 안에서만 살므로, 부팅이 리더 Home 에 떨어지면 원격 검증 불가).
+- X4: d98d7abd 플래시+재부팅+재접속까지 원격 실증(M5.5 라이브). X3: 오늘 두 번 모두 플래시 실패(88aaf098 잔류).
 - 병렬 세션이 같은 데몬을 재시작하며 작업 중이었다(t_embed) — 세션에서 스폰한 데몬은 언제든 외부에서 SIGTERM 될 수 있고, 그게 OTA 전송 중이면 위 stall 케이스가 된다. `esp32-flash-daemon-respawn-contention` 의 WiFi OTA 판.
+
+### 플래시 실패 원인 확정 — `err=OOM` (포크 6ccbe140 에서 수정)
+
+사용자가 X3 를 File Transfer 모드로 올려줘 SD `/agentdeck.log` 를 원격 회수(`GET /download?path=/agentdeck.log`). 오늘 X3 의 두 실패 모두 `error stage=flash err=OOM` — **4 KiB 스테이징 버퍼의 힙 할당**이 전송 완료 28ms 뒤에 실패한 것. 최초 OTA(부팅 6.9분, young heap)는 성공했고 오늘 시도(가동 88/108분)는 실패 — SD 폰트 글리프 캐시+WS churn 으로 단편화된 no-PSRAM C3 힙에는 4 KiB 연속 블록조차 없다. 게다가 **플래시 실패는 재부팅을 안 하므로 단편화가 그대로 남아 재시도도 계속 실패**하는 자기강화 구조(X4 지난 1차 실패→재부팅 후 재시도 성공과 정합). 수정: `FirmwareFlasher` 의 validate/flash 가 **정적 4 KiB 버퍼 공유**(둘 다 메인 태스크 전용) — 플래시 경로에서 런타임 할당 전면 제거. OOM-fix 펌웨어는 File Transfer 웹 업로드로 X3 SD 에 적재(`crosspoint-6ccbe140.bin`, 바이트 일치 검증) — 구펌 SD-update 경로도 같은 힙 할당을 쓰므로 **재부팅 직후(young heap) 실행**이 안전한 적용 경로.
 
 ---
 
