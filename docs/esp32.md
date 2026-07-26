@@ -100,6 +100,7 @@ OTA 대상 SSOT. **`agentdeck esp32-ota <target>`의 `<target>`은 로컬 Platfo
 | **`86box`**, `box_86`, `box_40` | `box_86` | ~7.75MB | 실험실 유닛은 2026-07-05 USB 마이그레이션 완료; 이전 layout 유닛은 최초 1회 USB full flash 필요 |
 | **`ips_10`**, `ips10`, `ips_101` | `ips10` | ~6.0MB | 실험실 유닛은 2026-07-05 USB 마이그레이션 완료; 이전 layout 유닛은 최초 1회 USB full flash 필요 |
 | **`t_embed`**, `tembed`, `knob` | `t_embed` | ~6.0MB | Companion Knob (인코더 조향); 2026-07-25 OTA 실기 검증 완료 |
+| **`t_display_pro`**, `tdisplaypro`, `ticker`, `s3pro` | `t_display_pro` | ~6.0MB | Focus Strip (캡션 바 + 터치 승인); 공장 single-app 4MB → 최초 1회 USB 플래시로 dual-OTA 마이그레이션. USB CDC 고속 손상 → upload_speed 230400 고정 |
 
 최초 마이그레이션 주의:
 
@@ -155,3 +156,4 @@ AgentDeck esp32/src/net/protocol"*). C3(no-PSRAM/ArduinoJson)에는 C++ 코드�
 | 86 Box | `box_86` | 480×480 | ESP32-S3 | `/dev/cu.wchusbserial2112320` (CH340) | ✅ 연결됨 |
 | 10" IPS Display | `ips10` | 800×1280 | ESP32-P4 | `/dev/cu.wchusbserial211240` (CH340) | ✅ 연결됨 |
 | LilyGO T-Embed CC1101 (Companion Knob) | `t_embed` | 320×170 + 8-LED ring | ESP32-S3 | `/dev/cu.usbmodem2101` (Native USB) | ✅ 연결됨 |
+| LilyGO T-Display-S3-Pro (Focus Strip) | `t_display_pro` | 480×222 + CST226SE 터치 | ESP32-S3 | `/dev/cu.usbmodem3111201` (Native USB) | ✅ 연결됨 |

@@ -2,6 +2,47 @@
 
 ---
 
+## 2026-07-26 — Tide Ticker 승격 + 관측 세션을 기기에서 답하기 (터미널/앱 주입)
+
+### 1) T-Display-S3-Pro "Focus Strip" — 두 번째 Evaluation 보드 승격 (24 surfaces)
+
+env `t_display_pro`. ST7796U 480×222 와이드 스트립. 초기 컨셉("미니 대시보드: usage 게이지 + 세션 목록")을 실물로 보고 **정체성을 바꿨다**: 이 기기는 물리적으로 55×26mm 한 줄짜리 표면이고 대시보드 역할은 이미 플릿이 커버한다. 그래서 기본 화면을 **캡션 바(Focus Strip)** 로 재정의:
+
+- **FOCUS(기본)**: 플릿의 "지금 이 순간" 한 줄 — awaiting > processing > 첫 세션 순으로 하나를 골라 브랜드+프로젝트+캡션을 16px 한글 가능 폰트로. awaiting 이면 전체 높이 amber 바 + 자동순환 정지.
+- **터치 = 응답**: 탭=승인 / 길게=거부 (held gate 면 `permission_decision`, 아니면 `select_option(0)`/`escape` — 노브·ips10 과 같은 폴백 쌍). CST226SE 는 SensorLib, 초기화 재시도 + 벤더식 전체 포인트 배열 읽기.
+- USAGE/SESSIONS 는 버튼·자동순환으로 넘기는 보조 페이지. 게이지는 **존재하는 윈도우만** 렌더(Codex 5h 폐지 반영, "--" 날조 금지) + 구독 상품 라인.
+- V1.1 백라이트는 PWM 이 아니라 **펄스 스텝 정전류**(GPIO48, 16단계) — 벤더 `AdjustBacklight.ino` 를 그대로 포팅. LTR-553 조도 3단 커브를 호스트 display-sleep 계약과 합성.
+- 공장 single-app 4MB → 최초 USB 플래시로 16MB dual-OTA 마이그레이션. **이 유닛 USB CDC 는 고속에서 스트림이 깨진다** → env 에 `upload_speed = 230400` 고정(백업 캡처 때도 같은 증상이었다).
+
+### 2) 관측 세션을 기기에서 답하기 — 주입 사다리
+
+그냥 `claude` 로 띄운 세션(=대부분)은 지금까지 **보기만** 가능했다. hold+타임아웃 설계는 사용자가 거부("자동 진행 원치 않음"). 대신 **이미 떠 있는 프롬프트에 사용자가 칠 키를 데몬이 대신 친다**:
+
+- 터미널 호스트(controlling tty 로 식별): tmux `send-keys` → iTerm2 `write text` → Terminal.app(탭 선택 후 pid 로 키 전송)
+- 앱 호스트(tty 없음, 프로세스 조상에서 `.app` 추출): 옵션 라벨과 일치하는 AX 버튼 click → pid 키 전송 → (최후) raise+복원
+- **모든 룽이 포커스-프리**: `CGEventPostToPid`(JXA ObjC 브리지)로 앱을 앞으로 끌어내지 않고 키를 넣는다. 실측: iTerm2 가 frontmost 인 채로 백그라운드 Terminal 탭이 `ESC[B ESC[B CR` 수신.
+- 도달 실패 시 **아무 일도 일어나지 않는다**(프롬프트 유지). 튜닝/검증용 `agentdeck inject-test` 추가.
+
+**측정된 막다른 길 2개(재시도 금지)**: TIOCSTI 는 자기 controlling terminal 이 아니면 macOS 에서 EPERM — 에뮬레이터를 한 번에 덮는 커널 경로는 없다. ChatGPT.app 은 AX 트리에 콘텐츠를 노출하지 않는다(창=제목없는 AXButton 3개+빈 AXGroup, `AXManualAccessibility`=kAXErrorAttributeUnsupported) → 버튼 룽 무효, 키 전송이 그 호스트의 유일한 길.
+
+**페이싱이 정확성 문제였다**: 리드인 없이 0.05s 간격으로 쏘면 백그라운드 앱이 앞의 Down 2개를 삼키고 Return 만 도착 → **엉뚱한 옵션이 선택된다**. 0.30s 워밍업 + 0.12s 간격으로 고정.
+
+### 3) 삼킴 버그 2건 (기기 탭이 "된 것처럼 보이는데" 안 되던 진짜 원인)
+
+- **OpenClaw 게이트웨이가 세션 지정 명령을 소비**: 게이트웨이가 살아 있으면 `session_command` 가 exempt 목록에 없어 조용히 return — 세션 스코프 명령(sessionId 있고 ≠openclaw-gateway)은 게이트웨이 소비에서 제외.
+- **serial 명령 채널 부재**: WiFi 파킹된 serial-attached 보드의 조향 프레임이 device_info 전용 파서에서 드랍 → passlist 를 WS 와 동일한 파이프라인으로 포워딩.
+
+둘 다 Node → Swift 포팅 완료. Swift 는 실측 로그로 검증: 31자 절단 id 가 게이트웨이 연결 상태에서 관측 분기에 도달(`observed select_option … no held gate — live-prompt answering is CLI-daemon only`). 이 로그 자체가 티어 경계를 사용자에게 설명해 주는 진단이기도 하다.
+
+### 4) 티어 정책
+
+터미널/앱 주입은 `ps` tty 탐색 + tmux/osascript 서브프로세스를 요구하므로 **CLI 데몬 전용(Tier 2)** — feature matrix 에 기록. 정책 결정: **Swift 는 샌드박스가 허용하는 한 최대한 Node 를 따라간다**(계약된 코어만이 아니라), **GUI 앱도 최대한 되게 간다**.
+
+### 남은 것
+NFC 태그→명령 매핑 설정, 음성 Stage 3(오디오 스트리밍 + 호스트 STT/TTS), BLE 폰 릴레이, IR/sub-GHz 캡처, GUI 앱 실물 프롬프트에서의 키 시맨틱 확인(`agentdeck inject-test --app`).
+
+---
+
 ## 2026-07-26 — XTeink M5 Face 셸 + WiFi OTA v1 클라이언트 (실기 검증 완료)
 
 ### 문제

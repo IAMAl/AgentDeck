@@ -51,7 +51,8 @@ Do not copy numeric specifications into domain guides. Link back to this matrix 
 | TTGO T-Display 1.14 | ESP32 display | ESP32 classic | ST7789 · 135×240 | USB serial · Wi-Fi WS | Yes |
 | Waveshare LCD 1.47 | ESP32 display | ESP32-C6 | ST7789 · 172×320 | USB serial · Wi-Fi WS | Yes |
 | IPS 10.1 | ESP32 display | ESP32-P4 + C6 | JD9365 MIPI-DSI · 800×1280 | USB serial · Wi-Fi WS | Yes |
-| T-Embed Companion Knob | ESP32 knob | ESP32-S3 | ST7789 · 320×170 + 8-LED ring | Wi-Fi WS · USB serial | Partial |
+| T-Embed Companion Knob | ESP32 knob | ESP32-S3 | ST7789 · 320×170 + 8-LED ring | Wi-Fi WS · USB serial | Yes |
+| T-Display-S3-Pro Focus Strip | ESP32 strip | ESP32-S3 | ST7796U · 480×222 + touch | Wi-Fi WS · USB serial | Yes |
 | Ulanzi TC001 | ESP32 LED | ESP32 classic | WS2812B · 32×8 | USB serial · Wi-Fi WS | Partial |
 | InkDeck | ESP32 e-ink | XIAO ESP32-S3 Plus | UC8179 e-ink · 7.5″ · 800×480 | USB serial · Wi-Fi WS | Yes |
 | XTeink X3 | e-ink reader | ESP32-C3 | E-ink · 3.7″ · 528×792 | Wi-Fi WS | Partial |
@@ -72,7 +73,7 @@ Do not copy numeric specifications into domain guides. Link back to this matrix 
 
 `App Store` describes compatibility with the submitted Apple app and its Swift daemon, not whether third-party host software is bundled. Stream Deck and D200H still require their vendor applications.
 
-**Counted surfaces: 23.** Public surface-count claims (README, landing page) mirror this derivation: every row above except the protocol rows (SSE stream) counts. XTeink X3/X4 operate normally (both register with the daemon over Wi-Fi) but run the community CrossPoint fork — their Partial mark states that distribution limitation, see operational exceptions. Update this line and the mirrors together when rows change.
+**Counted surfaces: 24.** Public surface-count claims (README, landing page) mirror this derivation: every row above except the protocol rows (SSE stream) counts. XTeink X3/X4 operate normally (both register with the daemon over Wi-Fi) but run the community CrossPoint fork — their Partial mark states that distribution limitation, see operational exceptions. Update this line and the mirrors together when rows change.
 
 ## ESP32 board specification sheet
 
@@ -82,15 +83,15 @@ Rows are ordered by overall capability, applied in this precedence: SoC class, t
 
 - **Shipping** — runs AgentDeck firmware from `esp32/`, and has a row in the surface matrix above.
 - **Community fork** — a counted surface that registers with the daemon and renders normally, but runs the external CrossPoint Reader fork rather than this repository's firmware.
-- **Evaluation** — hardware on hand that AgentDeck does not yet build firmware for. These rows are *not* counted as surfaces and carry no compatibility claim; they exist so board selection starts from measured facts rather than vendor copy.
+- **Evaluation** — hardware on hand that AgentDeck does not yet build firmware for. These rows are *not* counted as surfaces and carry no compatibility claim; they exist so board selection starts from measured facts rather than vendor copy. No board currently sits here: the last two (T-Embed CC1101, T-Display-S3-Pro) graduated on 2026-07-25/26.
 
 | Board | `device_info.board` · env | SoC | Flash · PSRAM | Display | Controller | Input | Notable peripherals | Host link | OTA slot | Status |
 |---|---|---|---|---|---|---|---|---|---:|---|
 | JC8012P4A1C | `ips_10` · `ips10` | ESP32-P4NRW32 + C6 | 16 MB · 32 MB | 10.1″ IPS LCD · 800×1280 | JD9365 MIPI-DSI | GSL3680 touch | ESP32-C6 Wi-Fi coprocessor | CH340 USB serial | 6 MB | Shipping |
 | ESP32-S3-4848S040 | `86box` · `box_86` | ESP32-S3 | 16 MB · 8 MB | 4.0″ IPS LCD · 480×480 | ST7701 RGB | GT911 touch | — | CH340 USB serial | 7.75 MB | Shipping |
 | JC3248W535 | `ips_35` · `ips35` | ESP32-S3 | 16 MB · 8 MB | 3.5″ IPS LCD · 480×320 | AXS15231B QSPI | AXS15231B touch (0x3B) | FAT data partition | Native USB JTAG | 3.5 MB | Shipping |
-| LilyGO T-Display-S3-Pro V1.1 · GC0308 | — | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | GC0308 camera · SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh | Native USB JTAG | — | Evaluation |
-| LilyGO T-Display-S3-Pro V1.1 · no camera | — | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh · camera POGO header | Native USB JTAG | — | Evaluation |
+| LilyGO T-Display-S3-Pro V1.1 · GC0308 | `t_display_pro` · `t_display_pro` | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | GC0308 camera · SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh | Native USB JTAG | 6 MB | Shipping |
+| LilyGO T-Display-S3-Pro V1.1 · no camera | `t_display_pro` · `t_display_pro` | ESP32-S3R8 | 16 MB · 8 MB | 2.33″ IPS LCD · 480×222 | ST7796U SPI | CST226SE touch (0x5A) · 3 buttons | SY6970 PMU (0x6A) · LTR-553ALS (0x23) · microSD · 470 mAh · camera POGO header | Native USB JTAG | 6 MB | Shipping |
 | LilyGO T-Embed CC1101 | `t_embed` · `t_embed` | ESP32-S3-WROOM-1 | 16 MB · 8 MB | 1.9″ IPS LCD · 320×170 | ST7789 SPI | Rotary encoder · button | CC1101 sub-GHz · PN532 NFC (0x24) · IR TX/RX · 8× WS2812 · mic + speaker · BQ25896 (0x6B) · BQ27220 (0x55) · microSD · 1300 mAh | Native USB JTAG | 6 MB | Shipping |
 | JC3636W518 | `round_amoled` · `amoled` | ESP32-S3 | 8 MB · 8 MB | 1.8″ round AMOLED · 360×360 | ST77916 QSPI | CST816S touch | — | Native USB JTAG | 3 MB | Shipping |
 | Seeed TRMNL 7.5 DIY Kit | `inkdeck` · `inkdeck` | XIAO ESP32-S3 Plus | 8 MB · 8 MB | 7.5″ e-ink 1-bit · 800×480 | UC8179 | — | USB-powered only | Native USB CDC | 3.19 MB | Shipping |
@@ -104,7 +105,7 @@ The ordering is by panel and compute, so peripheral breadth does not drive it. O
 
 The XTeink readers are ESP32 boards and belong in this sheet, but they are the only rows AgentDeck neither builds nor flashes: one CrossPoint fork binary serves both models and picks `xteink_x3` or `xteink_x4` at runtime from an I2C IMU fingerprint. They reach the daemon over Wi-Fi only — there is no USB-serial path. Since fork build 88aaf098 (2026-07-26, X4 hardware-verified) they implement AgentDeck WiFi OTA v1: `agentdeck esp32-ota xteink_x4 --firmware <bin>` streams chunks to an SD cache which is validated and then raw-partition-flashed (the fork never uses the Arduino `Update` class — X4 silicon rejects the patched image through `esp_image_verify`); the SD-card `update.bin` flow remains the recovery/bootstrap fallback. Both are portrait in device coordinates: the X4 panel is quoted 800×480 on its datasheet (long axis first) but the firmware declares it 480×800, and CrossPoint boots portrait with orientation left as a user setting.
 
-OTA slot sizes are the measured `device_info.otaSlotSize` from live boards, matching `esp32/partitions/*.csv`. The remaining Evaluation unit (T-Display-S3-Pro) runs vendor factory firmware with a single-app 4 MB shipped partition table and has no AgentDeck OTA layout. Factory images and restore instructions — including the captured S3-Pro and T-Embed images — live in [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md).
+OTA slot sizes are the measured `device_info.otaSlotSize` from live boards, matching `esp32/partitions/*.csv`. The T-Display-S3-Pro shipped with a single-app 4 MB factory table; its first USB flash migrates it to the 16 MB dual-OTA layout, after which it updates over Wi-Fi like every other board. Factory images and restore instructions — including the captured S3-Pro and T-Embed images — live in [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md).
 
 Operational exceptions:
 
@@ -117,7 +118,8 @@ Operational exceptions:
 - T-Display-S3-Pro ships in hardware revisions V1.0 and V1.1 that differ in backlight drive, with no runtime detection — the vendor selects it at compile time with `USING_DISPLAY_PRO_V1`. V1.0 is LEDC PWM with 255 levels; V1.1 is a constant-current driver pulsed on GPIO 48 with 16 levels. Both on-hand units are V1.1, so that flag must stay undefined for them. The vendor `platformio.ini` comment on this flag has its two revisions transposed; the `#ifdef` branches in `AdjustBacklight.ino` and `utilities.h` are authoritative.
 - T-Display-S3-Pro camera is a purchase option (`GC0308`, `OV5640`, or none) on a POGO shield header, not a board revision. Its SCCB lines share the I2C bus with touch, PMU, and the light sensor, so capture and touch responsiveness interact.
 - T-Embed CC1101 has a known upstream defect where the panel stays dark after flashing; the vendor ships a dedicated fix image and advises pressing `RST` on the back afterwards. Check this before diagnosing a hardware fault.
-- The T-Embed Companion Knob's steering round-trip (session-scoped `select_option` / `session_command`) is hardware-verified against the Node daemon. On the Swift daemon the board attaches over WiFi WS with the same shaped stream, and the device-truncated-session-id resolver was live-verified there on 2026-07-25 (both daemons restore a 31-char device echo to the full id by unique prefix); what remains unexercised on Swift is a full observed STOP/approve press from the device — that last step is the knob's Partial mark in the surface matrix.
+- Steering from the T-Embed knob and the T-Display-S3-Pro strip is hardware-verified against both daemons: the session-scoped `select_option` / `session_command` round-trip on Node, and on Swift the truncated-id resolver plus the session-scoped command guard (a device echo of a 31-char id reached the observed branch while the OpenClaw gateway was connected). Answering a *live, unheld* terminal prompt from a device needs terminal injection and is CLI-daemon only — see [App Store feature matrix](appstore-feature-matrix.md).
+- T-Display-S3-Pro V1.1 backlight is a pulse-stepped constant-current driver (16 levels on GPIO 48), ported verbatim from the vendor `AdjustBacklight.ino`; the LTR-553 ambient sensor drives a local three-band dim curve composed with the host display-sleep contract. Its USB CDC corrupts esptool streams at high baud — the `t_display_pro` env pins stub uploads at 230400.
 
 ## Pixel displays and control decks
 
