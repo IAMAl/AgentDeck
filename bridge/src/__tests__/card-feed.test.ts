@@ -47,7 +47,8 @@ describe('classifySessionCard', () => {
 
 describe('buildCardFeed', () => {
   it('derives one card per session with cardId session:<id>', () => {
-    const feed = buildCardFeed([session({ id: 'a' }), session({ id: 'b', state: 'awaiting_option' })], NOW);
+    // `[]` = no card modules: this asserts the session projection alone.
+    const feed = buildCardFeed([session({ id: 'a' }), session({ id: 'b', state: 'awaiting_option' })], NOW, []);
     expect(feed.type).toBe('card_feed');
     expect(feed.rev).toBe(1);
     expect(feed.serverTime).toBe(NOW);
@@ -55,6 +56,16 @@ describe('buildCardFeed', () => {
     expect(feed.cards.map((c) => c.cardId)).toEqual(['session:a', 'session:b']);
     expect(feed.cards[1]!.actionClass).toBe('live');
     expect(feed.cards[0]!.session?.id).toBe('a');
+  });
+
+  it('module cards (M7) follow the session projections and carry no session body', () => {
+    const feed = buildCardFeed([session({ id: 'a', projectName: 'AgentDeck' })], NOW);
+    const modules = feed.cards.filter((c) => c.module);
+    expect(feed.cards[0]!.cardId).toBe('session:a');
+    expect(modules.map((c) => c.cardId)).toEqual(['module:thread:open']);
+    expect(modules[0]!.session).toBeUndefined();
+    expect(modules[0]!.actionClass).toBe('info');
+    expect(modules[0]!.module!.module).toBe('thread');
   });
 
   it('pull cadence hint: idle roster → idle interval, active roster → active interval', () => {

@@ -29,7 +29,7 @@ import { dirname, join } from 'path';
 import type { BridgeEvent } from './types.js';
 import { SERIAL_FORWARDED_EVENTS } from '@agentdeck/shared/protocol';
 import type { ESP32ToHostMessage, WifiProvisionMessage } from '@agentdeck/shared/protocol';
-import { formatResetTime } from '@agentdeck/shared';
+import { formatResetTime, truncateUtf8Bytes } from '@agentdeck/shared';
 import { debug, logTagged } from './logger.js';
 
 /** @internal Exported for testing only */
@@ -491,16 +491,7 @@ export function prepareForSerial(event: BridgeEvent, _conn?: Pick<SerialConnecti
  */
 function limitString(value: unknown, maxBytes: number): string | undefined {
   if (typeof value !== 'string') return undefined;
-  if (Buffer.byteLength(value, 'utf-8') <= maxBytes) return value;
-  let used = 0;
-  let end = 0;
-  for (const ch of value) {                       // iterates code points, not UTF-16 units
-    const n = Buffer.byteLength(ch, 'utf-8');
-    if (used + n > maxBytes) break;
-    used += n;
-    end += ch.length;
-  }
-  return value.slice(0, end);
+  return truncateUtf8Bytes(value, maxBytes);
 }
 
 /** ISO date → short "~M/D" for clock-less serial panels ('' when absent/invalid). */
@@ -750,6 +741,19 @@ export function sendSerialJson(port: string, msg: Record<string, unknown> | stri
  *  as its liveness signal, the way the WS sink uses readyState. */
 export function serialPortConnected(port: string): boolean {
   return connections.some((c) => c.port === port && c.connected);
+}
+
+/** Board wire string identified on this port, if any. */
+export function serialPortBoard(port: string): string | undefined {
+  const conn = connections.find((c) => c.port === port);
+  const board = conn?.deviceInfo?.board;
+  return typeof board === 'string' && board ? board : undefined;
+}
+
+/** Port of a live serial connection for this board string, if one is attached. */
+export function liveSerialPortForBoard(board: string): string | undefined {
+  const conn = connections.find((c) => c.connected && c.deviceInfo?.board === board);
+  return conn?.port;
 }
 
 /** Capabilities the board on this port advertised (empty when unidentified). */

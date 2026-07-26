@@ -68,6 +68,29 @@ export function formatBytes(bytes: number): string {
   return `${bytes}B`;
 }
 
+/**
+ * Truncate to a UTF-8 **byte** budget on a code-point boundary.
+ *
+ * Firmware buffers are byte arrays, so every daemon text cap must be a byte
+ * budget: 39 Hangul syllables are 117 bytes, and a character-counted cap sails
+ * past a `char[40]` and gets cut mid-sequence by the board's `strncpy` — which
+ * renders as broken glyphs, not as truncation. Iterating code points (not
+ * UTF-16 units) is what keeps the cut on a boundary.
+ */
+export function truncateUtf8Bytes(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  if (Buffer.byteLength(value, 'utf-8') <= maxBytes) return value;
+  let used = 0;
+  let end = 0;
+  for (const ch of value) {
+    const n = Buffer.byteLength(ch, 'utf-8');
+    if (used + n > maxBytes) break;
+    used += n;
+    end += ch.length;
+  }
+  return value.slice(0, end);
+}
+
 /** Format uptime from seconds: 3725 → "1h 2m" */
 export function formatUptime(sec: number): string {
   if (sec < 60) return `${sec}s`;

@@ -22,6 +22,12 @@ import {
   CARD_FEED_IDLE_PULL_SEC,
   CARD_FEED_ACTIVE_PULL_SEC,
 } from '@agentdeck/shared';
+import {
+  buildModuleCards,
+  applyModuleChoice,
+  DEFAULT_CARD_MODULES,
+  type CardModule,
+} from './card-modules.js';
 
 /** A pulled permission gate is answerable only while the PreToolUse long-poll
  *  still holds the hook open (~60s) — pulled copies are honest about that. */
@@ -45,12 +51,20 @@ export function classifySessionCard(
   return { actionClass: 'info' };
 }
 
-export function buildCardFeed(sessions: SessionInfo[], now: number = Date.now()): CardFeedResponse {
+export function buildCardFeed(
+  sessions: SessionInfo[],
+  now: number = Date.now(),
+  modules: CardModule[] = DEFAULT_CARD_MODULES,
+): CardFeedResponse {
   const cards: FeedCard[] = sessions.map((s) => ({
     cardId: `session:${s.id}`,
     ...classifySessionCard(s, now),
     session: s,
   }));
+  // Module cards (M7) come after the session projections: what is happening
+  // outranks what the daemon wants to say about it. A client that predates
+  // modules skips bodies it doesn't recognise.
+  cards.push(...buildModuleCards({ sessions, now }, modules));
   const active = sessions.some((s) => s.state === 'processing' || isAwaitingState(s));
   const d = new Date(now);
   const serverHm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -73,9 +87,14 @@ export interface OutboxApplyDeps {
    *  fire-and-forget, so `applied` means accepted-for-delivery. */
   dispatch(cmd: Record<string, unknown>): void;
   now?: number;
+  /** Card modules a `card_choice` may route to (M7). Defaults to the
+   *  registered set — overridden in tests. */
+  modules?: CardModule[];
 }
 
-const OUTBOX_ACTIONS = new Set(['permission_decision', 'select_option', 'respond', 'send_prompt', 'dismiss']);
+const OUTBOX_ACTIONS = new Set([
+  'permission_decision', 'select_option', 'respond', 'send_prompt', 'dismiss', 'card_choice',
+]);
 
 function sessionIdOf(d: OutboxDecision): string | undefined {
   if (typeof d.sessionId === 'string' && d.sessionId) return d.sessionId;
@@ -93,6 +112,14 @@ function applyOne(d: OutboxDecision, deps: OutboxApplyDeps): OutboxDecisionResul
   // Device-local dismissal — acknowledged so the device can drop it; the
   // daemon has nothing to mutate (dismissal memory lives on the device).
   if (d.action === 'dismiss') return { cardId, status: 'applied' };
+
+  // Module card (M7): the authoring module owns what the choice means. This is
+  // the `day` class in practice — the press may have happened hours ago and
+  // offline, so nothing here is validated against live session state.
+  if (d.action === 'card_choice') {
+    const outcome = applyModuleChoice(d, { sessions: deps.sessions, now: deps.now ?? Date.now() }, deps.modules);
+    return { cardId, status: outcome.status, ...(outcome.reason ? { reason: outcome.reason } : {}) };
+  }
 
   if (d.action === 'permission_decision') {
     if (typeof d.requestId !== 'string' || !d.requestId || (d.decision !== 'allow' && d.decision !== 'deny')) {

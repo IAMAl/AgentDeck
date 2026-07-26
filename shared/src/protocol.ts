@@ -685,19 +685,80 @@ export interface Esp32OtaErrorCommand {
  */
 export type CardActionClass = 'live' | 'day' | 'info';
 
-/** One card in the pull feed. M6 derives every card from a live session (the
- *  same display fields `sessions_list` carries); M7 generalizes to daemon card
- *  modules with their own bodies. */
+// ===== Card modules (M7) — the non-session card producers =====
+//
+// M6 cards are all projections of a live session. A module card is authored by
+// the daemon instead: a checkpoint, a digest, a nudge, a commitment. It carries
+// its own body because there is no session row to render.
+//
+// The device grammar does not change: one screen, one question, at most four
+// choices, one press. Slot 1 of the four front buttons is always **Later** and
+// is supplied by the device, so a module binds at most three — `CARD_MAX_CHOICES`
+// is that rule as a number, clamped at the daemon's build chokepoint so a
+// device never has to decide what to do with a fifth.
+
+/** Which daemon module authored a card. Session-derived cards carry none.
+ *
+ * - `thread` — work checkpoint: where each open thread stopped.
+ * - `pulse`  — periodic digest of what happened.
+ * - `nudge`  — a question the user agreed to be asked ("still on this?").
+ * - `quest`  — a standing commitment tracked across days.
+ *
+ * `thread`/`pulse` are read-only (`info`); `nudge`/`quest` are the first `day`
+ * class producers — answerable offline, queued in the device outbox. */
+export type CardModuleId = 'thread' | 'pulse' | 'nudge' | 'quest';
+
+/** Max choices a module card may bind (slot 1 is the device's own **Later**).
+ *  Producers clamp; they never grow a fifth button. */
+export const CARD_MAX_CHOICES = 3;
+/** Max supporting lines under the question. The panel is small and the rule is
+ *  one screen — a module that needs more is really two cards. */
+export const CARD_MAX_CONTEXT_LINES = 4;
+
+export interface CardChoice {
+  /** Echoed back as the outbox decision's `choiceId`. Must be a stable
+   *  meaning, never a position: a card answered from an hour-old cache has to
+   *  select the same thing it displayed, even if the order has since changed. */
+  id: string;
+  /** Button label. The e-ink hint bar budgets by UTF-8 bytes, so CJK labels
+   *  must stay short (see the device's card text caps). */
+  label: string;
+  /** Rendering hint only — it never affects routing. */
+  intent?: 'affirm' | 'deny' | 'neutral';
+}
+
+/** Body of a module-authored card. */
+export interface ModuleCard {
+  module: CardModuleId;
+  /** Card header — the module's own name in the device's voice ("THREAD"). */
+  title: string;
+  /** The one question or headline. */
+  question: string;
+  /** Supporting lines, at most `CARD_MAX_CONTEXT_LINES`. */
+  context?: string[];
+  /** At most `CARD_MAX_CHOICES`. Absent/empty = read-only card. */
+  choices?: CardChoice[];
+  /** The session this card is *about*, when it has one, so the device can
+   *  offer Detail without inventing a link. */
+  sessionId?: string;
+}
+
+/** One card in the pull feed. Exactly one body is present: `session` for the
+ *  M6 session projections, `module` for an M7 module card. A client that
+ *  predates modules skips bodies it doesn't recognise rather than rendering a
+ *  blank card. */
 export interface FeedCard {
   /** Stable id for outbox correlation — `session:<sessionId>` for
-   *  session-derived cards; M7 modules will use their own prefixes. */
+   *  session-derived cards, `module:<moduleId>:<key>` for module cards. */
   cardId: string;
   actionClass: CardActionClass;
   /** Epoch-ms after which a `live` card is no longer answerable. Absent on
    *  `day`/`info` cards. */
   expiresAt?: number;
-  /** Session-derived card body (M6: always present). */
+  /** Session-derived card body (M6). */
   session?: SessionInfo;
+  /** Module-authored card body (M7). */
+  module?: ModuleCard;
 }
 
 export interface CardFeedResponse {
@@ -728,7 +789,10 @@ export interface OutboxDecision {
   /** Permission gate correlation — required when action=`permission_decision`;
    *  the gate must still be pending or the decision is rejected as expired. */
   requestId?: string;
-  action: 'permission_decision' | 'select_option' | 'respond' | 'send_prompt' | 'dismiss';
+  action: 'permission_decision' | 'select_option' | 'respond' | 'send_prompt' | 'dismiss' | 'card_choice';
+  /** action=card_choice — the `CardChoice.id` the user pressed on a module
+   *  card. Routed back to the authoring module, which owns what it means. */
+  choiceId?: string;
   /** action=permission_decision */
   decision?: 'allow' | 'deny';
   /** action=select_option — wire option index. */

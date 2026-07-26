@@ -162,6 +162,43 @@ and pull while on battery.
   a newer prompt).
 - **Auth**: same as `/apme` — local connections free, LAN needs the pairing
   token as `?token=` (devices hold it from provisioning; `/health` exposes it).
+- **The daemon logs every pull**, because a sleeping client with an empty outbox
+  sends nothing else: one line per `GET /feed` with the gap since that client's
+  previous pull, measured against the `nextPullSec` it was handed last time.
+  `agentdeck devices` shows the same under `Card feed`. That gap is how a timer
+  wake is confirmed at all — and how far the device's internal clock drifted.
+  Clients are keyed by IP; a board becomes named once an outbox push (or a live
+  WS `device_info`) tells the daemon which board that IP is.
+
+### Card modules (M7)
+
+A card no longer has to be a projection of a session. A **module card** is
+authored by the daemon — a checkpoint, a digest, a nudge, a commitment — and
+carries its own body in `FeedCard.module` (`ModuleCard`) instead of
+`FeedCard.session`. Types: `shared/src/protocol.ts` § Card modules; producers:
+`bridge/src/card-modules.ts`.
+
+- **Exactly one body per card.** A client that predates modules must skip cards
+  whose `session` is absent rather than render a blank one (the XTeink fork
+  already does: `applyCardFeed` continues on a null session).
+- **`cardId` is `module:<moduleId>:<key>`** — that prefix is how a choice
+  recorded hours ago finds the module that authored the card.
+- **At most three choices.** Slot 1 of the four front buttons is the device's
+  own *Later*, so a module binds at most `CARD_MAX_CHOICES` = 3, and at most
+  `CARD_MAX_CONTEXT_LINES` = 4 supporting lines. The daemon clamps at its build
+  chokepoint (`sealModuleCard`) — a client never has to decide what to do with
+  a fifth button.
+- **Text is trimmed to UTF-8 byte budgets** on code-point boundaries before it
+  leaves the daemon, matched to the device's card buffers. Firmware should still
+  defend its own `strncpy`.
+- **Answering**: `POST /outbox` with `action: "card_choice"` and the
+  `CardChoice.id` (not a position — a card answered from a stale cache must
+  select what it displayed). The result is terminal like every other outbox
+  status. Choices carry an optional `intent` (`affirm`/`deny`/`neutral`) that is
+  a rendering hint only.
+- **Read-only modules take no choices.** `thread` (the shipped reference
+  producer) and `pulse` are `info`; `nudge` and `quest` are the first `day`
+  class producers — answerable offline, queued in the device outbox.
 
 ## Peripheral primitives (optional, 2026-07-25)
 
