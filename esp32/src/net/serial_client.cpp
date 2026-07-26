@@ -8,6 +8,10 @@
 #if defined(BOARD_T_EMBED)
 #include "../input/power_monitor.h"
 #endif
+#if defined(BOARD_T_DISPLAY_PRO)
+#include "../input/touch_strip.h"
+#include "../input/light_sensor.h"
+#endif
 #if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK)
 #include "../ui/screens/splash.h"
 #endif
@@ -132,6 +136,14 @@ static void sendDeviceInfoSerial() {
         } else {
             resp["batteryDiag"] = ps.gaugeErr;  // Wire error code — see power_monitor.h
         }
+    }
+#endif
+#if defined(BOARD_T_DISPLAY_PRO)
+    {
+        // Remote peripheral diag — lets /devices answer "did touch/ALS init?"
+        // without stealing the serial port.
+        resp["touchReady"] = Input::touchReady();
+        resp["alsReady"] = Input::lightReady();
     }
 #endif
     OtaCapability::Info ota = OtaCapability::get();

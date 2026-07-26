@@ -163,6 +163,14 @@ export interface SerialConnection {
     sessionCount?: number;
     usageFiveH?: number;
     processingCount?: number;
+    /** Peripheral telemetry/diag (capability-advertising boards). */
+    capabilities?: string[];
+    batteryPercent?: number;
+    batteryCharging?: boolean;
+    usbPowered?: boolean;
+    batteryDiag?: number;
+    touchReady?: boolean;
+    alsReady?: boolean;
   } | null;
   /** True once a device_info arrived on THIS connection (vs. cache-seeded).
    * Identify retries key off this — a cache-seeded deviceInfo must not stop
@@ -749,6 +757,13 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           sessionCount: (msg as any).sessionCount,
           usageFiveH: (msg as any).usageFiveH,
           processingCount: (msg as any).processingCount,
+          capabilities: (msg as any).capabilities,
+          batteryPercent: (msg as any).batteryPercent,
+          batteryCharging: (msg as any).batteryCharging,
+          usbPowered: (msg as any).usbPowered,
+          batteryDiag: (msg as any).batteryDiag,
+          touchReady: (msg as any).touchReady,
+          alsReady: (msg as any).alsReady,
         };
         conn.deviceInfoFresh = true;
         if (conn.deviceInfo.board) {

@@ -10,6 +10,7 @@ namespace Input {
 enum class TouchGesture : uint8_t { NONE = 0, TAP, HOLD };
 
 bool touchInit();
+bool touchReady();
 TouchGesture touchPoll(uint32_t nowMs);
 
 }  // namespace Input

@@ -27,6 +27,10 @@ bool lightInit() {
     return s_enabled;
 }
 
+bool lightReady() {
+    return s_enabled;
+}
+
 int lightPollLux(uint32_t nowMs) {
     if (!s_enabled) return -1;
     if ((uint32_t)(nowMs - s_lastPollMs) < POLL_INTERVAL_MS) return s_lastLux;

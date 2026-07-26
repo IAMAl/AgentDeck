@@ -8,6 +8,7 @@
 namespace Input {
 
 bool lightInit();
+bool lightReady();
 
 // Self-throttled poll (~5s). Returns the latest ALS reading in rough lux,
 // or -1 when the sensor is absent/not yet read.

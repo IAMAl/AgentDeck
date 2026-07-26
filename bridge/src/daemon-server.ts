@@ -149,6 +149,14 @@ interface WifiEsp32Device {
   otaSlotSize?: number;
   otaFreeSketchSpace?: number;
   otaReason?: string;
+  /** Peripheral telemetry/diag from capability-advertising boards. */
+  capabilities?: string[];
+  batteryPercent?: number;
+  batteryCharging?: boolean;
+  usbPowered?: boolean;
+  batteryDiag?: number;
+  touchReady?: boolean;
+  alsReady?: boolean;
   lastSeenMs: number;
 }
 const wifiEsp32Devices = new Map<string, WifiEsp32Device>();
@@ -251,6 +259,16 @@ function registerWifiEsp32(d: Record<string, unknown>, ws: WebSocket): void {
     otaSlotSize: typeof d.otaSlotSize === 'number' ? d.otaSlotSize : undefined,
     otaFreeSketchSpace: typeof d.otaFreeSketchSpace === 'number' ? d.otaFreeSketchSpace : undefined,
     otaReason: typeof d.otaReason === 'string' ? d.otaReason : undefined,
+    // Peripheral telemetry/diag — without these the /devices view silently
+    // drops what capability-advertising boards report (the t_embed battery
+    // fields were invisible here for a day for exactly this reason).
+    capabilities: Array.isArray(d.capabilities) ? d.capabilities as string[] : undefined,
+    batteryPercent: typeof d.batteryPercent === 'number' ? d.batteryPercent : undefined,
+    batteryCharging: typeof d.batteryCharging === 'boolean' ? d.batteryCharging : undefined,
+    usbPowered: typeof d.usbPowered === 'boolean' ? d.usbPowered : undefined,
+    batteryDiag: typeof d.batteryDiag === 'number' ? d.batteryDiag : undefined,
+    touchReady: typeof d.touchReady === 'boolean' ? d.touchReady : undefined,
+    alsReady: typeof d.alsReady === 'boolean' ? d.alsReady : undefined,
     lastSeenMs: Date.now(),
   });
   wifiEsp32Sockets.set(key, ws);
