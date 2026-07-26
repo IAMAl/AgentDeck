@@ -107,6 +107,21 @@ All surfaces follow the same rule:
 
 The Node daemon deliberately excludes the App Store container from settings discovery. A non-sandboxed process reading that container can trigger TCC hangs; coexisting Tier 2 settings must live in the daemon’s own data directory.
 
+## Parity intent (decided 2026-07-26)
+
+The tier split is a sandbox consequence, not a product goal. Two standing
+decisions follow from that:
+
+1. **The Swift daemon tracks the Node daemon as closely as the sandbox
+   allows.** When a capability lands on Node, port it to Swift unless an
+   entitlement or the no-subprocess contract makes it impossible — and when it
+   is impossible, say so where the user can see it (a log line or hidden UI),
+   never a silent no-op.
+2. **App-hosted agent surfaces are pursued, not written off.** Claude.app and
+   ChatGPT.app sessions are first-class targets for steering; where their
+   accessibility trees are opaque, use the focus-free key path and keep the
+   button path for hosts that do expose controls.
+
 ## Required change order
 
 1. Add or change the capability row in this matrix.

@@ -46,6 +46,7 @@ import {
 import { resolveSessionIdPrefix } from './session-id-resolve.js';
 import { injectObservedSelection } from './observed-inject.js';
 import { setSerialCommandSink } from './esp32-serial.js';
+import { parsePeripheralMappings, resolvePeripheralAction, commandForAction } from './peripheral-mapping.js';
 import { enqueueOpenCodeCommand, pollOpenCodeCommands } from './opencode-steering.js';
 import { runSessionReview, reviewSnapshot } from './review-runner.js';
 
@@ -2958,8 +2959,37 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // (tag → focus/approve) comes later as daemon-side config.
     if ((cmd.type as string) === 'peripheral_event') {
       const p = cmd as any;
-      debug('daemon', `peripheral_event: ${p.kind} ${p.uid ?? p.code ?? ''} (${p.board ?? 'esp32'})`);
+      const label = p.uid ?? p.code ?? '';
+      debug('daemon', `peripheral_event: ${p.kind} ${label} (${p.board ?? 'esp32'})`);
       core.wsServer.broadcast(cmd as any);
+      // Meaning is user configuration, never firmware policy: a mapped tag /
+      // code becomes one of the steering commands the daemon already speaks.
+      try {
+        const mappings = parsePeripheralMappings(loadDaemonSettings());
+        if (mappings.length > 0) {
+          const roster = (core.getLastSessionsListEvent() as
+            { sessions?: Array<Record<string, unknown>> } | null)?.sessions ?? [];
+          const view = roster.map((r) => ({
+            id: String(r.id ?? ''),
+            projectName: typeof r.projectName === 'string' ? r.projectName : undefined,
+            state: typeof r.state === 'string' ? r.state : undefined,
+            requestId: typeof r.requestId === 'string' ? r.requestId : undefined,
+          })).filter((r) => r.id);
+          const resolved = resolvePeripheralAction(
+            { kind: String(p.kind ?? ''), uid: p.uid, code: p.code }, mappings, view);
+          if (!resolved) {
+            debug('daemon', `peripheral_event: no mapping for ${label} (add one in settings.json peripheralMappings)`);
+          } else {
+            const mapped = commandForAction(resolved);
+            if (mapped) {
+              debug('daemon', `peripheral_event ${label} → ${resolved.action} on ${resolved.session.id.slice(0, 20)}`);
+              handleDeviceCommand(mapped as unknown as PluginCommand);
+            }
+          }
+        }
+      } catch (err) {
+        debug('daemon', `peripheral mapping failed: ${String(err).slice(0, 120)}`);
+      }
       return;
     }
     if (cmd.type === 'query_usage') {
