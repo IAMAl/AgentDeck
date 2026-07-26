@@ -38,6 +38,7 @@
 #include "ui/display.h"
 #include "ui/ticker/ticker_ui.h"
 #include "input/light_sensor.h"
+#include "input/touch_strip.h"
 #else
 #include "ui/display.h"
 #include "ui/screens/splash.h"
@@ -308,6 +309,7 @@ static void uiTask(void* param) {
 
     UI::displayInit();
     Input::lightInit();
+    Input::touchInit();
     Ticker::create();
 
     pinMode(BOARD_PIN_BTN1, INPUT_PULLUP);
@@ -343,6 +345,9 @@ static void uiTask(void* param) {
         lockState();
         g_state.applyPendingSessionClear(now);
         unlockState();
+
+        Input::TouchGesture tg = Input::touchPoll(now);
+        if (tg != Input::TouchGesture::NONE) Ticker::onTouch(tg);
 
         tickerApplyBrightness(now);
         Ticker::update(dt);

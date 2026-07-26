@@ -2,7 +2,7 @@
 #include "config.h"
 #include "../boards/board_config.h"
 #include "fonts/font_noto_kr_12.h"
-#if defined(BOARD_IPS10)
+#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
 #include "fonts/font_noto_kr_16.h"
 #endif
 
@@ -677,6 +677,8 @@ lv_font_t font_kr_12;
 // size, Korean glyphs via the 12 px Noto fallback — readable, never tofu).
 lv_font_t font_kr_16;
 lv_font_t font_kr_20;
+#elif defined(BOARD_T_DISPLAY_PRO)
+lv_font_t font_kr_16;
 #endif
 
 static size_t rgb565StrideBytes(uint32_t width) {
@@ -1123,6 +1125,10 @@ void displayInit() {
     // instead of dropping to the 12px face beside 16–20px Latin.
     font_kr_16 = lv_font_montserrat_16; font_kr_16.fallback = &font_noto_kr_16;
     font_kr_20 = lv_font_montserrat_20; font_kr_20.fallback = &font_noto_kr_16;
+#elif defined(BOARD_T_DISPLAY_PRO)
+    // Focus Strip caption face — the whole point of this board is one big
+    // readable line, so Korean must not drop to 12px.
+    font_kr_16 = lv_font_montserrat_16; font_kr_16.fallback = &font_noto_kr_16;
 #endif
 
 #if defined(BOARD_IPS10)

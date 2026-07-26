@@ -9,6 +9,6 @@
 //   npx lv_font_conv --font NotoSansKR[wght].ttf --bpp 4 --size 16 \
 //     --range 0xAC00-0xD7A3 --format lvgl --no-compress \
 //     --output esp32/src/ui/fonts/font_noto_kr_16.cinc --lv-include lvgl.h
-#if defined(BOARD_IPS10)
+#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
 #include "font_noto_kr_16.cinc"
 #endif
