@@ -1670,6 +1670,17 @@ final class DaemonServer {
             await serial.serial.setOnMessage { [weak self] portPath, msg in
                 guard let self else { return }
                 if let type = msg["type"] as? String {
+                    // Device→daemon command channel over serial. A board whose
+                    // WiFi is parked (serial-primary) still steers; without this
+                    // its taps were dropped by the device_info-only parser.
+                    // Node parity: setSerialCommandSink in bridge/src/esp32-serial.ts.
+                    if Self.serialForwardableCommands.contains(type) {
+                        let box = SendableDict(msg)
+                        Task { @DaemonActor [weak self] in
+                            self?.handleCommand(box.value)
+                        }
+                        return
+                    }
                     if type == "device_info", msg["wifiConnected"] as? Bool != true {
                         Task {
                             let sent = await self.serialModule?.serial.sendWifiProvisionToAll(provisionMsg.value) ?? 0
@@ -2953,8 +2964,17 @@ final class DaemonServer {
         // the originating WS connection identity for close-driven eviction).
         // Module callers (ADB, D200H) never send it.
 
+        // Session-scoped commands are NEVER OpenClaw's to consume: a device
+        // answering a named session (select_option{sessionId}) must reach the
+        // session routing below — the gateway swallowing it as an
+        // exec-approval ate device taps. Node parity: bridge/src/daemon-server.ts.
+        let sessionScopedCmd: Bool = {
+            guard let sid = cmd["sessionId"] as? String else { return false }
+            return !sid.isEmpty && sid != "openclaw-gateway"
+        }()
+
         // Gateway adapter handles command if alive
-        if let gw = gatewayAdapter {
+        if !sessionScopedCmd, let gw = gatewayAdapter {
             let cmdBox = SendableDict(cmd)
             switch type {
             case "respond": Task { await gw.sendRPC(method: "exec.approval.resolve", params: cmdBox.value) }
@@ -4638,6 +4658,14 @@ final class DaemonServer {
     /// awaiting state. Matches genuine permission phrasing ONLY — the earlier
     /// broad alternatives (`waiting for your`, `wants to`, `confirm`, `to proceed`)
     /// caught the idle ping and were the root cause of false "Attention" popups.
+    /// Commands a board may originate over USB serial (Node parity with the
+    /// `setSerialCommandSink` passlist). Everything else on that wire is
+    /// device telemetry, not a command.
+    nonisolated static let serialForwardableCommands: Set<String> = [
+        "select_option", "session_command", "permission_decision",
+        "peripheral_event", "query_session_timeline", "focus_session", "review_run",
+    ]
+
     /// Mirrors the Node `looksLikePermissionMessage` regex.
     nonisolated static func looksLikePermissionMessage(_ message: String) -> Bool {
         guard !message.isEmpty else { return false }
@@ -5154,7 +5182,19 @@ final class DaemonServer {
                 if count > 0 { self?.updateObservedBadges(sessionId: sessionId, queued: count) }
             }
         case "respond", "select_option":
-            guard let rid = pushedSessionsById[sessionId]?.requestId else { return }
+            guard let rid = pushedSessionsById[sessionId]?.requestId else {
+                // No held gate — the prompt is live in the user's own terminal.
+                // Answering it means typing into that terminal, which needs
+                // `ps` tty discovery plus tmux/osascript subprocesses: outside
+                // the sandbox contract, so it is a CLI-daemon capability
+                // (docs/appstore-feature-matrix.md). Log it rather than
+                // failing silently — a device tap that does nothing must be
+                // explainable.
+                DaemonLogger.shared.debug(
+                    "Daemon",
+                    "observed \(type) for \(sessionId.prefix(8)): no held gate — live-prompt answering is CLI-daemon only")
+                return
+            }
             let allow = type == "select_option"
                 ? (command["index"] as? Int) == 0
                 : ["y", "yes"].contains(((command["value"] as? String) ?? "").lowercased())
