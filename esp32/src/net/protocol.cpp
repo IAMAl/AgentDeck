@@ -23,6 +23,7 @@
 #include "../input/ir_receiver.h"
 #include "../input/nfc_reader.h"
 #include "../audio/mic_capture.h"
+#include "../audio/speaker_playback.h"
 #endif
 #if defined(BOARD_T_DISPLAY_PRO)
 #include "../input/touch_strip.h"
@@ -974,6 +975,7 @@ static void sendDeviceInfo() {
             // daemon cannot use is worse than an absent one.
             if (Input::nfcReady()) caps.add("nfc");
             if (Audio::micReady()) caps.add("audio");
+            if (Audio::playbackReady()) caps.add("audio_out");
             if (Input::irReady()) caps.add("ir_rx");
         }
         Input::PowerStatus ps = Input::powerStatus();
@@ -1056,6 +1058,35 @@ void parseMessage(const char* json, size_t length) {
         else snprintf(note, sizeof(note), "\"%s\"", text);
         Utf8::utf8TrimEnd(note);
         Knob::notify(note);
+    } else if (strcmp(type, "audio_play_begin") == 0) {
+        // Host is about to stream a spoken reply as binary WS frames. Show what
+        // is being said so a talking board is legible with the audio muted.
+        uint32_t rate = obj["sampleRate"] | 16000;
+        Audio::playbackBegin(rate);
+        char said[96];
+        snprintf(said, sizeof(said), "%s", obj["text"] | "");
+        Utf8::sanitizeLvglText(said);
+        Utf8::utf8TrimEnd(said);
+        Knob::setSpeaking(said);
+    } else if (strcmp(type, "audio_play_chunk") == 0) {
+        // Serial counterpart of the binary WS frame (same PCM, base64-wrapped).
+        const char* b64 = obj["d"] | "";
+        size_t b64len = strlen(b64);
+        if (b64len > 0 && b64len < 4096) {
+            static uint8_t pcm[3072];
+            size_t got = 0;
+            if (mbedtls_base64_decode(pcm, sizeof(pcm), &got,
+                                      (const unsigned char*)b64, b64len) == 0 && got > 0) {
+                Audio::playbackFeed(pcm, got);
+            }
+        }
+    } else if (strcmp(type, "audio_play_end") == 0) {
+        Audio::playbackEnd();
+        Knob::clearSpeaking();
+    } else if (strcmp(type, "voice_reply_skipped") == 0) {
+        // The turn finished but held nothing worth reading aloud (a diff, a
+        // tool-only turn). Say that rather than leaving the user waiting.
+        Knob::notify("reply: nothing to read aloud");
 #endif
     } else if (strcmp(type, "timeline_history") == 0) {
         handleTimelineHistory(obj);

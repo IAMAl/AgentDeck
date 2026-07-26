@@ -3,11 +3,15 @@
 #include "protocol.h"
 #include "config.h"
 #include "../state/agent_state.h"
+#if defined(BOARD_T_EMBED)
+#include "../audio/speaker_playback.h"
+#endif
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <WebSocketsClient.h>
 #include <Arduino.h>
+#include <mbedtls/base64.h>
 
 static WebSocketsClient ws;
 static bool connected = false;
@@ -75,6 +79,18 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
 
         case WStype_TEXT:
             Protocol::parseMessage((const char*)payload, length);
+            lockState();
+            g_state.lastMessageMs = millis();
+            unlockState();
+            break;
+
+        case WStype_BIN:
+#if defined(BOARD_T_EMBED)
+            // Inbound binary is spoken-reply PCM, bracketed by
+            // audio_play_begin/end. Dropped when the ring is full: a late frame
+            // is worse than a gap, and blocking here would stall WS reads.
+            Audio::playbackFeed(payload, length);
+#endif
             lockState();
             g_state.lastMessageMs = millis();
             unlockState();
@@ -170,7 +186,28 @@ void pumpOutbound() {
         audioHead = (audioHead + 1) % AUDIO_SLOTS;
         audioCount--;
         xSemaphoreGive(audioMutex);
-        if (connected && len > 0) ws.sendBIN(frame, len);
+        if (len == 0) continue;
+        if (connected) {
+            ws.sendBIN(frame, len);
+        } else if (Net::serialConnected()) {
+            // USB-attached: the board's WiFi WS is parked, but the mic must not
+            // go dead just because the user plugged in to charge. Serial is
+            // line-delimited JSON, so the samples ride base64 — raw PCM would
+            // tear the framing for every other reader of this port.
+            static char line[3072];
+            const char* prefix = "{\"type\":\"audio_chunk\",\"d\":\"";
+            size_t pfx = strlen(prefix);
+            memcpy(line, prefix, pfx);
+            size_t wrote = 0;
+            if (mbedtls_base64_encode((unsigned char*)line + pfx,
+                                      sizeof(line) - pfx - 4, &wrote,
+                                      frame, len) == 0) {
+                line[pfx + wrote] = '"';
+                line[pfx + wrote + 1] = '}';
+                line[pfx + wrote + 2] = '\0';
+                Net::serialWriteJsonLine(line);
+            }
+        }
     }
 }
 

@@ -171,3 +171,15 @@ Boards with sensors beyond their panel may additionally:
 - Emit `peripheral_event` (device → daemon) for raw sensing: `{type:"peripheral_event", board, kind:"nfc_tag"|"ir_rx"|"subghz_rx", uid?|code?/protocol?|freq?/rssi?}`. The daemon logs and relays it to dashboard clients; meaning (tag → focus/approve) is daemon-side mapping config, never firmware policy. This frame is only deliverable over WiFi WS today — the daemon's serial path parses `device_info` only.
 
 Neither is required for a display-only client; the XTeink fork ignores both.
+
+## Voice (optional, 2026-07-26)
+
+A board with a microphone and/or an amplifier may take part in the voice round
+trip. Both halves are opt-in and gated on advertised capabilities: `"audio"` for
+capture, `"audio_out"` for playback. A client that advertises neither is never
+sent audio.
+
+- **Capture (device → daemon)**: `{"type":"voice_begin","board","sampleRate":16000,"sessionId"}`, then the PCM16LE samples, then `{"type":"voice_end","durationMs","cancel"}`. The daemon transcribes the utterance on-device and routes the text to `sessionId` as a prompt, then answers `{"type":"voice_result","text","sessionId","delivered","via?","deliverReason?"}`. **Render `delivered:false` differently from success** — a transcript the daemon could not deliver must not look like one that arrived.
+- **Playback (daemon → device)**: `{"type":"audio_play_begin","sampleRate","durationMs","text"}`, then the PCM16LE samples, then `{"type":"audio_play_end"}`. Frames are paced at roughly playback speed, so a ring buffer of a couple of seconds is enough; the daemon never sends a whole reply at once. `{"type":"voice_reply_skipped"}` means the turn finished with nothing worth reading aloud.
+- **How the samples travel depends on the transport.** Over WebSocket they are binary frames. Over serial — which is line-delimited JSON — the same samples are base64-encoded inside `{"type":"audio_chunk","d":"…"}` (device → daemon) and `{"type":"audio_play_chunk","d":"…"}` (daemon → device), because raw PCM contains newlines and would tear the framing for every other reader of that port. Do not mix the two forms on one connection.
+- **Serial audio needs RX headroom.** A 16 kHz mono reply is ~44 KB/s once base64-encoded, and a client whose network task blocks (an in-progress WebSocket reconnect is the usual cause) will overflow a small RX ring and lose whole lines — silently, if it discards lines that do not start with `{`. Size the ring for your worst stall, and park the radio while serial is the transport.

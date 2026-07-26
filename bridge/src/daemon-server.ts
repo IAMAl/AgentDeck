@@ -45,10 +45,13 @@ import {
 } from './observed-steering.js';
 import { resolveSessionIdPrefix } from './session-id-resolve.js';
 import { injectObservedSelection, injectObservedText } from './observed-inject.js';
-import { setSerialCommandSink } from './esp32-serial.js';
+import {
+  setSerialCommandSink, setSerialVoiceSink, sendSerialJson,
+  serialPortConnected, serialPortCapabilities,
+} from './esp32-serial.js';
 import { parsePeripheralMappings, resolvePeripheralAction, commandForAction } from './peripheral-mapping.js';
 import { DeviceVoiceCollector } from './device-voice.js';
-import { transcribeWithHelper } from './foundation-models-helper.js';
+import { transcribeWithHelper, synthesizeWavWithHelper } from './foundation-models-helper.js';
 import { enqueueOpenCodeCommand, pollOpenCodeCommands } from './opencode-steering.js';
 import { runSessionReview, reviewSnapshot } from './review-runner.js';
 
@@ -96,6 +99,9 @@ import { FallbackTaskTimeline } from './fallback-task-timeline.js';
 import { handleApmeRequest } from './apme/http.js';
 import { readModelFromTranscript } from './apme/claude-transcript-reader.js';
 import { transcriptTimelineForSession, lastAssistantTextFromTranscript } from './session-transcript-timeline.js';
+import {
+  DeviceVoiceReplyRouter, speakableReply, type ReplySink,
+} from './device-voice-reply.js';
 import { lastAgentMessageFromCodexRollout } from './codex-rollout-response.js';
 import { callFoundationModelsHelper } from './foundation-models-helper.js';
 import {
@@ -115,6 +121,8 @@ import { injectOpenClawSession } from './openclaw-session.js';
 import { buildCardFeed, applyOutboxDecisions } from './card-feed.js';
 import { CARD_FEED_PATH, CARD_OUTBOX_PATH, type SessionInfo, type OutboxPushRequest } from '@agentdeck/shared';
 import { readFileSync, statSync } from 'fs';
+import { readFile, rm } from 'fs/promises';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { homedir } from 'os';
 import {
@@ -2693,69 +2701,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     if (msg.type === 'voice_end') {
       const captured = deviceVoice.end(sender, msg);
-      if (captured) {
-        void (async () => {
-          try {
-            // Locale matters: the recognizer falls back to the system locale,
-            // which mangles speech in another language. settings.json
-            // `voice.locale` (BCP-47, e.g. "en-US") overrides it.
-            const voiceCfg = loadDaemonSettings().voice as { locale?: unknown } | undefined;
-            const locale = typeof voiceCfg?.locale === 'string' && voiceCfg.locale
-              ? voiceCfg.locale : undefined;
-            const text = await transcribeWithHelper(captured.wavPath, locale);
-            const sessionId = resolveDeviceSessionId(captured.sessionId);
-            debug('voice', `transcript "${text.slice(0, 60)}" → ${sessionId.slice(0, 20) || '(no session)'}`);
-            // Always tell the board what was heard, even when it is empty or
-            // unroutable — a device that shows nothing is indistinguishable
-            // from a broken mic.
-            let delivered = false;
-            let via: string | undefined;
-            let deliverReason: string | undefined;
-            if (text && sessionId) {
-              if (sessionId.startsWith('observed:')) {
-                // Any observed agent (claude, codex, …): type the dictated line
-                // into the terminal that owns the session. session_command only
-                // knew how to route observed *Claude*, so a Codex target was
-                // silently dropped — the board said "sent" and nothing arrived.
-                const obs = passiveSessionObserver.collect([])
-                  .find((s) => s.id === sessionId) as
-                    { tty?: string; appName?: string } | undefined;
-                const r = await injectObservedText(
-                  { tty: obs?.tty, appName: obs?.appName }, text);
-                delivered = r.ok;
-                via = r.via;
-                deliverReason = r.reason;
-              } else {
-                handleDeviceCommand({
-                  type: 'session_command',
-                  sessionId,
-                  command: { type: 'send_prompt', text },
-                } as unknown as PluginCommand);
-                delivered = true;
-                via = 'session-bridge';
-              }
-              debug('voice', delivered
-                ? `delivered via ${via} to ${sessionId.slice(0, 24)}`
-                : `NOT delivered to ${sessionId.slice(0, 24)}: ${deliverReason ?? 'unknown'}`);
-            }
-            try {
-              sender.send(JSON.stringify({
-                type: 'voice_result', text, sessionId, delivered,
-                ...(via ? { via } : {}),
-                ...(deliverReason ? { deliverReason } : {}),
-              }));
-            } catch { /* client disconnecting */ }
-          } catch (err) {
-            const reason = String(err).slice(0, 160);
-            debug('voice', `transcription failed: ${reason}`);
-            try {
-              sender.send(JSON.stringify({ type: 'voice_result', text: '', error: reason }));
-            } catch { /* client disconnecting */ }
-          } finally {
-            captured.cleanup();
-          }
-        })();
-      }
+      if (captured) void finishVoiceCapture(captured, stableSink(sender));
       return true; // consumed
     }
     if (msg.type === 'query_session_timeline') {
@@ -3121,12 +3067,207 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // transcribes with Apple's on-device recognizer (bundled Swift helper) and
   // turns the text into a prompt for the session the board was pointing at.
   const deviceVoice = new DeviceVoiceCollector();
+  const voiceReply = new DeviceVoiceReplyRouter();
+
+  /**
+   * Wrap a board's socket as a reply sink. Capabilities come from the device
+   * registry rather than being assumed: only a board that advertised
+   * `audio_out` gets audio, so the same voice path degrades to text-only on
+   * boards without an amplifier instead of streaming into nothing.
+   */
+  const replySinkFor = (ws: WebSocket): ReplySink => ({
+    send: (data) => { try { ws.send(data); } catch { /* closing */ } },
+    sendBinary: (data) => { try { ws.send(data, { binary: true }); } catch { /* closing */ } },
+    isOpen: () => ws.readyState === WebSocket.OPEN,
+    capabilities: () => {
+      for (const [key, registered] of wifiEsp32Sockets) {
+        if (registered !== ws) continue;
+        return wifiEsp32Devices.get(key)?.capabilities ?? [];
+      }
+      return [];
+    },
+  });
+
+  /**
+   * The other half of the voice round trip. A dictated prompt arms the board
+   * that sent it; when that session's turn completes, the reply is synthesized
+   * on the host and streamed to the board's amplifier. `chat_response` is the
+   * one chokepoint every agent's completion reaches — managed sessions relay it
+   * from their bridge, hook-observed ones get it from the Stop handler above —
+   * so one listener covers all of them.
+   */
+  core.bridgeTimeline.onEntry((entry, upsert) => {
+    // Upserts re-fire for rows that already spoke; only a new row is a new turn.
+    if (upsert || entry.type !== 'chat_response' || !entry.sessionId) return;
+    const targets = voiceReply.targetsFor(entry.sessionId);
+    if (targets.length === 0) return;
+    const voiceCfg = loadDaemonSettings().voice as
+      { locale?: unknown; speakReplies?: unknown } | undefined;
+    if (voiceCfg?.speakReplies === false) return;  // opt-out, default on
+    const detail = typeof entry.detail === 'string' ? entry.detail : '';
+    const spoken = speakableReply(detail || String(entry.raw ?? ''));
+    if (!spoken) {
+      // A code-only answer has nothing worth reading aloud; say that instead of
+      // spelling out punctuation, so the user still knows the turn finished.
+      for (const sink of targets) {
+        try { sink.send(JSON.stringify({ type: 'voice_reply_skipped' })); } catch { /* closing */ }
+        // Consume the arming either way: the dictation was answered, and
+        // leaving it armed would read out the session's *next* turn instead.
+        voiceReply.disarm(sink);
+      }
+      return;
+    }
+    const locale = typeof voiceCfg?.locale === 'string' && voiceCfg.locale
+      ? voiceCfg.locale : undefined;
+    void (async () => {
+      const out = join(tmpdir(), `agentdeck-reply-${process.pid}-${Date.now()}.wav`);
+      try {
+        await synthesizeWavWithHelper(spoken, out, locale ? { locale } : {});
+        const wav = await readFile(out);
+        for (const sink of targets) {
+          const ok = await voiceReply.stream(sink, wav, spoken);
+          debug('voice', ok
+            ? `spoke reply to board (${wav.length}B, ${spoken.length} chars)`
+            : 'reply stream aborted (board gone or already speaking)');
+        }
+      } catch (err) {
+        debug('voice', `reply synthesis failed: ${String(err).slice(0, 140)}`);
+      } finally {
+        await rm(out, { force: true }).catch(() => {});
+      }
+    })();
+  });
+  const sinkByWs = new Map<WebSocket, ReplySink>();
+  const stableSink = (ws: WebSocket): ReplySink => {
+    // The router keys arming by sink identity, so the same socket must map to
+    // the same object every time — a fresh wrapper per call would arm one
+    // object and look up another.
+    let sink = sinkByWs.get(ws);
+    if (!sink) { sink = replySinkFor(ws); sinkByWs.set(ws, sink); }
+    return sink;
+  };
+
+  // Serial-attached boards get the same sink shape. Audio rides base64 inside
+  // JSON lines because this transport is line-delimited and raw PCM would tear
+  // the framing; the encoding cost is invisible on native-USB CDC.
+  const serialSinks = new Map<string, ReplySink>();
+  const serialSinkFor = (port: string): ReplySink => {
+    let sink = serialSinks.get(port);
+    if (sink) return sink;
+    sink = {
+      send: (data) => { sendSerialJson(port, data); },
+      sendBinary: (data) => {
+        sendSerialJson(port, { type: 'audio_play_chunk', d: data.toString('base64') });
+      },
+      isOpen: () => serialPortConnected(port),
+      capabilities: () => serialPortCapabilities(port),
+    };
+    serialSinks.set(port, sink);
+    return sink;
+  };
+
+  // Voice from a USB-attached board. Without this the mic worked only while the
+  // board was on WiFi — and attaching USB parks WiFi, so plugging in to charge
+  // silently removed the feature.
+  setSerialVoiceSink((port, msg) => {
+    if (msg.type === 'voice_begin') {
+      deviceVoice.begin(port, msg);
+    } else if (msg.type === 'audio_chunk') {
+      const b64 = typeof msg.d === 'string' ? msg.d : '';
+      if (b64) deviceVoice.append(port, Buffer.from(b64, 'base64'));
+    } else if (msg.type === 'voice_end') {
+      const captured = deviceVoice.end(port, msg);
+      if (captured) void finishVoiceCapture(captured, serialSinkFor(port));
+    }
+  });
+  /**
+   * Finish one captured utterance: transcribe, route the text to the session,
+   * tell the board what happened, and arm it for the spoken reply. Shared by
+   * the WS and serial paths — a board attached over USB must behave exactly
+   * like the same board on WiFi, which is only true if there is one
+   * implementation.
+   */
+  const finishVoiceCapture = async (
+    captured: { wavPath: string; sessionId: string; cleanup: () => void },
+    sink: ReplySink,
+  ): Promise<void> => {
+        try {
+          // Locale matters: the recognizer falls back to the system locale,
+          // which mangles speech in another language. settings.json
+          // `voice.locale` (BCP-47, e.g. "en-US") overrides it.
+          const voiceCfg = loadDaemonSettings().voice as { locale?: unknown } | undefined;
+          const locale = typeof voiceCfg?.locale === 'string' && voiceCfg.locale
+            ? voiceCfg.locale : undefined;
+          const text = await transcribeWithHelper(captured.wavPath, locale);
+          const sessionId = resolveDeviceSessionId(captured.sessionId);
+          debug('voice', `transcript "${text.slice(0, 60)}" → ${sessionId.slice(0, 20) || '(no session)'}`);
+          // Always tell the board what was heard, even when it is empty or
+          // unroutable — a device that shows nothing is indistinguishable
+          // from a broken mic.
+          let delivered = false;
+          let via: string | undefined;
+          let deliverReason: string | undefined;
+          if (text && sessionId) {
+            if (sessionId.startsWith('observed:')) {
+              // Any observed agent (claude, codex, …): type the dictated line
+              // into the terminal that owns the session. session_command only
+              // knew how to route observed *Claude*, so a Codex target was
+              // silently dropped — the board said "sent" and nothing arrived.
+              const obs = passiveSessionObserver.collect([])
+                .find((s) => s.id === sessionId) as
+                  { tty?: string; appName?: string } | undefined;
+              const r = await injectObservedText(
+                { tty: obs?.tty, appName: obs?.appName }, text);
+              delivered = r.ok;
+              via = r.via;
+              deliverReason = r.reason;
+            } else {
+              handleDeviceCommand({
+                type: 'session_command',
+                sessionId,
+                command: { type: 'send_prompt', text },
+              } as unknown as PluginCommand);
+              delivered = true;
+              via = 'session-bridge';
+            }
+            debug('voice', delivered
+              ? `delivered via ${via} to ${sessionId.slice(0, 24)}`
+              : `NOT delivered to ${sessionId.slice(0, 24)}: ${deliverReason ?? 'unknown'}`);
+            // Only a delivered prompt earns a spoken reply: arming on a
+            // dropped one would read out whatever that session happened to
+            // answer someone else.
+            if (delivered) voiceReply.arm(sink, sessionId);
+          }
+          try {
+            sink.send(JSON.stringify({
+              type: 'voice_result', text, sessionId, delivered,
+              ...(via ? { via } : {}),
+              ...(deliverReason ? { deliverReason } : {}),
+            }));
+          } catch { /* client disconnecting */ }
+        } catch (err) {
+          const reason = String(err).slice(0, 160);
+          debug('voice', `transcription failed: ${reason}`);
+          try {
+            sink.send(JSON.stringify({ type: 'voice_result', text: '', error: reason }));
+          } catch { /* client disconnecting */ }
+        } finally {
+          captured.cleanup();
+        }
+  };
+
   core.wsServer.onBinary((data, sender) => {
     if (!deviceVoice.append(sender, data)) {
       debug('voice', `binary frame with no open utterance (${data.length} bytes) — ignored`);
     }
   });
-  setInterval(() => deviceVoice.sweep(), 30_000).unref?.();
+  setInterval(() => {
+    deviceVoice.sweep();
+    voiceReply.sweep();
+    for (const ws of sinkByWs.keys()) {
+      if (ws.readyState !== WebSocket.OPEN) sinkByWs.delete(ws);
+    }
+  }, 30_000).unref?.();
 
   core.wsServer.onCommand(handleDeviceCommand);
   // Serial-attached boards get the SAME command pipeline: their steering taps

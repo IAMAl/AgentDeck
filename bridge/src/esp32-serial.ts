@@ -720,8 +720,43 @@ export function capturePanicLine(conn: SerialConnection, line: string): boolean 
 
 // Daemon-installed sink for device-originated commands arriving over serial.
 let serialCommandSink: ((cmd: Record<string, unknown>) => void) | null = null;
+let serialVoiceSink: ((port: string, msg: Record<string, unknown>) => void) | null = null;
 export function setSerialCommandSink(sink: (cmd: Record<string, unknown>) => void): void {
   serialCommandSink = sink;
+}
+
+/**
+ * Voice frames (voice_begin / audio_chunk / voice_end) from a serial-attached
+ * board. Separate from the command sink because they carry a port identity: an
+ * utterance has to be assembled per board, and the reply has to go back to the
+ * same one.
+ */
+export function setSerialVoiceSink(
+  sink: (port: string, msg: Record<string, unknown>) => void,
+): void {
+  serialVoiceSink = sink;
+}
+
+/** Write one JSON line to a specific board. Bypasses FORWARDED_EVENTS: audio is
+ *  addressed to one device, not broadcast state. */
+export function sendSerialJson(port: string, msg: Record<string, unknown> | string): boolean {
+  const conn = connections.find((c) => c.port === port && c.connected);
+  if (!conn) return false;
+  sendToConnection(conn, typeof msg === 'string' ? msg : JSON.stringify(msg));
+  return true;
+}
+
+/** True while this port has an open serial connection — the reply sink uses it
+ *  as its liveness signal, the way the WS sink uses readyState. */
+export function serialPortConnected(port: string): boolean {
+  return connections.some((c) => c.port === port && c.connected);
+}
+
+/** Capabilities the board on this port advertised (empty when unidentified). */
+export function serialPortCapabilities(port: string): string[] {
+  const conn = connections.find((c) => c.port === port);
+  const caps = conn?.deviceInfo?.capabilities;
+  return Array.isArray(caps) ? caps as string[] : [];
 }
 
 /** @internal Exported for testing only */
@@ -776,6 +811,14 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           lastKnownDeviceInfoByPort.set(conn.port, conn.deviceInfo);
           persistDeviceInfoCache();
         }
+      } else if (msg.type === 'voice_begin' || msg.type === 'voice_end' ||
+                 msg.type === 'audio_chunk') {
+        // Voice over USB. The serial transport is line-delimited JSON, so PCM
+        // travels base64-encoded inside `audio_chunk` rather than as raw bytes:
+        // raw PCM contains newlines and would tear the framing for every other
+        // reader of this port. Costs 33% — irrelevant on native-USB CDC, where
+        // the 115200 in the port settings is nominal.
+        serialVoiceSink?.(conn.port, msg as unknown as Record<string, unknown>);
       } else if (['select_option', 'session_command', 'permission_decision',
                   'peripheral_event', 'query_session_timeline', 'focus_session',
                   'review_run'].includes(msg.type as string)) {

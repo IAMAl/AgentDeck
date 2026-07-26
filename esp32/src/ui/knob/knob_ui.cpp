@@ -76,6 +76,7 @@ static bool s_powerOffRequested = false;
 
 // Non-empty while push-to-talk is capturing; holds the target session label.
 static char s_listeningLabel[48] = {0};
+static char s_speakingText[64] = {0};
 
 // Transient "sent" flash — one-frame-cheap optimistic press feedback.
 static char s_flashText[48] = {0};
@@ -657,6 +658,17 @@ void clearListening() {
     s_listeningLabel[0] = '\0';
 }
 
+void setSpeaking(const char* text) {
+    const char* t = (text && text[0]) ? text : "(reply)";
+    strncpy(s_speakingText, t, sizeof(s_speakingText) - 1);
+    s_speakingText[sizeof(s_speakingText) - 1] = '\0';
+    Utf8::sanitizeLvglText(s_speakingText);
+}
+
+void clearSpeaking() {
+    s_speakingText[0] = '\0';
+}
+
 bool atListLevel() {
     return s_mode == Mode::LIST;
 }
@@ -722,6 +734,7 @@ void update(float dt) {
     bool flashOn = s_flashText[0] && (int32_t)(s_flashUntilMs - now) > 0;
     if (!flashOn) s_flashText[0] = '\0';
     bool listening = s_listeningLabel[0] != '\0';
+    bool speaking = s_speakingText[0] != '\0';
 
     // Status cluster inputs (battery, radio link) — part of the signature so
     // the header refreshes exactly when they change.
@@ -764,7 +777,7 @@ void update(float dt) {
     // hold starts and disappears on release.
     {
         size_t n = strlen(sig);
-        snprintf(sig + n, sizeof(sig) - n, "|L%.24s", s_listeningLabel);
+        snprintf(sig + n, sizeof(sig) - n, "|L%.24s|S%.24s", s_listeningLabel, s_speakingText);
     }
     if (strcmp(sig, s_lastSig) == 0) return;
     strncpy(s_lastSig, sig, sizeof(s_lastSig) - 1);
@@ -837,6 +850,14 @@ void update(float dt) {
         snprintf(line, sizeof(line), LV_SYMBOL_BULLET " listening -> %s", s_listeningLabel);
         lv_label_set_text(s_footer, line);
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusAmber), 0);
+    } else if (speaking) {
+        // Second-highest: the board is talking. Cyan rather than amber — amber
+        // is reserved for "a session needs you" across every AgentDeck surface.
+        char line[96];
+        snprintf(line, sizeof(line), LV_SYMBOL_BULLET " reply: %s", s_speakingText);
+        Utf8::utf8TrimEnd(line);
+        lv_label_set_text(s_footer, line);
+        lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusCyan), 0);
     } else if (flashOn) {
         lv_label_set_text(s_footer, s_flashText);
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusGreen), 0);

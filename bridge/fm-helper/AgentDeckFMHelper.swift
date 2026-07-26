@@ -55,6 +55,11 @@ struct AgentDeckFMHelper {
             return
         }
 
+        if request.type == "synthesize" {
+            await handleSynthesize(request)
+            return
+        }
+
         guard let prompt = request.prompt, !prompt.isEmpty else {
             write(["id": request.id, "error": "bad_request", "reason": "missing prompt"])
             return
@@ -187,6 +192,94 @@ struct AgentDeckFMHelper {
         write(["id": request.id, "spoken": true])
     }
 
+    /// Synthesize to a WAV file instead of the host's speakers, so the daemon
+    /// can stream the audio somewhere else — a battery-powered board holding
+    /// the only speaker the user is near. Fixed at 16 kHz mono PCM16: that is
+    /// what the boards' I2S amplifiers are configured for and what keeps a
+    /// spoken reply inside a WiFi budget an ESP32 can actually drain.
+    private static func handleSynthesize(_ request: HelperRequest) async {
+        guard let text = request.text, !text.isEmpty else {
+            write(["id": request.id, "error": "bad_request", "reason": "missing text"])
+            return
+        }
+        guard let outPath = request.wav, !outPath.isEmpty else {
+            write(["id": request.id, "error": "bad_request", "reason": "missing wav output path"])
+            return
+        }
+        let sampleRate = 16000.0
+        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                            sampleRate: sampleRate,
+                                            channels: 1,
+                                            interleaved: true) else {
+            write(["id": request.id, "error": "synthesis_failed", "reason": "output format unavailable"])
+            return
+        }
+
+        let utterance = AVSpeechUtterance(string: text)
+        if let voiceId = request.voice, let v = AVSpeechSynthesisVoice(identifier: voiceId) {
+            utterance.voice = v
+        } else if let tag = request.locale, let v = AVSpeechSynthesisVoice(language: tag) {
+            utterance.voice = v
+        }
+        if let rate = request.rate { utterance.rate = Float(rate) }
+
+        // The write callback is not documented to run on any particular queue,
+        // and it appends to shared state, so the accumulator owns a lock.
+        let sink = PCMSink()
+        let synthesizer = AVSpeechSynthesizer()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let done = ResumeOnce(continuation)
+            synthesizer.write(utterance) { buffer in
+                guard let input = buffer as? AVAudioPCMBuffer else { return }
+                // A zero-length buffer is the documented end-of-synthesis
+                // signal; without it this call never completes.
+                if input.frameLength == 0 {
+                    done.resume(())
+                    return
+                }
+                sink.append(input, to: outFormat)
+            }
+        }
+
+        if let failure = sink.failure {
+            write(["id": request.id, "error": "synthesis_failed", "reason": failure])
+            return
+        }
+        let pcm = sink.pcm
+        guard !pcm.isEmpty else {
+            write(["id": request.id, "error": "synthesis_failed", "reason": "no audio produced"])
+            return
+        }
+        do {
+            try wavData(pcm: pcm, sampleRate: Int(sampleRate)).write(to: URL(fileURLWithPath: outPath))
+        } catch {
+            write(["id": request.id, "error": "synthesis_failed", "reason": String(describing: error)])
+            return
+        }
+        write([
+            "id": request.id,
+            "wav": outPath,
+            "sampleRate": Int(sampleRate),
+            "samples": pcm.count / 2,
+            "durationMs": Int(Double(pcm.count / 2) / sampleRate * 1000.0),
+        ])
+    }
+
+    /// Canonical 44-byte RIFF header + samples. Kept here rather than shelling
+    /// out so the helper stays the single bundled binary.
+    private static func wavData(pcm: Data, sampleRate: Int) -> Data {
+        var out = Data()
+        func u32(_ v: Int) { withUnsafeBytes(of: UInt32(v).littleEndian) { out.append(contentsOf: $0) } }
+        func u16(_ v: Int) { withUnsafeBytes(of: UInt16(v).littleEndian) { out.append(contentsOf: $0) } }
+        out.append(contentsOf: Array("RIFF".utf8)); u32(36 + pcm.count)
+        out.append(contentsOf: Array("WAVE".utf8))
+        out.append(contentsOf: Array("fmt ".utf8)); u32(16)
+        u16(1); u16(1); u32(sampleRate); u32(sampleRate * 2); u16(2); u16(16)
+        out.append(contentsOf: Array("data".utf8)); u32(pcm.count)
+        out.append(pcm)
+        return out
+    }
+
     private static func healthResponse(id: Int) -> [String: Any] {
 #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
@@ -245,6 +338,67 @@ private final class ResumeOnce<T>: @unchecked Sendable {
         continuation = nil
         lock.unlock()
         c?.resume(returning: value)
+    }
+}
+
+/// Accumulates synthesized audio, resampling each delivered buffer to the
+/// target format. The converter is built from the first buffer because the
+/// synthesizer picks its own rate and sample type per voice.
+private final class PCMSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer = Data()
+    private var converter: AVAudioConverter?
+    private var error: String?
+
+    var pcm: Data {
+        lock.lock(); defer { lock.unlock() }
+        return buffer
+    }
+
+    var failure: String? {
+        lock.lock(); defer { lock.unlock() }
+        return error
+    }
+
+    func append(_ input: AVAudioPCMBuffer, to outFormat: AVAudioFormat) {
+        lock.lock(); defer { lock.unlock() }
+        if error != nil { return }
+        if converter == nil {
+            converter = AVAudioConverter(from: input.format, to: outFormat)
+            if converter == nil {
+                error = "no converter from \(input.format) to \(outFormat)"
+                return
+            }
+        }
+        guard let converter else { return }
+        // Round up, and leave slack: the converter may emit slightly more than
+        // the naive ratio when it flushes filter state.
+        let ratio = outFormat.sampleRate / input.format.sampleRate
+        let capacity = AVAudioFrameCount((Double(input.frameLength) * ratio).rounded(.up)) + 1024
+        guard let output = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: capacity) else {
+            error = "output buffer allocation failed"
+            return
+        }
+        var supplied = false
+        var convertError: NSError?
+        let status = converter.convert(to: output, error: &convertError) { _, outStatus in
+            if supplied {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            outStatus.pointee = .haveData
+            return input
+        }
+        if status == .error {
+            error = convertError?.localizedDescription ?? "conversion failed"
+            return
+        }
+        guard let channel = output.int16ChannelData, output.frameLength > 0 else { return }
+        let count = Int(output.frameLength)
+        channel[0].withMemoryRebound(to: UInt8.self, capacity: count * 2) { raw in
+            buffer.append(raw, count: count * 2)
+        }
     }
 }
 

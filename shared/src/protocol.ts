@@ -574,6 +574,34 @@ export interface PeripheralEventMessage {
   rssi?: number;
 }
 
+/**
+ * Device-sourced voice capture. Over WebSocket the PCM travels as binary frames
+ * between `voice_begin` and `voice_end`; over serial — which is line-delimited
+ * JSON — the same PCM is base64-encoded inside `audio_chunk`, because raw
+ * samples contain newlines and would tear the framing for every other reader of
+ * that port. A board must not mix the two on one connection.
+ */
+export interface VoiceBeginMessage {
+  type: 'voice_begin';
+  board?: string;
+  /** Capture rate in Hz (16000 in every shipping firmware). */
+  sampleRate?: number;
+  /** Session the utterance is aimed at — the one the knob was pointing at.
+   *  May be device-truncated; the daemon restores it by unique prefix. */
+  sessionId?: string;
+}
+
+export interface VoiceEndMessage {
+  type: 'voice_end';
+  board?: string;
+}
+
+/** Base64 PCM16LE fragment; serial transport only. */
+export interface AudioChunkMessage {
+  type: 'audio_chunk';
+  d: string;
+}
+
 export interface WifiProvisionAckMessage {
   type: 'wifi_provision_ack';
   success: boolean;
@@ -755,7 +783,10 @@ export type ESP32ToHostMessage =
   | WifiStatusMessage
   | Esp32OtaAckCommand
   | Esp32OtaErrorCommand
-  | PeripheralEventMessage;
+  | PeripheralEventMessage
+  | VoiceBeginMessage
+  | VoiceEndMessage
+  | AudioChunkMessage;
 
 /**
  * On-demand independent review lifecycle. Triggered by the REVIEW deck button

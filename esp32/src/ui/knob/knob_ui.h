@@ -41,6 +41,12 @@ const char* focusedSessionLabel();
 void setListening(const char* targetLabel);
 void clearListening();
 
+// Same banner, other direction: shown while the host streams a spoken reply to
+// this board's speaker. Without it a talking board looks like it is doing
+// nothing, and the user has no way to tell whose answer they are hearing.
+void setSpeaking(const char* text);
+void clearSpeaking();
+
 // Session id the knob is pointing at (detail session, else the hovered list
 // session). Empty string when there are none — the voice target.
 const char* focusedSessionId();

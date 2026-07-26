@@ -31,6 +31,7 @@
 #include "ui/knob/knob_ui.h"
 #include "ui/knob/ring_leds.h"
 #include "ui/knob/chime.h"
+#include "audio/speaker_playback.h"
 #include "input/encoder.h"
 #include "input/power_monitor.h"
 #include "input/nfc_reader.h"
@@ -413,6 +414,7 @@ static void uiTask(void* param) {
     Input::nfcInit();
     Input::irInit();
     Audio::micInit();
+    Audio::playbackInit();
     Ring::init();
     Knob::create();
 
@@ -929,9 +931,21 @@ void setup() {
     digitalWrite(BOARD_PIN_PWR_EN, HIGH);
 #endif
 #if defined(BOARD_INKDECK) || defined(BOARD_IPS10) || defined(BOARD_T_EMBED) || defined(BOARD_T_DISPLAY_PRO)
+#if defined(BOARD_T_EMBED)
+    // 16384 on the only board that receives *audio* over serial. A spoken reply
+    // arrives at ~44 KB/s (base64 PCM), so an 8 KB ring covers only ~190 ms of
+    // stall — and the network task does stall: while the WiFi radio is live,
+    // arduinoWebSockets' reconnect blocks it on a TCP connect. Measured with a
+    // 4.2 s reply: 26% of the audio survived with the radio up, 97% with it
+    // parked (serial-primary, the real configuration), and whole lines vanish
+    // silently because a line that does not start with '{' is discarded without
+    // a parse error. Double the ring so the residual stall costs nothing.
+    Serial.setRxBufferSize(16384);
+#else
     // RX 8192 — a 10-session enriched sessions_list is ~2.2-3.5KB; the old
     // 2048 truncated it mid-line ([Protocol] JSON error: InvalidInput).
     Serial.setRxBufferSize(8192);
+#endif
 #if ARDUINO_USB_MODE == 1
     // HWCDC-only knobs (TinyUSB's USBCDC has neither): grow the 256-byte TX
     // ring and widen the give-up timeout — HWCDC drops whole 64-byte FIFO

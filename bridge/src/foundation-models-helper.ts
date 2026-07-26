@@ -300,3 +300,28 @@ export async function speakWithHelper(
     throw new Error(`${response.error}: ${String(response.reason ?? '')}`.trim());
   }
 }
+
+/**
+ * Synthesize to a 16 kHz mono PCM16 WAV instead of the host speakers, for
+ * streaming to a board that has its own amplifier. The host is the wrong
+ * output when the user carried the device to another room — which is the whole
+ * point of a battery-powered pager.
+ */
+export async function synthesizeWavWithHelper(
+  text: string,
+  outPath: string,
+  opts: { locale?: string; voice?: string; rate?: number } = {},
+): Promise<{ wav: string; sampleRate: number; durationMs: number }> {
+  const response = await requestHelper(
+    { type: 'synthesize', text, wav: outPath, ...opts },
+    SPEAK_TIMEOUT_MS,
+  );
+  if (typeof response.error === 'string') {
+    throw new Error(`${response.error}: ${String(response.reason ?? '')}`.trim());
+  }
+  return {
+    wav: typeof response.wav === 'string' ? response.wav : outPath,
+    sampleRate: typeof response.sampleRate === 'number' ? response.sampleRate : 16000,
+    durationMs: typeof response.durationMs === 'number' ? response.durationMs : 0,
+  };
+}
