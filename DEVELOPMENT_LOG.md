@@ -98,8 +98,23 @@ env `t_display_pro`. ST7796U 480×222 와이드 스트립. 초기 컨셉("미니
 
 터미널/앱 주입은 `ps` tty 탐색 + tmux/osascript 서브프로세스를 요구하므로 **CLI 데몬 전용(Tier 2)** — feature matrix 에 기록. 정책 결정: **Swift 는 샌드박스가 허용하는 한 최대한 Node 를 따라간다**(계약된 코어만이 아니라), **GUI 앱도 최대한 되게 간다**.
 
+### 5) 음성 Stage 3 — 보드 마이크 → Apple 온디바이스 STT → 세션 프롬프트 (실기 검증)
+
+엔코더를 길게 눌러 말하고 떼면 그 문장이 **노브가 가리키던 세션**의 프롬프트로 들어간다. 경로: PDM 마이크 16kHz PCM16 → `voice_begin`/`voice_end` 로 감싼 **바이너리 WS 프레임**(200B 텍스트 아웃박스가 아니다) → 데몬이 WAV 조립 → 전사 → `voice_result` 로 화면 에코 → 세션에 전달. 6초를 넘겨 계속 누르면 전원 오프로 바뀌므로 긴 문장이 보드를 끄는 일은 없다.
+
+- **STT 는 Apple 온디바이스로 통일, whisper 레거시 삭제.** 사용자에게 whisper 설치를 안내하는 건 배포로서 성립하지 않는다 → LLM judge 와 같은 패턴으로 **번들 Swift 헬퍼**(`agentdeck-fm-helper`, stdin/stdout 라인 JSON)에 `transcribe`(SFSpeechRecognizer `requiresOnDeviceRecognition`) + `speak`(AVSpeechSynthesizer) 추가. `whisper-server-manager.ts`·모델 티어링·Metal 탐지·voice-paths 상수 제거. 두 데몬이 같은 엔진을 쓴다.
+- **"됐다고 표시되는데 안 되던" 마지막 구멍**: 대상이 관측 **Codex** 세션이면 `session_command` 의 어느 분기에도 안 걸려 조용히 버려졌다(관측 Claude=지시 큐, OpenCode=플러그인 큐, 관리형만 존재). fix = 받아쓴 문장을 §2 사다리로 **그 세션의 터미널에 직접 타이핑**(`injectObservedText`: tmux `send-keys -l` → iTerm2 → Terminal.app). 관측자가 Codex 세션의 tty 도 잡도록 확장. 그리고 `voice_result` 에 `delivered` 를 실어 **실패를 실패로 표시**(`NOT sent: "…"`) — 화면이 성공을 가장하지 않는 게 계약의 일부다.
+- **tofu 재발의 원인은 새니타이저가 아니라 폰트였다**: 푸터 라벨이 몬세라트 전용이라 한글 전사문이 전부 사각형. 새니타이저를 통과해도 라벨 폰트가 그 스크립트를 담지 못하면 tofu 다.
+- serial 오디오는 아직 WiFi 전용. 진짜 병목은 대역폭이 아니라(네이티브 USB CDC 에서 115200 은 명목값) **serial 프로토콜에 바이너리 프레이밍이 없다는 것** — 길이 프리픽스를 넣으면 가능하다.
+
+### 6) 정정 — f7de2c97 의 근본원인은 거짓이었다
+
+`PWR_EN` 소프트 래치가 게이지·충전IC·PN532 를 I2C 에서 영구히 떨어뜨렸다고 커밋 메시지와 코드 주석에 적었지만, **그 빈 버스 스캔은 T-Embed 가 아니라 T-Display-S3-Pro 에서 나온 것**이다. 나는 S3-Pro 에 t_embed 펌웨어를 반복 플래시했고, 그 펌웨어는 I2C 를 8/18 로 스캔하는데 S3-Pro 의 버스는 5/6 이라 아무것도 못 찾은 게 당연했다. T-Embed 의 세 칩은 내내 정상이었다. bf39a890 으로 주석·근거를 정정했다(방어 코드 자체는 유지 — 이 보드엔 wake 버튼이 없어 레일을 내리면 물리 전원 재투입 외 복구 수단이 없다는 **예방** 근거로 재서술).
+
+교훈 둘: **보드 신원은 `board:` 문자열이나 포트 이름이 아니라 초기화 성공한 페리페럴로 확정하라**(T-Embed=PN532/PDM/게이지, S3-Pro=CST226SE). 그리고 **관측된 증상을 근본원인으로 승격하기 전에, 그 증상이 검증 대상 보드에서 나온 것인지 확인하라.**
+
 ### 남은 것
-NFC 태그→명령 매핑 설정, 음성 Stage 3(오디오 스트리밍 + 호스트 STT/TTS), BLE 폰 릴레이, IR/sub-GHz 캡처, GUI 앱 실물 프롬프트에서의 키 시맨틱 확인(`agentdeck inject-test --app`).
+보드 스피커로 답변 재생(호스트 `speak` 는 이미 동작), BLE 폰 릴레이(앱 작업 + 티어 결정 필요), sub-GHz 캡처(의도적 이연), GUI 앱 실물 프롬프트에서의 키 시맨틱 확인(`agentdeck inject-test --app`), NFC 태그 탭 end-to-end.
 
 ---
 
