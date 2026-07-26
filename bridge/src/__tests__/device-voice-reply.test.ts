@@ -234,3 +234,44 @@ describe('session-id keying across the two forms', () => {
     expect(r.targetsFor('bbb')).toEqual([]);
   });
 });
+
+describe('long-running turns', () => {
+  const noSleep = async () => {};
+
+  // A dictated question can start half an hour of tool calls. The answer is
+  // still wanted, so the TTL measures silence, not elapsed time.
+  it('keeps an arming alive while the session is still working', () => {
+    let now = 1000;
+    const r = new DeviceVoiceReplyRouter(() => now, noSleep);
+    const sink = fakeSink();
+    r.arm(sink, 'observed:claude:long-1');
+    for (let i = 0; i < 6; i++) {
+      now += REPLY_ARM_TTL_MS - 1000;
+      r.refresh(['observed:claude:long-1']);
+    }
+    now += 1000;
+    expect(r.targetsFor('long-1')).toEqual([sink]);
+  });
+
+  it('still expires a session that went quiet', () => {
+    let now = 1000;
+    const r = new DeviceVoiceReplyRouter(() => now, noSleep);
+    const sink = fakeSink();
+    r.arm(sink, 'long-2');
+    r.refresh(['some-other-session']);
+    now += REPLY_ARM_TTL_MS + 1;
+    expect(r.targetsFor('long-2')).toEqual([]);
+  });
+
+  it('refresh accepts either id form and ignores an empty list', () => {
+    let now = 1000;
+    const r = new DeviceVoiceReplyRouter(() => now, noSleep);
+    const sink = fakeSink();
+    r.arm(sink, 'long-3');
+    now += REPLY_ARM_TTL_MS - 10;
+    r.refresh([]);                        // no-op, must not throw
+    r.refresh(['observed:codex:long-3']); // prefixed form refreshes bare key
+    now += REPLY_ARM_TTL_MS - 10;
+    expect(r.targetsFor('long-3')).toEqual([sink]);
+  });
+});

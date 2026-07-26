@@ -44,8 +44,12 @@ export const PCM_FRAME_BYTES = 1024;
  *  sentence boundary when one is near the cap. */
 export const MAX_SPOKEN_CHARS = 700;
 
-/** How long a dictated prompt stays eligible for a spoken reply. Beyond this
- *  the user has moved on, and speaking a stale answer is worse than silence. */
+/**
+ * How long an arming survives *without the session making progress*. Measured
+ * from the last sign of work, not from the dictation: a question that kicks off
+ * half an hour of tool calls still deserves its answer read out, while a session
+ * that went quiet has moved on and speaking then is worse than silence.
+ */
 export const REPLY_ARM_TTL_MS = 10 * 60 * 1000;
 
 /**
@@ -149,6 +153,19 @@ export class DeviceVoiceReplyRouter {
 
   disarm(sink: ReplySink): void {
     this.armed.delete(sink);
+  }
+
+  /**
+   * Mark these sessions as still working, so a long turn does not age out
+   * mid-flight. Called with whatever the daemon currently considers active.
+   */
+  refresh(activeSessionIds: readonly string[]): void {
+    if (activeSessionIds.length === 0) return;
+    const active = new Set(activeSessionIds.map((id) => rawSessionId(id)));
+    const now = this.now();
+    for (const entry of this.armed.values()) {
+      if (active.has(entry.sessionId)) entry.armedAt = now;
+    }
   }
 
   /** Drop entries whose socket died or whose window closed. */

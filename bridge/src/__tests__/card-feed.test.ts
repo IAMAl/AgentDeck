@@ -3,6 +3,9 @@ import {
   classifySessionCard,
   buildCardFeed,
   applyOutboxDecisions,
+  FeedPullTracker,
+  formatFeedPull,
+  normalizeClientIp,
   PERMISSION_GATE_TTL_MS,
   AWAITING_PROMPT_TTL_MS,
   type OutboxApplyDeps,
@@ -161,5 +164,97 @@ describe('applyOutboxDecisions', () => {
   it('empty/absent decisions array → ok with no results', () => {
     const res = applyOutboxDecisions({ decisions: [] }, makeDeps());
     expect(res).toEqual({ ok: true, results: [] });
+  });
+});
+
+describe('FeedPullTracker', () => {
+  const IP = '::ffff:192.168.68.77';
+
+  it('normalizes v4-mapped and loopback client addresses', () => {
+    expect(normalizeClientIp('::ffff:192.168.68.77')).toBe('192.168.68.77');
+    expect(normalizeClientIp('::1')).toBe('127.0.0.1');
+    expect(normalizeClientIp('192.168.68.76')).toBe('192.168.68.76');
+  });
+
+  it('first pull carries no interval; the second measures it against the advertised cadence', () => {
+    const t = new FeedPullTracker();
+    const first = t.record(IP, { cards: 3, nextPullSec: 3600, now: NOW });
+    expect(first.client).toBe('192.168.68.77');
+    expect(first.sinceLastSec).toBeUndefined();
+    expect(first.cadenceHonoured).toBeUndefined();
+
+    // Woke 12s late off a drifty internal timer — still the cadence working.
+    const second = t.record(IP, { cards: 2, nextPullSec: 3600, now: NOW + 3612_000 });
+    expect(second.sinceLastSec).toBe(3612);
+    expect(second.expectedSec).toBe(3600);
+    expect(second.driftPct).toBeCloseTo(0.003, 3);
+    expect(second.cadenceHonoured).toBe(true);
+  });
+
+  it('a gap far off the advertised cadence is not counted as honoured', () => {
+    const t = new FeedPullTracker();
+    t.record(IP, { cards: 0, nextPullSec: 3600, now: NOW });
+    // Came back after 4 minutes: something woke it, but not the hourly timer.
+    const early = t.record(IP, { cards: 0, nextPullSec: 3600, now: NOW + 240_000 });
+    expect(early.cadenceHonoured).toBe(false);
+    expect(early.driftPct).toBeCloseTo(-0.933, 3);
+    expect(t.clients()[0]!.cadenceHonouredCount).toBe(0);
+  });
+
+  it('compares against the cadence advertised on the PREVIOUS pull, not the current one', () => {
+    const t = new FeedPullTracker();
+    // Sessions were active, so the daemon asked for a 900s cadence...
+    t.record(IP, { cards: 1, nextPullSec: 900, now: NOW });
+    // ...the device honoured that, and by now the roster went idle (3600s).
+    const ev = t.record(IP, { cards: 1, nextPullSec: 3600, now: NOW + 900_000 });
+    expect(ev.expectedSec).toBe(900);
+    expect(ev.cadenceHonoured).toBe(true);
+    expect(ev.nextPullSec).toBe(3600);
+  });
+
+  it('learns the board from an outbox push and keeps it for later anonymous pulls', () => {
+    const t = new FeedPullTracker();
+    const anon = t.record(IP, { cards: 1, nextPullSec: 3600, now: NOW });
+    expect(anon.board).toBeUndefined();
+    t.noteBoard(IP, 'xteink_x4');
+    const named = t.record(IP, { cards: 1, nextPullSec: 3600, now: NOW + 3600_000 });
+    expect(named.board).toBe('xteink_x4');
+    expect(t.clients()[0]!.board).toBe('xteink_x4');
+  });
+
+  it('tracks clients independently and reports the median observed interval', () => {
+    const t = new FeedPullTracker();
+    t.noteBoard('192.168.68.76', 'xteink_x3');
+    t.record('192.168.68.76', { cards: 0, nextPullSec: 3600, now: NOW });
+    t.record(IP, { cards: 0, nextPullSec: 3600, now: NOW + 1000 });
+    t.record('192.168.68.76', { cards: 0, nextPullSec: 3600, now: NOW + 3600_000 });
+    t.record('192.168.68.76', { cards: 0, nextPullSec: 3600, now: NOW + 7300_000 });
+
+    const clients = t.clients();
+    expect(clients).toHaveLength(2);
+    const x3 = clients.find((c) => c.board === 'xteink_x3')!;
+    expect(x3.pulls).toBe(3);
+    expect(x3.medianIntervalSec).toBe(3650);
+    expect(x3.cadenceHonouredCount).toBe(2);
+    // Newest-first ordering: the X3 pulled most recently.
+    expect(clients[0]!.client).toBe('192.168.68.76');
+  });
+
+  it('bounds its history ring, newest first', () => {
+    const t = new FeedPullTracker({ historyLimit: 3 });
+    for (let i = 0; i < 5; i++) t.record(IP, { cards: i, nextPullSec: 3600, now: NOW + i * 1000 });
+    const recent = t.recent();
+    expect(recent).toHaveLength(3);
+    expect(recent.map((e) => e.cards)).toEqual([4, 3, 2]);
+  });
+
+  it('formats the pull line with the drift verdict', () => {
+    const t = new FeedPullTracker();
+    t.noteBoard(IP, 'xteink_x4');
+    expect(formatFeedPull(t.record(IP, { cards: 3, nextPullSec: 3600, now: NOW })))
+      .toBe('card feed pull from xteink_x4 (192.168.68.77): 3 cards, next 3600s — first pull');
+    expect(formatFeedPull(t.record(IP, { cards: 1, nextPullSec: 3600, now: NOW + 3708_000 })))
+      .toBe('card feed pull from xteink_x4 (192.168.68.77): 1 card, next 3600s'
+        + ' — 3708s since last pull (expected 3600s, +3.0%, cadence ok)');
   });
 });

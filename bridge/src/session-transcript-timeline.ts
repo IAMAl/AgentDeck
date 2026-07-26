@@ -260,6 +260,20 @@ function makeEntry(
  * scan is needed). Returns '' when the file is unreadable or the tail holds
  * no assistant text. Never throws.
  */
+/**
+ * Last assistant text for a session, found from its own transcript. Same source
+ * the Stop handler reads, but addressable by session id — a turn that closed
+ * without extractable text (the transcript had not flushed yet) can be asked
+ * again a moment later.
+ */
+export function lastAssistantTextForSession(sessionId: string): string {
+  const uuid = rawSessionId(sessionId);
+  if (!uuid) return '';
+  const transcript = locateTranscript(uuid);
+  if (!transcript) return '';
+  return lastAssistantTextFromTranscript(transcript);
+}
+
 export function lastAssistantTextFromTranscript(transcriptPath: string): string {
   let raw: string;
   try {

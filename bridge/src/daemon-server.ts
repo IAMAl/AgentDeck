@@ -98,10 +98,14 @@ import { initApme, isTimelineProjectionEnabled, loadApmeConfig, type ApmeModule 
 import { FallbackTaskTimeline } from './fallback-task-timeline.js';
 import { handleApmeRequest } from './apme/http.js';
 import { readModelFromTranscript } from './apme/claude-transcript-reader.js';
-import { transcriptTimelineForSession, lastAssistantTextFromTranscript } from './session-transcript-timeline.js';
+import {
+  transcriptTimelineForSession, lastAssistantTextFromTranscript,
+  lastAssistantTextForSession,
+} from './session-transcript-timeline.js';
 import {
   DeviceVoiceReplyRouter, speakableReply, type ReplySink,
 } from './device-voice-reply.js';
+import { rawSessionId } from '@agentdeck/shared';
 import { lastAgentMessageFromCodexRollout } from './codex-rollout-response.js';
 import { callFoundationModelsHelper } from './foundation-models-helper.js';
 import {
@@ -118,7 +122,9 @@ import { getPixooDeviceDetails, pixooDeviceCount } from './pixoo/pixoo-bridge.js
 import { loadTimeboxDevices } from './timebox/timebox-settings.js';
 import { getLanIp, stripUnsafeText, cleanRawText, prepareMarkdownDetail, normalizeCommandPrompt, formatDurationSec, type TimelineEntry, PluginCommand } from '@agentdeck/shared';
 import { injectOpenClawSession } from './openclaw-session.js';
-import { buildCardFeed, applyOutboxDecisions } from './card-feed.js';
+import {
+  buildCardFeed, applyOutboxDecisions, FeedPullTracker, formatFeedPull, normalizeClientIp,
+} from './card-feed.js';
 import { CARD_FEED_PATH, CARD_OUTBOX_PATH, type SessionInfo, type OutboxPushRequest } from '@agentdeck/shared';
 import { readFileSync, statSync } from 'fs';
 import { readFile, rm } from 'fs/promises';
@@ -203,6 +209,24 @@ function listWifiEsp32Devices(): Array<WifiEsp32Device & { stale: boolean; seria
     out.push({ ...d, stale: now - d.lastSeenMs > 90_000, serialActive });
   }
   return out;
+}
+
+/** Card-feed pull log. Daemon-lifetime only: it answers "is the wake cadence
+ *  working right now", which is exactly the M6 power-ladder check that has no
+ *  other observable — a battery client with an empty outbox never identifies
+ *  itself and never opens a socket. */
+const feedPulls = new FeedPullTracker();
+
+/** Name a pulling client from the WiFi WS roster. A board that has been
+ *  deep-sleeping may have aged out of that roster, which is why the tracker
+ *  keeps its own IP→board memory once it has learned one. */
+function boardForClientIp(ip: string): string | undefined {
+  const want = normalizeClientIp(ip);
+  if (!want) return undefined;
+  for (const d of wifiEsp32Devices.values()) {
+    if (d.ip && normalizeClientIp(d.ip) === want) return d.board;
+  }
+  return undefined;
 }
 
 function wifiEsp32Key(d: { board?: unknown; ip?: unknown }): string {
@@ -1086,6 +1110,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           { type: 'tui', devices: core.wsServer.getTuiClients() },
           { type: 'esp32', count: esp32ConnectionCount(), ports: getESP32Ports(), devices: getESP32DeviceInfo() },
           { type: 'esp32-wifi', devices: listWifiEsp32Devices() },
+          // Pull-sync clients (M6). Separate from esp32-wifi on purpose: a
+          // battery board that wakes, syncs over HTTP and sleeps is never in
+          // the WS roster while it matters.
+          { type: 'card-feed', clients: feedPulls.clients(), recent: feedPulls.recent(8) },
           { type: 'pixoo', details: getPixooDeviceDetails() },
           { type: 'timebox', devices: loadTimeboxDevices() },
           { type: 'idotmatrix', devices: loadIDotMatrixDevices() },
@@ -1136,10 +1164,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       (async () => {
         if (req.method === 'GET') {
           const sessions = await core.buildSessionsSnapshot();
-          return buildCardFeed(sessions as unknown as SessionInfo[]);
+          const feed = buildCardFeed(sessions as unknown as SessionInfo[]);
+          // A sleeping client's whole visit is this one request: no body, no
+          // board id, nothing pushed. Record it, because the gap between two
+          // pulls is the only evidence that the timer wake fired at all.
+          feedPulls.noteBoard(ip, boardForClientIp(ip));
+          log(`[agentdeck] ${formatFeedPull(feedPulls.record(ip, {
+            cards: feed.cards.length,
+            nextPullSec: feed.nextPullSec,
+          }))}`);
+          return feed;
         }
         const body = await readJsonBody(req);
         const board = typeof body.board === 'string' ? body.board : 'unknown';
+        // An outbox push is the one request that names the board — bind it to
+        // the IP so the (anonymous) feed pulls that follow are attributable.
+        if (board !== 'unknown') feedPulls.noteBoard(ip, board);
         const sessions = await core.buildSessionsSnapshot();
         const result = applyOutboxDecisions(body as unknown as OutboxPushRequest, {
           sessions: sessions as unknown as SessionInfo[],
@@ -3096,18 +3136,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
    * from their bridge, hook-observed ones get it from the Stop handler above —
    * so one listener covers all of them.
    */
-  core.bridgeTimeline.onEntry((entry, upsert) => {
-    // Upserts re-fire for rows that already spoke; only a new row is a new turn.
-    if (upsert || entry.type !== 'chat_response' || !entry.sessionId) return;
-    const targets = voiceReply.targetsFor(entry.sessionId);
+  /** Speak `text` to every board waiting on `sessionId`, or tell them there was
+   *  nothing to read. Shared by both completion shapes below. */
+  const speakReplyTo = (sessionId: string, text: string): void => {
+    const targets = voiceReply.targetsFor(sessionId);
     if (targets.length === 0) return;
-    log(`[agentdeck] voice: reply ready for ${String(entry.sessionId).slice(0, 32)}`
+    log(`[agentdeck] voice: reply ready for ${sessionId.slice(0, 32)}`
       + ` -> ${targets.length} board(s)`);
     const voiceCfg = loadDaemonSettings().voice as
       { locale?: unknown; speakReplies?: unknown } | undefined;
     if (voiceCfg?.speakReplies === false) return;  // opt-out, default on
-    const detail = typeof entry.detail === 'string' ? entry.detail : '';
-    const spoken = speakableReply(detail || String(entry.raw ?? ''));
+    const spoken = speakableReply(text);
     if (!spoken) {
       // A code-only answer has nothing worth reading aloud; say that instead of
       // spelling out punctuation, so the user still knows the turn finished.
@@ -3138,7 +3177,44 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         await rm(out, { force: true }).catch(() => {});
       }
     })();
+  };
+
+  /**
+   * Turn completion for an armed session. Two shapes reach here:
+   *
+   * `chat_response` carries the text and speaks immediately. `chat_end` means
+   * the turn closed with nothing extractable — which routinely happens because
+   * the agent's own record hadn't flushed when the Stop hook fired, not because
+   * the turn was silent. (Measured: a Codex turn closed as "Completed · 5s" and
+   * its rollout held the full answer seconds later.) So a chat_end retries from
+   * that record before giving up, and only then tells the board there was
+   * nothing to read.
+   */
+  const REPLY_RECOVER_DELAY_MS = 2500;
+  core.bridgeTimeline.onEntry((entry, upsert) => {
+    // Upserts re-fire for rows that already spoke; only a new row is a new turn.
+    if (upsert || !entry.sessionId) return;
+    if (entry.type !== 'chat_response' && entry.type !== 'chat_end') return;
+    const sessionId = String(entry.sessionId);
+    if (voiceReply.targetsFor(sessionId).length === 0) return;
+
+    if (entry.type === 'chat_response') {
+      const detail = typeof entry.detail === 'string' ? entry.detail : '';
+      speakReplyTo(sessionId, detail || String(entry.raw ?? ''));
+      return;
+    }
+    const agentType = String(entry.agentType ?? '');
+    setTimeout(() => {
+      if (voiceReply.targetsFor(sessionId).length === 0) return;
+      const recovered = agentType.startsWith('codex')
+        ? lastAgentMessageFromCodexRollout(rawSessionId(sessionId))
+        : lastAssistantTextForSession(sessionId);
+      log(`[agentdeck] voice: chat_end recovery for ${sessionId.slice(0, 32)}`
+        + ` (${agentType || 'unknown'}): ${recovered ? `${recovered.length} chars` : 'nothing'}`);
+      speakReplyTo(sessionId, recovered || '');
+    }, REPLY_RECOVER_DELAY_MS).unref?.();
   });
+
   const sinkByWs = new Map<WebSocket, ReplySink>();
   const stableSink = (ws: WebSocket): ReplySink => {
     // The router keys arming by sink identity, so the same socket must map to
@@ -3269,6 +3345,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   });
   setInterval(() => {
     deviceVoice.sweep();
+    // Keep armings alive while their session is still working: a dictated
+    // question that starts a long task must still get its answer read out when
+    // the task finally finishes, and the TTL alone would have expired first.
+    void core.buildSessionsSnapshot().then((sessions) => {
+      voiceReply.refresh(sessions
+        .filter((s) => s.state === 'processing' || s.state === 'awaiting_input')
+        .map((s) => String(s.id)));
+    }).catch(() => {});
     voiceReply.sweep();
     for (const ws of sinkByWs.keys()) {
       if (ws.readyState !== WebSocket.OPEN) sinkByWs.delete(ws);

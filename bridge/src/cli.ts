@@ -791,6 +791,25 @@ program
             }
             total += devices.length;
           }
+        } else if (d.type === 'card-feed') {
+          // Pull-sync (M6) clients. A battery board is asleep almost always, so
+          // "last pull + observed interval" is its liveness — not a socket. The
+          // interval vs. the advertised cadence is the timer-wake evidence.
+          const clients: any[] = (d.clients ?? []) as any[];
+          if (clients.length) {
+            lines.push(`  Card feed    ${clients.length} pull client${clients.length !== 1 ? 's' : ''}`);
+            for (const c of clients) {
+              const who = c.board ? `${c.board} @ ${c.client}` : c.client;
+              const ago = `${Math.round((Date.now() - c.lastPullAt) / 1000)}s ago`;
+              const cadence = c.lastIntervalSec !== undefined
+                ? `, last gap ${c.lastIntervalSec}s vs ${c.lastNextPullSec}s asked`
+                : '';
+              const honoured = c.pulls > 1
+                ? ` [${c.cadenceHonouredCount}/${c.pulls - 1} on cadence]`
+                : '';
+              lines.push(`                 ${who} — ${c.pulls} pull${c.pulls !== 1 ? 's' : ''}, last ${ago}${cadence}${honoured}`);
+            }
+          }
         } else if (d.type === 'pixoo') {
           // Node daemon: { details: [...] }, Swift daemon: { deviceIps: [...] }
           if (d.details) {
