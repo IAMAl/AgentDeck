@@ -718,6 +718,12 @@ export function capturePanicLine(conn: SerialConnection, line: string): boolean 
   return true;
 }
 
+// Daemon-installed sink for device-originated commands arriving over serial.
+let serialCommandSink: ((cmd: Record<string, unknown>) => void) | null = null;
+export function setSerialCommandSink(sink: (cmd: Record<string, unknown>) => void): void {
+  serialCommandSink = sink;
+}
+
 /** @internal Exported for testing only */
 export function handleSerialLine(conn: SerialConnection, line: string): void {
   if (!line.startsWith('{')) {
@@ -770,6 +776,13 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           lastKnownDeviceInfoByPort.set(conn.port, conn.deviceInfo);
           persistDeviceInfoCache();
         }
+      } else if (['select_option', 'session_command', 'permission_decision',
+                  'peripheral_event', 'query_session_timeline', 'focus_session',
+                  'review_run'].includes(msg.type as string)) {
+        // Device→daemon command channel over serial (the gap that dropped a
+        // serial-attached board's steering taps). Forward into the same
+        // command pipeline the WS path uses.
+        serialCommandSink?.(msg as unknown as Record<string, unknown>);
       } else if (!conn.deviceInfoFresh &&
                  conn.deviceInfoRequestsSent < DEVICE_INFO_MAX_REQUESTS &&
                  Date.now() - conn.lastDeviceInfoRequestAt >= DEVICE_INFO_READ_RETRY_MS) {

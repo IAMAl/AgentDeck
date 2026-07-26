@@ -45,6 +45,7 @@ import {
 } from './observed-steering.js';
 import { resolveSessionIdPrefix } from './session-id-resolve.js';
 import { injectObservedSelection } from './observed-inject.js';
+import { setSerialCommandSink } from './esp32-serial.js';
 import { enqueueOpenCodeCommand, pollOpenCodeCommands } from './opencode-steering.js';
 import { runSessionReview, reviewSnapshot } from './review-runner.js';
 
@@ -106,7 +107,7 @@ import { loadWifiConfig } from './wifi-config.js';
 import { getConnectedAdbDevices, hasAdb, getAdbDeviceCount } from './adb-reverse.js';
 import { getPixooDeviceDetails, pixooDeviceCount } from './pixoo/pixoo-bridge.js';
 import { loadTimeboxDevices } from './timebox/timebox-settings.js';
-import { getLanIp, stripUnsafeText, cleanRawText, prepareMarkdownDetail, normalizeCommandPrompt, formatDurationSec, type TimelineEntry } from '@agentdeck/shared';
+import { getLanIp, stripUnsafeText, cleanRawText, prepareMarkdownDetail, normalizeCommandPrompt, formatDurationSec, type TimelineEntry, PluginCommand } from '@agentdeck/shared';
 import { injectOpenClawSession } from './openclaw-session.js';
 import { readFileSync, statSync } from 'fs';
 import { join } from 'path';
@@ -2733,9 +2734,16 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     debug('daemon', `observed steering: unsupported command ${type} for ${uuid}`);
   }
 
-  core.wsServer.onCommand((cmd) => {
+  const handleDeviceCommand = (cmd: PluginCommand): void => {
     debug('daemon', `cmd: ${cmd.type}`);
-    if (gatewayAdapter?.isAlive() && gatewayAdapter.handleCommand(cmd)) {
+    // Session-scoped commands are NEVER OpenClaw's to consume: a device
+    // answering a named session (select_option{sessionId}) must reach the
+    // session routing below — the gateway swallowing it as an exec-approval
+    // ate the Focus Strip's tap-to-approve.
+    const sessionScopedCmd = typeof (cmd as any).sessionId === 'string'
+      && (cmd as any).sessionId
+      && (cmd as any).sessionId !== 'openclaw-gateway';
+    if (!sessionScopedCmd && gatewayAdapter?.isAlive() && gatewayAdapter.handleCommand(cmd)) {
       switch (cmd.type) {
         case 'respond': core.stateMachine.handleUserAction('respond'); break;
         case 'interrupt': core.stateMachine.handleUserAction('interrupt'); break;
@@ -2955,7 +2963,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         else if (core.cachedApiUsage) core.apiUsageStale = true;
       });
     }
-  });
+  };
+  core.wsServer.onCommand(handleDeviceCommand);
+  // Serial-attached boards get the SAME command pipeline: their steering taps
+  // arrive over USB when WiFi is parked (serial-primary), and used to be
+  // silently dropped by the device_info-only serial parser.
+  setSerialCommandSink((c) => handleDeviceCommand(c as unknown as PluginCommand));
 
   // ===== Client connect =====
   core.wsServer.onClientConnect((ws) => {
