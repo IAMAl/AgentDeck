@@ -12,19 +12,29 @@
  *     1. tmux — the pane whose `#{pane_tty}` matches gets `send-keys`.
  *     2. iTerm2 — the session whose `tty` matches gets `write text` (no focus
  *        change; iTerm2 writes straight into the session).
- *     3. Terminal.app — has no write API, so: remember the frontmost app,
- *        select the tab owning that tty, post key events, restore focus.
+ *     3. Terminal.app — has no write API, so: select the tab owning that tty
+ *        (scriptable, no activation) and post keys to Terminal's pid.
  *
  *   App-hosted (`appName` known, no tty) — Claude.app / ChatGPT.app run the
  *   agent inside a native window, so the answer is that window's own control:
  *     4. Press the button whose title matches the chosen option's label
- *        (AXPress — precise, and no focus steal).
- *     5. Fall back to key events with raise+restore when no button matches
- *        (list-style pickers).
+ *        (AXPress — precise; works for native AppKit dialogs).
+ *     5. Post keys to the app's pid (focus-free).
+ *     6. Raise + keys + restore, only if the app ignores posted events.
  *
- * TIOCSTI (the one kernel path that would cover every emulator at once) is
- * rejected by macOS with EPERM unless the tty is the caller's own controlling
- * terminal — measured 2026-07-26, do not retry it.
+ * Every rung is focus-free except the last: measured 2026-07-26, keys posted
+ * with `CGEventPostToPid` reached a background Terminal tab while iTerm2
+ * stayed frontmost.
+ *
+ * Two measured dead ends, recorded so they are not retried:
+ *   • TIOCSTI — the one kernel path that would cover every emulator at once —
+ *     is EPERM on macOS unless the tty is the caller's own controlling
+ *     terminal.
+ *   • ChatGPT.app exposes no content in its accessibility tree (its window is
+ *     three untitled AXButtons plus empty AXGroups, and
+ *     `AXManualAccessibility` returns kAXErrorAttributeUnsupported), so the
+ *     button rung cannot see its controls — key posting is the working path
+ *     for that host.
  *
  * Node-daemon only by design: every rung needs a subprocess (tmux/osascript),
  * which the App Store Swift daemon must never spawn. See
@@ -47,9 +57,18 @@ export interface InjectTarget {
   label?: string;
 }
 
+/** Known bundle ids for GUI agent hosts — matched before localized names,
+ *  which differ per system language. */
+const APP_BUNDLE_IDS: Record<string, string[]> = {
+  Claude: ['com.anthropic.claudefordesktop', 'com.anthropic.claude'],
+  ChatGPT: ['com.openai.chat'],
+  Terminal: ['com.apple.Terminal'],
+  iTerm2: ['com.googlecode.iterm2'],
+};
+
 export interface InjectResult {
   ok: boolean;
-  via?: 'tmux' | 'iterm2' | 'terminal-app' | 'app-button' | 'app-keys';
+  via?: 'tmux' | 'iterm2' | 'terminal-app' | 'app-button' | 'app-keys' | 'app-keys-raised';
   reason?: string;
 }
 
@@ -114,21 +133,14 @@ export function buildItermSelectScript(tty: string, downs: number): string {
 }
 
 /**
- * AppleScript for Terminal.app: locate the tab whose `tty` matches, bring it
- * forward, post Down×n + Return through System Events, then restore whatever
- * app was frontmost. Terminal.app exposes no write API, so a brief focus
- * change is unavoidable — it is restored in the same script so the user's
- * typing target is not left hijacked.
+ * AppleScript for Terminal.app: select the tab whose `tty` matches, WITHOUT
+ * activating the app. Keys are then posted straight to Terminal's pid
+ * (`buildPostKeysScript`), so answering a prompt never steals the user's
+ * focus — measured 2026-07-26: iTerm2 stayed frontmost while the Terminal
+ * tab received ESC[B + CR.
  */
-export function buildTerminalAppSelectScript(tty: string, downs: number): string {
-  const keyLines: string[] = [];
-  for (let i = 0; i < downs; i++) keyLines.push('key code 125'); // Down
-  keyLines.push('key code 36'); // Return
+export function buildTerminalAppSelectTabScript(tty: string): string {
   return [
-    'set prevApp to ""',
-    'try',
-    '  tell application "System Events" to set prevApp to name of first process whose frontmost is true',
-    'end try',
     'set found to false',
     'tell application "Terminal"',
     '  repeat with w in windows',
@@ -143,19 +155,65 @@ export function buildTerminalAppSelectScript(tty: string, downs: number): string
     '    if found then exit repeat',
     '  end repeat',
     'end tell',
-    'if not found then return "notfound"',
-    'tell application "Terminal" to activate',
-    'delay 0.15',
-    'tell application "System Events"',
-    ...keyLines.map((l) => `  ${l}`),
-    'end tell',
-    'delay 0.05',
-    'if prevApp is not "" and prevApp is not "Terminal" then',
-    '  try',
-    '    tell application prevApp to activate',
-    '  end try',
+    'if found then',
+    '  return "ok"',
+    'else',
+    '  return "notfound"',
     'end if',
-    'return "ok"',
+  ].join('\n');
+}
+
+/**
+ * JXA that posts Down×n + Return directly to a running app's process with
+ * `CGEventPostToPid` — the event reaches that app's key window without
+ * raising it, so the user's foreground work is untouched.
+ *
+ * The app is matched by bundle id first and localized name second: on a
+ * Korean system `Terminal` is "터미널", so name matching alone silently
+ * missed it.
+ *
+ * Requires Accessibility permission for whatever process runs the daemon
+ * (the terminal that launched it, or the LaunchAgent itself).
+ */
+export function buildPostKeysScript(
+  match: { bundleIds?: string[]; names?: string[] },
+  downs: number,
+): string {
+  const bundles = JSON.stringify(match.bundleIds ?? []);
+  const names = JSON.stringify(match.names ?? []);
+  return [
+    "ObjC.import('ApplicationServices'); ObjC.import('AppKit');",
+    `const wantBundles = ${bundles}; const wantNames = ${names};`,
+    'function findPid() {',
+    '  const apps = $.NSWorkspace.sharedWorkspace.runningApplications;',
+    '  for (let i = 0; i < apps.count; i++) {',
+    '    const a = apps.objectAtIndex(i);',
+    '    const b = ObjC.unwrap(a.bundleIdentifier);',
+    '    if (b && wantBundles.indexOf(b) >= 0) return a.processIdentifier;',
+    '  }',
+    '  for (let i = 0; i < apps.count; i++) {',
+    '    const a = apps.objectAtIndex(i);',
+    '    const n = ObjC.unwrap(a.localizedName);',
+    '    if (n && wantNames.indexOf(n) >= 0) return a.processIdentifier;',
+    '  }',
+    '  return -1;',
+    '}',
+    'const pid = findPid();',
+    'if (pid < 0) { "notfound" } else {',
+    '  function key(code) {',
+    '    const d = $.CGEventCreateKeyboardEvent($(), code, true);',
+    '    const u = $.CGEventCreateKeyboardEvent($(), code, false);',
+    '    $.CGEventPostToPid(pid, d); $.CGEventPostToPid(pid, u);',
+    '    delay(0.12);',
+    '  }',
+    // A background app drops the first posted events until its input queue is
+    // warm: measured with 0.05s pacing and no lead-in, two Downs vanished and
+    // only the Return landed (which would silently pick the WRONG option).
+    '  delay(0.30);',
+    `  for (let i = 0; i < ${downs}; i++) key(125);`,
+    '  key(36);',
+    '  "ok"',
+    '}',
   ].join('\n');
 }
 
@@ -197,8 +255,10 @@ export function buildAppButtonPressScript(appName: string, label: string): strin
 }
 
 /**
- * Key-event fallback for an app-hosted session: raise the app, post Down×n +
- * Return, restore the previous frontmost app.
+ * Last-resort key path: raise the app, post Down×n + Return through System
+ * Events, restore the previous frontmost app. Only used when the focus-free
+ * `CGEventPostToPid` route reports the app is not running or the app ignores
+ * posted events.
  */
 export function buildAppKeysScript(appName: string, downs: number): string {
   const app = escapeAppleScript(appName);
@@ -223,6 +283,17 @@ export function buildAppKeysScript(appName: string, downs: number): string {
     'end if',
     'return "ok"',
   ].join('\n');
+}
+
+async function runJxa(script: string, timeoutMs = 8_000): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script],
+      { encoding: 'utf8', timeout: timeoutMs });
+    return stdout.trim();
+  } catch (err) {
+    debug('inject', `jxa failed: ${String(err).slice(0, 200)}`);
+    return null;
+  }
 }
 
 async function runOsa(script: string, timeoutMs = 8_000): Promise<string | null> {
@@ -254,20 +325,31 @@ export async function injectObservedSelection(
     if (await runOsa(buildItermSelectScript(tty, index), 5_000) === 'ok') {
       return { ok: true, via: 'iterm2' };
     }
-    if (await runOsa(buildTerminalAppSelectScript(tty, index)) === 'ok') {
-      return { ok: true, via: 'terminal-app' };
+    // Terminal.app: select the owning tab (no activation), then post keys to
+    // its pid — focus-free.
+    if (await runOsa(buildTerminalAppSelectTabScript(tty), 5_000) === 'ok') {
+      const posted = await runJxa(
+        buildPostKeysScript({ bundleIds: ['com.apple.Terminal'], names: ['Terminal', '터미널'] }, index),
+      );
+      if (posted === 'ok') return { ok: true, via: 'terminal-app' };
+      debug('inject', `Terminal.app tab selected but key post failed: ${posted ?? 'error'}`);
     }
     return { ok: false, reason: `no reachable terminal for ${tty}` };
   }
 
-  // App-hosted: prefer pressing the labelled control (no focus steal).
+  // App-hosted. Try the labelled control first (works for native AppKit
+  // dialogs); then focus-free key posting; raise+restore only as last resort.
   if (label) {
     const r = await runOsa(buildAppButtonPressScript(appName!, label));
     if (r === 'ok') return { ok: true, via: 'app-button' };
     debug('inject', `app-button press on ${appName}: ${r ?? 'error'}`);
   }
+  const posted = await runJxa(
+    buildPostKeysScript({ bundleIds: APP_BUNDLE_IDS[appName!] ?? [], names: [appName!] }, index),
+  );
+  if (posted === 'ok') return { ok: true, via: 'app-keys' };
   if (await runOsa(buildAppKeysScript(appName!, index)) === 'ok') {
-    return { ok: true, via: 'app-keys' };
+    return { ok: true, via: 'app-keys-raised' };
   }
   return { ok: false, reason: `no reachable UI in ${appName}` };
 }

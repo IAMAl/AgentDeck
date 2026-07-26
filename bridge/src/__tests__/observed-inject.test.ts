@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
-  parseTmuxPanes, buildItermSelectScript, buildTerminalAppSelectScript,
-  buildAppButtonPressScript, buildAppKeysScript, escapeAppleScript,
+  parseTmuxPanes, buildItermSelectScript, buildTerminalAppSelectTabScript,
+  buildPostKeysScript, buildAppButtonPressScript, buildAppKeysScript,
+  escapeAppleScript,
 } from '../observed-inject.js';
 import { parseProcessTable, appNameFromCommand, resolveHostApp } from '../passive-observer.js';
 
@@ -42,17 +43,37 @@ describe('parseProcessTable with tty column', () => {
   });
 });
 
-describe('buildTerminalAppSelectScript', () => {
-  it('finds the tab by tty, keys Down x index + Return, restores focus', () => {
-    const s = buildTerminalAppSelectScript('ttys003', 2);
+describe('buildTerminalAppSelectTabScript', () => {
+  it('selects the tab by tty without activating the app', () => {
+    const s = buildTerminalAppSelectTabScript('ttys003');
     expect(s).toContain('if tty of t is "/dev/ttys003"');
-    expect(s.match(/key code 125/g)?.length).toBe(2);
-    expect(s).toContain('key code 36');
-    expect(s).toContain('tell application prevApp to activate');
+    expect(s).toContain('set selected of t to true');
+    // focus-free: selecting a tab must never raise Terminal
+    expect(s).not.toContain('activate');
   });
 
   it('returns notfound when no tab matches', () => {
-    expect(buildTerminalAppSelectScript('ttys009', 0)).toContain('return "notfound"');
+    expect(buildTerminalAppSelectTabScript('ttys009')).toContain('return "notfound"');
+  });
+});
+
+describe('buildPostKeysScript', () => {
+  it('matches by bundle id first, then localized name', () => {
+    const s = buildPostKeysScript({ bundleIds: ['com.apple.Terminal'], names: ['Terminal', '터미널'] }, 2);
+    const bundleAt = s.indexOf('wantBundles.indexOf');
+    const nameAt = s.indexOf('wantNames.indexOf');
+    expect(bundleAt).toBeGreaterThan(-1);
+    expect(nameAt).toBeGreaterThan(bundleAt);
+    expect(s).toContain('"com.apple.Terminal"');
+    expect(s).toContain('터미널');
+  });
+
+  it('posts to the pid (never activates) and ends with Return', () => {
+    const s = buildPostKeysScript({ bundleIds: ['com.openai.chat'] }, 3);
+    expect(s).toContain('CGEventPostToPid');
+    expect(s).toContain('for (let i = 0; i < 3; i++) key(125)');
+    expect(s).toContain('key(36)');
+    expect(s).not.toContain('activate');
   });
 });
 
