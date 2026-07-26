@@ -88,6 +88,7 @@ All surfaces follow the same rule:
 | Existing terminal-session discovery | Limited | Yes | General `ps` / `lsof` / transcript discovery is CLI-only |
 | Display-only permission attention | Yes | Yes | Real permission notification; no fabricated options |
 | PTY option steering | No | Yes | Real parsed options and key injection |
+| Observed-session answer injection (device tap → terminal keys) | No | Yes | Needs `ps` tty discovery + tmux/osascript subprocesses — both CLI-only; sandbox has neither |
 | OpenCode monitoring | Opt-in read-only | Yes | Tier 1 connects only to a configured/fixed local server; no port scan |
 | Antigravity session monitoring | No | Yes | Tier 1 may display user-approved usage data only |
 | Launch Claude / Codex / OpenCode session | No | Yes | App Store has no launch-session entry point |
