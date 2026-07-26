@@ -3270,6 +3270,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   }, 30_000).unref?.();
 
   core.wsServer.onCommand(handleDeviceCommand);
+  // Idle display-only boards send no messages — their protocol pongs are the
+  // only liveness signal. Without this, every healthy quiet XTeink read as
+  // "stale" in /devices and the roster aged it toward eviction.
+  core.wsServer.onPong((ws) => touchWifiEsp32Socket(ws));
   // Serial-attached boards get the SAME command pipeline: their steering taps
   // arrive over USB when WiFi is parked (serial-primary), and used to be
   // silently dropped by the device_info-only serial parser.

@@ -10,6 +10,7 @@ export class WsServer {
   private commandCallback: ((cmd: PluginCommand) => void) | null = null;
   private rawMessageCallback: ((msg: Record<string, unknown>, sender: WebSocket) => boolean) | null = null;
   private binaryCallback: ((data: Buffer, sender: WebSocket) => void) | null = null;
+  private onPongCallback: ((ws: WebSocket) => void) | null = null;
   private onConnectCallback: ((ws: WebSocket) => void) | null = null;
   private onDisconnectCallback: ((ws: WebSocket) => void) | null = null;
   private clientAlive = new Map<WebSocket, boolean>();
@@ -115,6 +116,10 @@ export class WsServer {
 
       ws.on('pong', () => {
         this.clientAlive.set(ws, true);
+        // A display-only board sends no application messages while idle, so a
+        // message-based lastSeen brands every healthy quiet board "stale". Its
+        // pong every WS_PING_INTERVAL_MS is real liveness — surface it.
+        this.onPongCallback?.(ws);
       });
 
       ws.on('message', (data, isBinary) => {
@@ -238,6 +243,10 @@ export class WsServer {
   }
 
   /** Register a callback for binary frames (device audio). */
+  onPong(callback: (ws: WebSocket) => void): void {
+    this.onPongCallback = callback;
+  }
+
   onBinary(callback: (data: Buffer, sender: WebSocket) => void): void {
     this.binaryCallback = callback;
   }
