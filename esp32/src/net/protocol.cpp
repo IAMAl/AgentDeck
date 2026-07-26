@@ -19,6 +19,7 @@
 #endif
 #if defined(BOARD_T_EMBED)
 #include "../input/power_monitor.h"
+#include "../input/ir_receiver.h"
 #endif
 #if defined(BOARD_T_DISPLAY_PRO)
 #include "../input/touch_strip.h"
@@ -968,6 +969,7 @@ static void sendDeviceInfo() {
             caps.add("battery");
             caps.add("nfc");
             caps.add("audio");
+            if (Input::irReady()) caps.add("ir_rx");
         }
         Input::PowerStatus ps = Input::powerStatus();
         if (ps.valid) {

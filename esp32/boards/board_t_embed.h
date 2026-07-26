@@ -45,6 +45,10 @@
 #define BOARD_PIN_NFC_IRQ    17
 #define BOARD_PIN_NFC_RST    45
 
+// IR transceiver — EN must be driven HIGH before the receiver sees anything
+#define BOARD_PIN_IR_EN      2
+#define BOARD_PIN_IR_RX      1
+
 // Speaker I2S (vendor "voice" pins; mic is a separate PDM pair 42/39)
 #define BOARD_PIN_SPK_BCLK   46
 #define BOARD_PIN_SPK_LRCLK  40

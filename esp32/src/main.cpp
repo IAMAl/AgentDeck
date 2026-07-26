@@ -34,6 +34,7 @@
 #include "input/encoder.h"
 #include "input/power_monitor.h"
 #include "input/nfc_reader.h"
+#include "input/ir_receiver.h"
 #elif defined(BOARD_T_DISPLAY_PRO)
 #include "ui/display.h"
 #include "ui/ticker/ticker_ui.h"
@@ -409,6 +410,7 @@ static void uiTask(void* param) {
     Input::encoderInit(BOARD_PIN_ENC_A, BOARD_PIN_ENC_B, BOARD_PIN_ENC_KEY);
     Input::powerInit();
     Input::nfcInit();
+    Input::irInit();
     Ring::init();
     Knob::create();
 
@@ -437,6 +439,23 @@ static void uiTask(void* param) {
 
         // Battery/charger poll (I2C, self-throttled to every ~5s)
         Input::powerPoll(now);
+
+        // IR remote button → peripheral primitive. Any remote in the room
+        // becomes an AgentDeck button once mapped in settings.json.
+        {
+            char proto[24], code[24];
+            if (Input::irPoll(now, proto, sizeof(proto), code, sizeof(code))) {
+                char evt[160];
+                snprintf(evt, sizeof(evt),
+                         "{\"type\":\"peripheral_event\",\"board\":\"t_embed\","
+                         "\"kind\":\"ir_rx\",\"protocol\":\"%s\",\"code\":\"%s\"}",
+                         proto, code);
+                Net::queueOutbound(evt);
+                char note[48];
+                snprintf(note, sizeof(note), "IR %s %s", proto, code);
+                Knob::notify(note);
+            }
+        }
 
         // NFC tag tap → peripheral primitive (daemon maps meaning via config)
         {
