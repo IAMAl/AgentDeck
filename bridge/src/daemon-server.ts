@@ -1041,6 +1041,21 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     return out;
   };
 
+  /**
+   * Debug hook behind `POST /voice/speak` — synthesize arbitrary text straight
+   * to a board's amplifier, bypassing the arming that the real voice loop needs.
+   * Without it the only way to hear the speaker is to hold a board's mic button
+   * and wait for an agent turn, which is useless for verifying a flash.
+   *
+   * Assigned late, once the reply router and its sinks exist: those live far
+   * below the HTTP server, which is already listening by then, so the route must
+   * read this binding at request time rather than close over one in its TDZ.
+   */
+  let speakToBoard:
+    | ((board: string, text: string, opts: { force?: boolean; locale?: string })
+        => Promise<{ ok: boolean; detail: string }>)
+    | null = null;
+
   // ===== HTTP server =====
   const httpServer = createServer((req, res) => {
     // APME routes: auth-gated (task prompts, project paths, hook payloads are sensitive).
@@ -1841,6 +1856,52 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: `bad body: ${String(err)}` }));
         }
+      });
+      return;
+    }
+
+    // Speak arbitrary text on a board's amplifier — the bench test for the
+    // playback half of the voice loop, which otherwise only fires when a
+    // dictation happens to arm a board and its session finishes a turn. Body:
+    //   { board: string, text: string, force?: boolean, locale?: string }
+    // `board` is the name `agentdeck devices` prints (e.g. "t_embed"); serial is
+    // preferred over WiFi, matching the reply router's routing policy.
+    if (req.method === 'POST' && pathname === '/voice/speak') {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; if (body.length > 8192) req.destroy(); });
+      req.on('end', () => {
+        let board = '', text = '', force = false, locale: string | undefined;
+        try {
+          const parsed = body ? JSON.parse(body) as Record<string, unknown> : {};
+          board = typeof parsed.board === 'string' ? parsed.board : '';
+          text = typeof parsed.text === 'string' ? parsed.text : '';
+          force = parsed.force === true;
+          locale = typeof parsed.locale === 'string' && parsed.locale ? parsed.locale : undefined;
+        } catch (err) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `bad body: ${String(err)}` }));
+          return;
+        }
+        if (!board || !text) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'board and text required' }));
+          return;
+        }
+        if (!speakToBoard) {
+          // Only reachable in the window between listen() and the voice wiring.
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'voice not initialized yet' }));
+          return;
+        }
+        speakToBoard(board, text, { force, locale })
+          .then(({ ok, detail }) => {
+            res.writeHead(ok ? 200 : 409, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ spoke: ok, board, detail }));
+          })
+          .catch((err) => {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `speak failed: ${String(err)}` }));
+          });
       });
       return;
     }
@@ -3309,6 +3370,72 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     };
     serialSinks.set(port, sink);
     return sink;
+  };
+
+  /**
+   * Back the `POST /voice/speak` bench test now that both sink flavours exist.
+   * Same transport policy as the reply router — serial first, WiFi second — so
+   * what this proves is what the real reply path will do.
+   */
+  speakToBoard = async (board, text, opts) => {
+    const spoken = speakableReply(text);
+    if (!spoken) return { ok: false, detail: 'nothing speakable in text' };
+
+    const serialPort = liveSerialPortForBoard(board);
+    let sink: ReplySink | null = serialPort ? serialSinkFor(serialPort) : null;
+    if (!sink) {
+      for (const [key, sock] of wifiEsp32Sockets) {
+        if (sock.readyState !== WebSocket.OPEN) continue;
+        if (wifiEsp32Devices.get(key)?.board === board || key === board) {
+          sink = stableSink(sock);
+          break;
+        }
+      }
+    }
+    if (!sink) {
+      const wifi = [...wifiEsp32Devices.values()].map((d) => d.board).filter(Boolean);
+      return {
+        ok: false,
+        detail: `no live transport for "${board}"`
+          + ` (serial: ${serialBoardsAttached().join(',') || 'none'};`
+          + ` wifi: ${wifi.join(',') || 'none'})`,
+      };
+    }
+
+    // A board that never initialized its amplifier drops the frames on the
+    // floor, which is indistinguishable from a wiring fault at the listening
+    // end. Say so instead, and let --force stream anyway when the question is
+    // whether the advertisement itself is wrong.
+    const caps = sink.capabilities();
+    if (!caps.includes('audio_out') && !opts.force) {
+      return {
+        ok: false,
+        detail: `${sink.describe()} does not advertise audio_out`
+          + ` (capabilities: ${caps.join(',') || 'none'}) — pass force to stream anyway`,
+      };
+    }
+
+    const voiceCfg = loadDaemonSettings().voice as { locale?: unknown } | undefined;
+    const locale = opts.locale
+      ?? (typeof voiceCfg?.locale === 'string' && voiceCfg.locale ? voiceCfg.locale : undefined);
+    const out = join(tmpdir(), `agentdeck-speak-${process.pid}-${Date.now()}.wav`);
+    try {
+      await synthesizeWavWithHelper(spoken, out, locale ? { locale } : {});
+      const wav = await readFile(out);
+      // Note: stream() consumes any arming held by this sink, so a bench test
+      // run while a board is genuinely waiting on a reply eats that reply.
+      const ok = await voiceReply.stream(sink, wav, spoken);
+      log(`[agentdeck] voice: bench ${ok ? 'spoke' : 'FAILED to speak'} on ${sink.describe()}`
+        + ` (${wav.length}B, ${spoken.length} chars)`);
+      return {
+        ok,
+        detail: ok
+          ? `${sink.describe()} · ${wav.length}B · ${spoken.length} chars`
+          : `stream rejected by ${sink.describe()} (transport closed or already speaking)`,
+      };
+    } finally {
+      await rm(out, { force: true }).catch(() => {});
+    }
   };
 
   // Voice from a USB-attached board. Without this the mic worked only while the

@@ -726,6 +726,44 @@ program
 
 // ===== Device commands =====
 
+// Bench test for the playback half of the voice loop. The production path only
+// speaks after a dictation arms a board and its session finishes a turn, which
+// is no way to check whether a freshly flashed amplifier works.
+program
+  .command('speak <board> <text>')
+  .description('Speak text on a board\'s speaker (voice playback bench test)')
+  .option('-p, --port <port>', 'Bridge server port')
+  .option('-l, --locale <bcp47>', 'TTS locale, e.g. ko-KR (default: settings voice.locale)')
+  .option('-f, --force', 'Stream even if the board does not advertise audio_out')
+  .action(async (board: string, text: string, opts) => {
+    const { readDaemonInfo, findDaemonPort } = await import('./session-registry.js');
+    const info = readDaemonInfo();
+    const port = opts.port != null
+      ? parseInt(opts.port, 10)
+      : (info?.httpPort ?? info?.port ?? findDaemonPort() ?? BRIDGE_WS_PORT);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/voice/speak`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ board, text, force: opts.force === true, locale: opts.locale }),
+        // Synthesis plus paced playback: a 700-char reply runs well past a
+        // minute at speech rate, and the daemon answers only once it is done.
+        signal: AbortSignal.timeout(180_000),
+      });
+      const data = await res.json() as { spoke?: boolean; detail?: string; error?: string };
+      if (data.error) {
+        log(`✗ ${data.error}`);
+        process.exitCode = 1;
+        return;
+      }
+      log(data.spoke ? `✓ spoke on ${board} — ${data.detail}` : `✗ ${data.detail}`);
+      if (!data.spoke) process.exitCode = 1;
+    } catch (err) {
+      log(`✗ daemon not reachable on port ${port}: ${String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
 program
   .command('devices')
   .description('Show connected devices (WebSocket, ESP32, Pixoo, Timebox, ADB)')
