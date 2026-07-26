@@ -112,6 +112,8 @@ import { getPixooDeviceDetails, pixooDeviceCount } from './pixoo/pixoo-bridge.js
 import { loadTimeboxDevices } from './timebox/timebox-settings.js';
 import { getLanIp, stripUnsafeText, cleanRawText, prepareMarkdownDetail, normalizeCommandPrompt, formatDurationSec, type TimelineEntry, PluginCommand } from '@agentdeck/shared';
 import { injectOpenClawSession } from './openclaw-session.js';
+import { buildCardFeed, applyOutboxDecisions } from './card-feed.js';
+import { CARD_FEED_PATH, CARD_OUTBOX_PATH, type SessionInfo, type OutboxPushRequest } from '@agentdeck/shared';
 import { readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -1105,6 +1107,48 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       }).catch((err) => {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+      });
+      return;
+    }
+    // ===== Card Feed pull sync (M6) — wake-sync-sleep battery clients =====
+    // Auth mirrors /apme: local connections are free; anything else needs the
+    // pairing token (?token=). Devices hold it from provisioning; /health
+    // exposes it for LAN pairing.
+    if ((req.method === 'GET' && pathname === CARD_FEED_PATH)
+      || (req.method === 'POST' && pathname === CARD_OUTBOX_PATH)) {
+      const ip = req.socket.remoteAddress ?? '';
+      if (!isLocalConnection(ip)) {
+        const token = parsedUrl.searchParams.get('token') ?? '';
+        if (!validateToken(token)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized — token required for card feed routes' }));
+          return;
+        }
+      }
+      (async () => {
+        if (req.method === 'GET') {
+          const sessions = await core.buildSessionsSnapshot();
+          return buildCardFeed(sessions as unknown as SessionInfo[]);
+        }
+        const body = await readJsonBody(req);
+        const board = typeof body.board === 'string' ? body.board : 'unknown';
+        const sessions = await core.buildSessionsSnapshot();
+        const result = applyOutboxDecisions(body as unknown as OutboxPushRequest, {
+          sessions: sessions as unknown as SessionInfo[],
+          isPendingRequest,
+          dispatch: (cmd) => handleDeviceCommand(cmd as unknown as PluginCommand),
+        });
+        const applied = result.results.filter((r) => r.status === 'applied').length;
+        if (result.results.length > 0) {
+          log(`[agentdeck] outbox push from ${board}: ${applied}/${result.results.length} applied`);
+        }
+        return result;
+      })().then((payload) => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(payload));
+      }).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
       });
       return;
     }

@@ -620,8 +620,11 @@ export class BridgeCore {
     return this.wsServer.getClientCount() > 0 || this.externalClientCount() > 0;
   }
 
-  /** Broadcast enriched sessions list (debounced 2s from state_changed) */
-  async broadcastSessionsList(): Promise<void> {
+  /** Build the current enriched sessions roster — the same pipeline the
+   *  sessions_list broadcast uses, without broadcasting. Serves the HTTP pull
+   *  surfaces (`GET /feed`) so a wake-sync-sleep client sees exactly what a
+   *  WS client would. */
+  async buildSessionsSnapshot(): Promise<import('./session-aggregator.js').EnrichedSession[]> {
     const snapshot = this.stateMachine.getSnapshot();
     let sessions = await buildEnrichedSessionsList(
       this.sessionId,
@@ -638,6 +641,12 @@ export class BridgeCore {
       if (a) s.activity = a;
     }
     this.attachLastEventFields(sessions);
+    return sessions;
+  }
+
+  /** Broadcast enriched sessions list (debounced 2s from state_changed) */
+  async broadcastSessionsList(): Promise<void> {
+    const sessions = await this.buildSessionsSnapshot();
     const event = { type: 'sessions_list', sessions } as BridgeEvent;
     // Cache for the serial heartbeat re-sync (like display_state): a board that
     // reconnects across a daemon handoff during a quiet window otherwise sits

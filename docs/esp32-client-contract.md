@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: stable
 owner: Firmware maintainers
-reviewed: 2026-07-21
-revision: 2026-07-21
+reviewed: 2026-07-26
+revision: 2026-07-26
 source_of_truth: docs/esp32-client-contract.md
 validators: [bash scripts/sync-xteink-eink-dashboard.sh --check]
 ---
@@ -132,6 +132,36 @@ A client with buttons must derive controls from the wire payload, never merely f
   first-party parser and the X3 port. See the port-sync sections in
   [esp32.md](esp32.md#downstream-client-port-sync) (AgentDeck side) and the fork's
   `.skills/SKILL.md` (fork side).
+
+## Pull sync (optional, 2026-07-26) — wake-sync-sleep battery clients
+
+The HTTP counterpart to the WS live mode, for clients that deep-sleep between
+syncs (XTeink X3/X4 on battery). Types: `shared/src/protocol.ts` § Card Feed
+Pull Sync; server: `bridge/src/card-feed.ts` + the daemon routes (Node daemon
+only today — the Swift in-process daemon does not serve these routes yet).
+Always-powered clients keep using WS; a dual-mode client uses WS while docked
+and pull while on battery.
+
+- **`GET /feed`** (daemon port 9120) → `CardFeedResponse`: one `FeedCard` per
+  session (`cardId: "session:<id>"`, body = the same `SessionInfo` shape as
+  `sessions_list`), plus `serverTime`/`serverHm` (clock re-anchor for drifty
+  RTCs), and `nextPullSec` — the daemon's suggested sleep interval (3600 idle /
+  900 when any session is mid-turn or awaiting). Devices may clamp but should
+  not poll faster on battery.
+- **Per-card `actionClass`** decides offline behaviour: `live` (permission
+  gates, awaiting prompts — grey out offline, `expiresAt` TTL, never answerable
+  from a stale cache), `day` (M7 card modules — answers queue in the device
+  outbox; no producer yet), `info` (read-only rows; show sync age).
+- **`POST /outbox`** → `OutboxPushRequest` (`{board, decisions[]}`), answered
+  with per-decision results **in request order**. The device deletes every
+  acknowledged decision regardless of status — `expired`/`rejected`/
+  `unknown_card` are terminal, not retryable. Validity is checked against live
+  state: a `permission_decision` applies only while its gate is still held; an
+  option decision applies only while the session is still awaiting **and** the
+  echoed `question` matches the current one (an hour-old index must never press
+  a newer prompt).
+- **Auth**: same as `/apme` — local connections free, LAN needs the pairing
+  token as `?token=` (devices hold it from provisioning; `/health` exposes it).
 
 ## Peripheral primitives (optional, 2026-07-25)
 

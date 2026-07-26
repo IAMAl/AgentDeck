@@ -631,6 +631,124 @@ export interface Esp32OtaErrorCommand {
   stage?: string;
 }
 
+// ===== Card Feed Pull Sync (M6 — battery e-ink clients) =====
+//
+// HTTP pull counterpart to the WS live mode, for wake-sync-sleep clients
+// (XTeink X3/X4 on battery). `GET /feed` returns the current card set;
+// `POST /outbox` pushes decisions the device recorded while offline. Both are
+// plain HTTP on the daemon port (9120) — no persistent socket, so a device can
+// wake, sync, and deep-sleep in seconds. WS remains the docked live mode.
+// Contract doc: docs/esp32-client-contract.md § Pull sync.
+
+/**
+ * Per-card offline-validity class. Decides what a *cached* card may do when
+ * the daemon is unreachable (the fork's decision-card honesty rule):
+ *
+ * - `live` — must be answered against a live daemon (permission gates, PTY
+ *   prompts). Cached copies grey out ("reconnect to act") and TTL-expire via
+ *   `expiresAt`. An outbox decision for an expired live card is rejected, never
+ *   silently applied.
+ * - `day` — valid all day (M7 card modules: NUDGE / QUEST / INTERVAL / FORK).
+ *   Decisions queue in the device outbox and apply on next sync. No daemon
+ *   producer emits this class yet — it is in the schema so the device-side
+ *   outbox grammar doesn't change when M7 lands.
+ * - `info` — read-only status (session rows, digests). Always valid to
+ *   display; shows sync age; never gains buttons offline.
+ */
+export type CardActionClass = 'live' | 'day' | 'info';
+
+/** One card in the pull feed. M6 derives every card from a live session (the
+ *  same display fields `sessions_list` carries); M7 generalizes to daemon card
+ *  modules with their own bodies. */
+export interface FeedCard {
+  /** Stable id for outbox correlation — `session:<sessionId>` for
+   *  session-derived cards; M7 modules will use their own prefixes. */
+  cardId: string;
+  actionClass: CardActionClass;
+  /** Epoch-ms after which a `live` card is no longer answerable. Absent on
+   *  `day`/`info` cards. */
+  expiresAt?: number;
+  /** Session-derived card body (M6: always present). */
+  session?: SessionInfo;
+}
+
+export interface CardFeedResponse {
+  type: 'card_feed';
+  /** Contract revision — bump on breaking shape changes. */
+  rev: 1;
+  /** Daemon wall clock, epoch-ms. A drifty-RTC device re-anchors its clock
+   *  estimate from this on every pull (the M5.5 "as of" age source). */
+  serverTime: number;
+  /** Daemon host-local "HH:MM" (same convention as timeline `localHm`) so an
+   *  RTC-less client renders wall time without timezone math. */
+  serverHm: string;
+  /** Suggested seconds until the next pull — the daemon's half of the power
+   *  ladder. Devices may clamp but should not poll faster than this while on
+   *  battery. */
+  nextPullSec: number;
+  cards: FeedCard[];
+}
+
+/** One decision recorded on-device, replayed via `POST /outbox`. The fields
+ *  mirror the equivalent WS command so the daemon can route through the same
+ *  dispatch path. */
+export interface OutboxDecision {
+  /** Feed card the decision answers. */
+  cardId: string;
+  /** Session the card was derived from (echo of `FeedCard.session.id`). */
+  sessionId?: string;
+  /** Permission gate correlation — required when action=`permission_decision`;
+   *  the gate must still be pending or the decision is rejected as expired. */
+  requestId?: string;
+  action: 'permission_decision' | 'select_option' | 'respond' | 'send_prompt' | 'dismiss';
+  /** action=permission_decision */
+  decision?: 'allow' | 'deny';
+  /** action=select_option — wire option index. */
+  index?: number;
+  /** action=respond — option shortcut/value. */
+  value?: string;
+  /** action=send_prompt — prompt text. */
+  text?: string;
+  /** Prompt-content echo (the card's `question` at record time). The daemon
+   *  refuses to apply an option decision when the session's *current* question
+   *  no longer matches — an hour-old index must never press a different,
+   *  newer prompt. */
+  question?: string;
+  /** Seconds elapsed on-device between recording and pushing. Drift-free age
+   *  for validity checks — device epoch clocks are not trusted. */
+  ageSec?: number;
+}
+
+export interface OutboxPushRequest {
+  /** Device wire identity, e.g. "xteink_x4" — attribution/diagnostics. */
+  board?: string;
+  decisions: OutboxDecision[];
+}
+
+export type OutboxDecisionStatus = 'applied' | 'expired' | 'unknown_card' | 'rejected' | 'error';
+
+/** Per-decision outcome. Order matches the request array. The device deletes
+ *  every acknowledged decision from its outbox regardless of status — a
+ *  rejection is terminal, not retryable. */
+export interface OutboxDecisionResult {
+  cardId: string;
+  status: OutboxDecisionStatus;
+  reason?: string;
+}
+
+export interface OutboxPushResponse {
+  ok: boolean;
+  results: OutboxDecisionResult[];
+}
+
+/** HTTP paths on the daemon port (BRIDGE_HTTP_PORT). */
+export const CARD_FEED_PATH = '/feed';
+export const CARD_OUTBOX_PATH = '/outbox';
+/** Pull cadence hints (`nextPullSec`): idle default vs. when any session is
+ *  mid-turn / awaiting. Hourly idle matches what a drifty RTC can honour. */
+export const CARD_FEED_IDLE_PULL_SEC = 3600;
+export const CARD_FEED_ACTIVE_PULL_SEC = 900;
+
 export type ESP32ToHostMessage =
   | DeviceInfoMessage
   | WifiProvisionAckMessage
