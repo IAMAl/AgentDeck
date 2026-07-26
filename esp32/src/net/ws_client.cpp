@@ -36,6 +36,14 @@ static SemaphoreHandle_t outboxMutex = nullptr;
 // ── binary audio ring (capture task → network core) ──
 // 6 × 2 KB covers ~380 ms of 16 kHz mono PCM16 in flight, enough to ride out a
 // WiFi hiccup without stalling the I2S reader.
+//
+// Board-guarded: 12 KB of DRAM is a rounding error on a PSRAM S3 and fatal on
+// the TTGO, whose 46 KB canvas already crowds dram0_0_seg — allocating it there
+// overflowed the segment by 13 KB and broke that board's build outright. Only a
+// board with a microphone can ever fill this ring, so only such a board pays
+// for it. Nothing gates ESP32 builds in CI, which is why the break stayed
+// invisible until a full-fleet compile.
+#if defined(BOARD_T_EMBED)
 static constexpr int AUDIO_SLOTS = 6;
 static constexpr size_t AUDIO_SLOT_BYTES = 2048;
 static uint8_t audioRing[AUDIO_SLOTS][AUDIO_SLOT_BYTES];
@@ -43,6 +51,7 @@ static size_t audioLen[AUDIO_SLOTS] = {0};
 static int audioHead = 0;
 static int audioCount = 0;
 static SemaphoreHandle_t audioMutex = nullptr;
+#endif
 
 static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
@@ -116,9 +125,16 @@ namespace Net {
 
 void wsInit() {
     if (!outboxMutex) outboxMutex = xSemaphoreCreateMutex();
+#if defined(BOARD_T_EMBED)
     if (!audioMutex) audioMutex = xSemaphoreCreateMutex();
+#endif
 }
 
+#if !defined(BOARD_T_EMBED)
+// Boards without a microphone keep the API but never carry the buffer.
+bool queueAudioChunk(const uint8_t*, size_t) { return false; }
+bool audioBacklogged() { return false; }
+#else
 bool queueAudioChunk(const uint8_t* data, size_t len) {
     if (!data || len == 0 || len > AUDIO_SLOT_BYTES || !audioMutex) return false;
     bool queued = false;
@@ -141,6 +157,7 @@ bool audioBacklogged() {
     xSemaphoreGive(audioMutex);
     return any;
 }
+#endif  // BOARD_T_EMBED
 
 // Enqueue an outbound JSON command from any task (typically CORE_UI). Dropped if
 // the small queue is full — interactive commands are user-paced, not bursty.
@@ -173,6 +190,7 @@ void pumpOutbound() {
         else Net::serialWriteJsonLine(line);  // serial bridge consumes line-delimited JSON
     }
 
+#if defined(BOARD_T_EMBED)
     // Binary audio frames — WS only. Dropped (not buffered) when the socket is
     // down: a voice utterance is worthless late, and holding it would stall
     // the capture task behind a dead link.
@@ -189,11 +207,16 @@ void pumpOutbound() {
         if (len == 0) continue;
         if (connected) {
             ws.sendBIN(frame, len);
+#if defined(BOARD_T_EMBED)
         } else if (Net::serialConnected()) {
             // USB-attached: the board's WiFi WS is parked, but the mic must not
             // go dead just because the user plugged in to charge. Serial is
             // line-delimited JSON, so the samples ride base64 — raw PCM would
             // tear the framing for every other reader of this port.
+            //
+            // Board-guarded because the 3 KB line buffer is DRAM: only the board
+            // with a microphone can ever reach this branch, and the no-PSRAM
+            // boards have no room to spare for a buffer they cannot use.
             static char line[3072];
             const char* prefix = "{\"type\":\"audio_chunk\",\"d\":\"";
             size_t pfx = strlen(prefix);
@@ -207,8 +230,10 @@ void pumpOutbound() {
                 line[pfx + wrote + 2] = '\0';
                 Net::serialWriteJsonLine(line);
             }
+#endif  // BOARD_T_EMBED
         }
     }
+#endif  // BOARD_T_EMBED
 }
 
 void wsConnect(const char* ip, uint16_t port, const char* token) {
