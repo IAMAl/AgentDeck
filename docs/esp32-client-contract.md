@@ -73,7 +73,11 @@ Dispatch on the top-level `"type"`. The forwarded sets are defined in `protocol.
 | `device_info_request` | Reply with `device_info` (see below). X3/X4 already announce `device_info` on initial connect; request/reply parity remains recommended for host diagnostics. |
 
 A display-only client may ignore the OTA frames (`esp32_ota_begin/chunk/end/abort`) unless
-it opts into WiFi OTA with a dual-OTA partition table.
+it opts into WiFi OTA with a dual-OTA partition table. The XTeink fork opted in as of its
+build 88aaf098 (`src/agentdeck/ota_ws_receiver.*`): it consumes OTA frames *before* its
+filtered protocol parser (an ArduinoJson filter would silently drop the base64 `data`
+payload), streams chunks to an SD cache, and flashes via its raw-partition path instead of
+the Arduino `Update` class.
 
 ## Outbound — messages the client emits
 
@@ -86,7 +90,7 @@ route to a board; a client that never emits it never appears on the dashboard. F
 
 | Field | Notes |
 |---|---|
-| `board` | Canonical wire string, underscore convention. First-party: `ulanzi_tc001`, `inkdeck`, `ttgo_t_display`, `esp32_c6_147`, `round_amoled`, `86box`, `ips_10`, `ips_35`, `t_embed`. External CrossPoint fork: `xteink_x3`, `xteink_x4` (one firmware, runtime-detected). Registration accepts **any** board string (the Node daemon coerces only a *missing* field to `unknown`); a board needs an `ESP32_OTA_BOARDS` entry **only** to be OTA-targetable by name — and only if it has an `esp32/` pio env, which the fork boards do not (they flash via SD `update.bin`). |
+| `board` | Canonical wire string, underscore convention. First-party: `ulanzi_tc001`, `inkdeck`, `ttgo_t_display`, `esp32_c6_147`, `round_amoled`, `86box`, `ips_10`, `ips_35`, `t_embed`. External CrossPoint fork: `xteink_x3`, `xteink_x4` (one firmware, runtime-detected). Registration accepts **any** board string (the Node daemon coerces only a *missing* field to `unknown`); a board needs an `ESP32_OTA_BOARDS` entry **only** to be OTA-targetable by a short *alias* — canonical board strings and IPs pass through unchanged, which is how the fork boards are targeted (`agentdeck esp32-ota xteink_x4 --firmware <bin>`; no `esp32/` pio env, so `--build` does not apply). |
 | `version` | `FIRMWARE_VERSION`. |
 | `buildHash` | `GIT_SHA` — the authoritative deploy-verification field (`version` alone can't distinguish a stale flash). |
 | `buildEpoch` | Build timestamp (uint32). |
