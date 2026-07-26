@@ -49,6 +49,11 @@ import {
 // initial replay comfortably below that library cap; Detail views can request a
 // scoped session replay later via query_session_timeline.
 export const INITIAL_TIMELINE_HISTORY_MAX_BYTES = 12 * 1024;
+/** Board-class WS clients (`?clientType=esp32`) get the serial-path frame
+ *  invariant applied to the initial burst too: any frame bound for a board
+ *  must stay under 4096 bytes — a no-PSRAM board handed a 12KB frame right
+ *  after connect can OOM, drop the socket, and flap. Envelope margin included. */
+export const ESP32_INITIAL_TIMELINE_HISTORY_MAX_BYTES = 3584;
 
 /** Attach host-local "HH:MM" to a timeline entry. Devices have no timezone
  * (their NTP runs UTC), so rendering `ts` directly shows a 9-hour-off clock
@@ -68,14 +73,24 @@ export function buildCappedTimelineHistory(
   maxBytes = INITIAL_TIMELINE_HISTORY_MAX_BYTES,
   extraFields: Record<string, unknown> = {},
 ): BridgeEvent | null {
-  const stamped = entries.map((e) => stampLocalHm(e));
+  // Incremental byte accounting — newest-first until the budget is spent, then
+  // stop. The previous version re-stringified the WHOLE candidate event for
+  // every entry (O(n²) in serialized bytes) and kept testing entries after the
+  // budget was full; with a day-long timeline that made every client CONNECT
+  // cost tens of ms of synchronous CPU. A flapping board reconnecting every
+  // couple of seconds turned that into a daemon-saturating resonance
+  // (connect → heavy burst → client dies → reconnect). Per-entry sizes are
+  // measured once; the envelope overhead is measured once.
+  const envelope = Buffer.byteLength(
+    JSON.stringify({ type: 'timeline_history', ...extraFields, entries: [] }), 'utf8');
+  let budget = maxBytes - envelope;
   const kept: TimelineEntry[] = [];
-  for (let i = stamped.length - 1; i >= 0; i--) {
-    const candidate = [stamped[i], ...kept];
-    const event = { type: 'timeline_history', ...extraFields, entries: candidate } as BridgeEvent;
-    if (Buffer.byteLength(JSON.stringify(event), 'utf8') <= maxBytes) {
-      kept.unshift(stamped[i]);
-    }
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const stamped = stampLocalHm(entries[i]);
+    const cost = Buffer.byteLength(JSON.stringify(stamped), 'utf8') + 1; // +1 comma
+    if (cost > budget) break; // older entries only get us further over budget
+    budget -= cost;
+    kept.unshift(stamped);
   }
   return kept.length > 0 ? ({ type: 'timeline_history', ...extraFields, entries: kept } as BridgeEvent) : null;
 }
@@ -768,9 +783,21 @@ export class BridgeCore {
     // freshly-restarted daemon must send `entries: []` to wipe the client's
     // stale rows; suppressing it (the old `if (historyEvent)`) left old logs
     // frozen on Android/ESP32 across a daemon restart.
-    const historyEvent = buildCappedTimelineHistory(history)
-      ?? ({ type: 'timeline_history', entries: [] } as BridgeEvent);
-    this.wsServer.sendTo(ws, historyEvent);
+    //
+    // Two robustness gates on the burst (2026-07-26 flap resonance):
+    //  - board-class sockets get the ≤4096B frame invariant, not the 12KB cap;
+    //  - a FLAPPING client (see WsServer connect guard) gets no history at all
+    //    this connect — keeping its last rows beats feeding a marginal link a
+    //    burst that kills it again. It re-syncs on its first stable connect
+    //    (or via query_session_timeline).
+    if (!this.wsServer.isFlappingClient(ws)) {
+      const historyCap = this.wsServer.isEsp32Client(ws)
+        ? ESP32_INITIAL_TIMELINE_HISTORY_MAX_BYTES
+        : INITIAL_TIMELINE_HISTORY_MAX_BYTES;
+      const historyEvent = buildCappedTimelineHistory(history, historyCap)
+        ?? ({ type: 'timeline_history', entries: [] } as BridgeEvent);
+      this.wsServer.sendTo(ws, historyEvent);
+    }
 
     // Sessions list
     buildEnrichedSessionsList(

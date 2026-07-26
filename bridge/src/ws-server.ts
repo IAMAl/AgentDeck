@@ -14,6 +14,17 @@ export class WsServer {
   private onDisconnectCallback: ((ws: WebSocket) => void) | null = null;
   private clientAlive = new Map<WebSocket, boolean>();
   private esp32Clients = new Set<WebSocket>();
+  // Per-IP connect timestamps for the flap guard (window: 30s, threshold: >6).
+  private recentConnectsByIp = new Map<string, number[]>();
+  private flappingClients = new Set<WebSocket>();
+  // IPs that have ever sent device_info this daemon lifetime. A board that
+  // predates the `?clientType=esp32` tag (XTeink 6ccbe140) is only recognized
+  // AFTER its first device_info — one connect too late, because the initial
+  // burst already went out untagged. Remembering the IP makes every subsequent
+  // connect board-class from byte one, so the ≤4096B invariant holds and a
+  // heap-tight board can't be killed by its own welcome payload.
+  private knownBoardIps = new Set<string>();
+  private socketRemoteIp = new Map<WebSocket, string>();
   private eventTransformer: ((event: BridgeEvent, client: WebSocket) => BridgeEvent | null) | null = null;
   // Clients that registered as the Ulanzi Studio plugin. Their WebSocket
   // presence is the daemon's D200H connectivity signal.
@@ -68,9 +79,30 @@ export class WsServer {
         debug('WS', `Remote client authenticated from ${remoteIp}`);
       }
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      this.socketRemoteIp.set(ws, remoteIp);
       if (url.searchParams.get('clientType') === 'esp32' || url.searchParams.get('esp32') === '1') {
         this.esp32Clients.add(ws);
         debug('WS', 'ESP32 WiFi client tagged from query');
+      } else if (this.knownBoardIps.has(remoteIp)) {
+        this.esp32Clients.add(ws);
+        debug('WS', `ESP32 WiFi client tagged from known board IP ${remoteIp}`);
+      }
+
+      // Flap guard: a client whose IP reconnected >6 times in the last 30s is
+      // marked flapping. It is still served (rejecting outright would blind a
+      // recovering board forever), but sendInitialState skips the expensive
+      // burst for it — a marginal-RF board must not be able to resonate the
+      // daemon into event-loop saturation (connect → heavy serialize → client
+      // dies on the burst → immediate reconnect → repeat).
+      {
+        const now = Date.now();
+        const recent = (this.recentConnectsByIp.get(remoteIp) ?? []).filter((t) => now - t < 30_000);
+        recent.push(now);
+        this.recentConnectsByIp.set(remoteIp, recent);
+        if (recent.length > 6) {
+          this.flappingClients.add(ws);
+          debug('WS', `Flapping client ${remoteIp}: ${recent.length} connects/30s — initial burst reduced`);
+        }
       }
 
       debug('WS', 'Plugin connected');
@@ -131,6 +163,8 @@ export class WsServer {
         debug('WS', 'Plugin disconnected');
         this.clientAlive.delete(ws);
         this.esp32Clients.delete(ws);
+        this.flappingClients.delete(ws);
+        this.socketRemoteIp.delete(ws);
         this.tuiClients.delete(ws);
         if (this.ulanziClients.delete(ws) && this.ulanziClients.size === 0) {
           debug('WS', 'Ulanzi plugin gone — D200H disconnected');
@@ -161,8 +195,18 @@ export class WsServer {
     return this.esp32Clients.has(ws);
   }
 
+  /** True when this socket's remote IP has been reconnecting fast enough to
+   *  count as flapping (see the connection handler). Callers use it to skip
+   *  the heavy parts of the initial burst so a marginal client can't resonate
+   *  the daemon into saturation. */
+  isFlappingClient(ws: WebSocket): boolean {
+    return this.flappingClients.has(ws);
+  }
+
   markEsp32Client(ws: WebSocket): void {
     this.esp32Clients.add(ws);
+    const ip = this.socketRemoteIp.get(ws);
+    if (ip) this.knownBoardIps.add(ip);
   }
 
   private payloadFor(event: BridgeEvent, client: WebSocket, cachedPayload?: string): string | null {
