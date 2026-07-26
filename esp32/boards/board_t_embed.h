@@ -49,6 +49,10 @@
 #define BOARD_PIN_IR_EN      2
 #define BOARD_PIN_IR_RX      1
 
+// PDM microphone (vendor: BOARD_MIC_DATA / BOARD_MIC_CLK)
+#define BOARD_PIN_MIC_DATA   42
+#define BOARD_PIN_MIC_CLK    39
+
 // Speaker I2S (vendor "voice" pins; mic is a separate PDM pair 42/39)
 #define BOARD_PIN_SPK_BCLK   46
 #define BOARD_PIN_SPK_LRCLK  40

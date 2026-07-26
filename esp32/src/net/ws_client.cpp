@@ -29,6 +29,17 @@ static int outboxHead = 0;
 static int outboxCount = 0;
 static SemaphoreHandle_t outboxMutex = nullptr;
 
+// ── binary audio ring (capture task → network core) ──
+// 6 × 2 KB covers ~380 ms of 16 kHz mono PCM16 in flight, enough to ride out a
+// WiFi hiccup without stalling the I2S reader.
+static constexpr int AUDIO_SLOTS = 6;
+static constexpr size_t AUDIO_SLOT_BYTES = 2048;
+static uint8_t audioRing[AUDIO_SLOTS][AUDIO_SLOT_BYTES];
+static size_t audioLen[AUDIO_SLOTS] = {0};
+static int audioHead = 0;
+static int audioCount = 0;
+static SemaphoreHandle_t audioMutex = nullptr;
+
 static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
     switch (type) {
         case WStype_DISCONNECTED:
@@ -89,6 +100,30 @@ namespace Net {
 
 void wsInit() {
     if (!outboxMutex) outboxMutex = xSemaphoreCreateMutex();
+    if (!audioMutex) audioMutex = xSemaphoreCreateMutex();
+}
+
+bool queueAudioChunk(const uint8_t* data, size_t len) {
+    if (!data || len == 0 || len > AUDIO_SLOT_BYTES || !audioMutex) return false;
+    bool queued = false;
+    xSemaphoreTake(audioMutex, portMAX_DELAY);
+    if (audioCount < AUDIO_SLOTS) {
+        int idx = (audioHead + audioCount) % AUDIO_SLOTS;
+        memcpy(audioRing[idx], data, len);
+        audioLen[idx] = len;
+        audioCount++;
+        queued = true;
+    }
+    xSemaphoreGive(audioMutex);
+    return queued;
+}
+
+bool audioBacklogged() {
+    if (!audioMutex) return false;
+    xSemaphoreTake(audioMutex, portMAX_DELAY);
+    bool any = audioCount > 0;
+    xSemaphoreGive(audioMutex);
+    return any;
 }
 
 // Enqueue an outbound JSON command from any task (typically CORE_UI). Dropped if
@@ -120,6 +155,22 @@ void pumpOutbound() {
         xSemaphoreGive(outboxMutex);
         if (connected) ws.sendTXT(line);
         else Net::serialWriteJsonLine(line);  // serial bridge consumes line-delimited JSON
+    }
+
+    // Binary audio frames — WS only. Dropped (not buffered) when the socket is
+    // down: a voice utterance is worthless late, and holding it would stall
+    // the capture task behind a dead link.
+    while (audioMutex) {
+        uint8_t frame[AUDIO_SLOT_BYTES];
+        size_t len = 0;
+        xSemaphoreTake(audioMutex, portMAX_DELAY);
+        if (audioCount == 0) { xSemaphoreGive(audioMutex); break; }
+        len = audioLen[audioHead];
+        memcpy(frame, audioRing[audioHead], len);
+        audioHead = (audioHead + 1) % AUDIO_SLOTS;
+        audioCount--;
+        xSemaphoreGive(audioMutex);
+        if (connected && len > 0) ws.sendBIN(frame, len);
     }
 }
 

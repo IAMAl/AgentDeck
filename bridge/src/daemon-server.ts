@@ -47,6 +47,8 @@ import { resolveSessionIdPrefix } from './session-id-resolve.js';
 import { injectObservedSelection } from './observed-inject.js';
 import { setSerialCommandSink } from './esp32-serial.js';
 import { parsePeripheralMappings, resolvePeripheralAction, commandForAction } from './peripheral-mapping.js';
+import { DeviceVoiceCollector } from './device-voice.js';
+import { transcribeWithHelper } from './foundation-models-helper.js';
 import { enqueueOpenCodeCommand, pollOpenCodeCommands } from './opencode-steering.js';
 import { runSessionReview, reviewSnapshot } from './review-runner.js';
 
@@ -2641,6 +2643,50 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       core.broadcastSessionsList().catch(() => {});
       return true; // consumed
     }
+    if (msg.type === 'voice_begin') {
+      deviceVoice.begin(sender, msg);
+      return true; // consumed
+    }
+    if (msg.type === 'voice_end') {
+      const captured = deviceVoice.end(sender, msg);
+      if (captured) {
+        void (async () => {
+          try {
+            // Locale matters: the recognizer falls back to the system locale,
+            // which mangles speech in another language. settings.json
+            // `voice.locale` (BCP-47, e.g. "en-US") overrides it.
+            const voiceCfg = loadDaemonSettings().voice as { locale?: unknown } | undefined;
+            const locale = typeof voiceCfg?.locale === 'string' && voiceCfg.locale
+              ? voiceCfg.locale : undefined;
+            const text = await transcribeWithHelper(captured.wavPath, locale);
+            const sessionId = resolveDeviceSessionId(captured.sessionId);
+            debug('voice', `transcript "${text.slice(0, 60)}" → ${sessionId.slice(0, 20) || '(no session)'}`);
+            // Always tell the board what was heard, even when it is empty or
+            // unroutable — a device that shows nothing is indistinguishable
+            // from a broken mic.
+            try {
+              sender.send(JSON.stringify({ type: 'voice_result', text, sessionId }));
+            } catch { /* client disconnecting */ }
+            if (text && sessionId) {
+              handleDeviceCommand({
+                type: 'session_command',
+                sessionId,
+                command: { type: 'send_prompt', text },
+              } as unknown as PluginCommand);
+            }
+          } catch (err) {
+            const reason = String(err).slice(0, 160);
+            debug('voice', `transcription failed: ${reason}`);
+            try {
+              sender.send(JSON.stringify({ type: 'voice_result', text: '', error: reason }));
+            } catch { /* client disconnecting */ }
+          } finally {
+            captured.cleanup();
+          }
+        })();
+      }
+      return true; // consumed
+    }
     if (msg.type === 'query_session_timeline') {
       // Reply to THIS requester only with the session's recent timeline so a
       // device that connected mid-session can fill its Detail view on demand
@@ -2999,6 +3045,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       });
     }
   };
+  // ── Device-sourced voice ──────────────────────────────────────────────
+  // A board streams PCM16 while its push-to-talk key is held; the daemon
+  // transcribes with Apple's on-device recognizer (bundled Swift helper) and
+  // turns the text into a prompt for the session the board was pointing at.
+  const deviceVoice = new DeviceVoiceCollector();
+  core.wsServer.onBinary((data, sender) => {
+    if (!deviceVoice.append(sender, data)) {
+      debug('voice', `binary frame with no open utterance (${data.length} bytes) — ignored`);
+    }
+  });
+  setInterval(() => deviceVoice.sweep(), 30_000).unref?.();
+
   core.wsServer.onCommand(handleDeviceCommand);
   // Serial-attached boards get the SAME command pipeline: their steering taps
   // arrive over USB when WiFi is parked (serial-primary), and used to be

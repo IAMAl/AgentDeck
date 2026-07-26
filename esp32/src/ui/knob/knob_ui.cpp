@@ -614,6 +614,22 @@ void onKey(Input::KeyEvent evt) {
     }
 }
 
+const char* focusedSessionId() {
+    static char sid[32];
+    sid[0] = '\0';
+    if (s_mode == Mode::DETAIL || s_mode == Mode::SCRUB) {
+        strncpy(sid, s_detailSessionId, sizeof(sid) - 1);
+        sid[sizeof(sid) - 1] = '\0';
+        return sid;
+    }
+    SessionSnap s;
+    if (snapshotSession(s_listIdx, s)) {
+        strncpy(sid, s.id, sizeof(sid) - 1);
+        sid[sizeof(sid) - 1] = '\0';
+    }
+    return sid;
+}
+
 int selectedSessionIdx() {
     lockState();
     uint8_t count = g_state.sessionCount;

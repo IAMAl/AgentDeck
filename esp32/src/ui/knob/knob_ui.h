@@ -24,6 +24,10 @@ void onKey(Input::KeyEvent evt);
 // Show a transient footer notification (e.g. "NFC 04A1B2C3").
 void notify(const char* text);
 
+// Session id the knob is pointing at (detail session, else the hovered list
+// session). Empty string when there are none — the voice target.
+const char* focusedSessionId();
+
 // Session index the cursor is on (list level: hovered; detail level: entered).
 // -1 when there are no sessions. Drives the ring highlight.
 int selectedSessionIdx();

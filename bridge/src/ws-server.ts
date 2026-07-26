@@ -9,6 +9,7 @@ export class WsServer {
   private wss: WebSocketServer;
   private commandCallback: ((cmd: PluginCommand) => void) | null = null;
   private rawMessageCallback: ((msg: Record<string, unknown>, sender: WebSocket) => boolean) | null = null;
+  private binaryCallback: ((data: Buffer, sender: WebSocket) => void) | null = null;
   private onConnectCallback: ((ws: WebSocket) => void) | null = null;
   private onDisconnectCallback: ((ws: WebSocket) => void) | null = null;
   private clientAlive = new Map<WebSocket, boolean>();
@@ -84,7 +85,15 @@ export class WsServer {
         this.clientAlive.set(ws, true);
       });
 
-      ws.on('message', (data) => {
+      ws.on('message', (data, isBinary) => {
+        // Binary frames are device audio (voice capture), not JSON — route
+        // them out before the parser, which would otherwise log a parse error
+        // per 1 KB PCM frame.
+        if (isBinary) {
+          const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+          this.binaryCallback?.(buf, ws);
+          return;
+        }
         try {
           const msg = JSON.parse(data.toString()) as Record<string, unknown>;
           debug('WS', `recv cmd: ${msg.type}`);
@@ -182,6 +191,11 @@ export class WsServer {
 
   onCommand(callback: (cmd: PluginCommand) => void): void {
     this.commandCallback = callback;
+  }
+
+  /** Register a callback for binary frames (device audio). */
+  onBinary(callback: (data: Buffer, sender: WebSocket) => void): void {
+    this.binaryCallback = callback;
   }
 
   /** Register a callback for raw messages before PluginCommand dispatch. Return true to consume. */

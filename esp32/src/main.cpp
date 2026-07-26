@@ -35,6 +35,7 @@
 #include "input/power_monitor.h"
 #include "input/nfc_reader.h"
 #include "input/ir_receiver.h"
+#include "audio/mic_capture.h"
 #elif defined(BOARD_T_DISPLAY_PRO)
 #include "ui/display.h"
 #include "ui/ticker/ticker_ui.h"
@@ -411,6 +412,7 @@ static void uiTask(void* param) {
     Input::powerInit();
     Input::nfcInit();
     Input::irInit();
+    Audio::micInit();
     Ring::init();
     Knob::create();
 
@@ -494,22 +496,37 @@ static void uiTask(void* param) {
             prevAwaiting = anyAwaiting;
         }
 
-        // Side key held ≥1.5s → clean power-off (panel dark, ring dark, rail
-        // latched off; deep-sleep fallback on USB power, side key wakes).
+        // Side key: hold to talk. Capture starts once the press is clearly
+        // deliberate (250ms) and streams until release. Keep holding past 6s
+        // and it becomes a power-off instead — well beyond any spoken command,
+        // so a long sentence can never shut the board down mid-word.
         {
             bool down = (digitalRead(BOARD_PIN_USER_KEY) == LOW);
-            if (down && userKeyPrev) userKeyDownMs = now;
-            if (down && !userKeyPrev && userKeyDownMs == 0) userKeyDownMs = now;
-            if (down && userKeyDownMs != 0 && (now - userKeyDownMs) >= 1500) {
-                Serial.println("[Power] side key held — powering off");
+            if (down && userKeyPrev) userKeyDownMs = now;   // falling edge
+            uint32_t held = (down && userKeyDownMs != 0) ? (now - userKeyDownMs) : 0;
+
+            if (down && held >= 250 && !Audio::micCapturing() && Audio::micReady()) {
+                Audio::micStart(Knob::focusedSessionId());
+                Knob::notify("listening...");
+            }
+            if (down && held >= 6000) {
+                if (Audio::micCapturing()) Audio::micStop(true);
+                Serial.println("[Power] side key held 6s — powering off");
                 Serial.flush();
                 UI::setBrightness(0);
                 Ring::update(now, -1, false, true /* dark */);
                 Input::powerOff();  // does not return
             }
-            if (!down) userKeyDownMs = 0;
+            if (!down) {
+                if (Audio::micCapturing()) {
+                    Audio::micStop(false);
+                    Knob::notify("sent to host");
+                }
+                userKeyDownMs = 0;
+            }
             userKeyPrev = !down;
         }
+        Audio::micPump();
 
         lockState();
         g_state.applyPendingSessionClear(now);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace Net {
@@ -54,6 +55,20 @@ void queueOutbound(const char* json);
  * Drain the outbound queue (WS if connected, else serial). Call from the network task loop.
  */
 void pumpOutbound();
+
+/**
+ * Enqueue a PCM16 audio chunk for binary WS delivery (voice capture). Called
+ * from the capture task; drained by pumpOutbound() on the network core because
+ * arduinoWebSockets is not thread-safe. Returns false when the ring is full —
+ * the caller should drop the chunk rather than block the I2S read loop.
+ *
+ * Audio only ever goes over WiFi WS: the serial line is text/JSON framed and
+ * would corrupt on raw PCM.
+ */
+bool queueAudioChunk(const uint8_t* data, size_t len);
+
+/** True while queued audio is still waiting to go out. */
+bool audioBacklogged();
 
 /**
  * Send a typed command with no extra fields.
