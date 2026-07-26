@@ -22,10 +22,11 @@ static constexpr uint16_t READ_TIMEOUT_MS = 30;
 namespace Input {
 
 bool nfcInit() {
-    // Adafruit_PN532::begin() calls Wire.begin() with NO arguments. That is
-    // safe here only because powerInit() pinned the bus with Wire.setPins()
-    // first — without it this call silently moved SCL to the S3 default and
-    // took the fuel gauge down with it.
+    // Adafruit_PN532::begin() calls Wire.begin() with NO arguments, which on
+    // this core would re-initialize the bus on the ESP32-S3 default pins.
+    // powerInit() pins the bus with Wire.setPins() first so that call cannot
+    // move SCL off 18. (Hardening: this was suspected of breaking the fuel
+    // gauge, but that turned out to be a mis-flashed board — see powerOff().)
     s_nfc.begin();
     uint32_t version = s_nfc.getFirmwareVersion();
     if (version == 0) {

@@ -68,9 +68,9 @@ void i2cScanLog(const char* tag) {
 void powerInit() {
     // Pin the bus pins on the peripheral itself, then begin. Libraries that
     // call the argument-less `Wire.begin()` (Adafruit_PN532 does) would
-    // otherwise re-initialize on the ESP32-S3 defaults and kill SCL 18 —
-    // measured: after nfcInit the gauge at 0x55 stopped answering
-    // (device_info batteryDiag 4) and an I2C scan found nothing at all.
+    // otherwise re-initialize on the ESP32-S3 defaults and move SCL off 18.
+    // Hardening, not a fix for an observed failure — see the correction note
+    // in powerOff() below.
     Wire.setPins(BOARD_PIN_I2C_SDA, BOARD_PIN_I2C_SCL);
     Wire.begin();
     powerPoll(0);
@@ -121,13 +121,20 @@ PowerStatus powerStatus() {
 }
 
 void powerOff() {
-    // NEVER drop PWR_EN while USB-powered. The rail is a soft latch: once
-    // released it stays off until a physical power cycle, and software cannot
-    // re-arm it — driving the pin high again on the next boot does nothing.
-    // Measured the hard way (2026-07-26): after one menu power-off on USB the
-    // gauge, charger and PN532 all vanished from I2C and stayed gone across
-    // reboots while PWR_EN read high, which looked exactly like a broken I2C
-    // driver. On USB we only deep-sleep; the rail stays up.
+    // Don't drop PWR_EN while USB-powered. This board has no wake button (the
+    // vendor's BOARD_USER_KEY is not populated), so a rail dropped while the
+    // MCU stays alive on USB leaves nothing able to bring the peripherals back
+    // except a physical power cycle. Deep sleep alone gives the same
+    // user-visible result — dark, silent, resumable with RST — without that
+    // risk.
+    //
+    // CORRECTION (2026-07-26): an earlier version of this comment claimed the
+    // above was measured, citing an empty I2C scan and batteryDiag 4. It was
+    // not. Those readings came from the T-Display-S3-Pro, which had been
+    // flashed with t_embed firmware by mistake and was therefore scanning I2C
+    // on pins 8/18 instead of its own 5/6. The T-Embed's gauge, charger and
+    // PN532 were healthy the whole time. Keep this guard as the precaution it
+    // is, and do not treat the latch behaviour as established.
     PowerStatus ps = powerStatus();
     if (!ps.usbPowered) {
         digitalWrite(BOARD_PIN_PWR_EN, LOW);
