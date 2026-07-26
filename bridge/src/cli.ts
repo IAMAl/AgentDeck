@@ -973,6 +973,32 @@ program
 
 
 program
+  .command('inject-test')
+  .description('Test observed-answer injection into a terminal or app (tuning aid)')
+  .option('--tty <tty>', 'Controlling terminal, e.g. ttys007')
+  .option('--app <name>', 'Hosting app for GUI sessions, e.g. Claude / ChatGPT')
+  .option('--label <label>', 'Option label — app hosts press the matching button first')
+  .option('-i, --index <n>', 'Zero-based option index (Down presses)', '0')
+  .action(async (opts) => {
+    if (!opts.tty && !opts.app) {
+      console.error('Give --tty <ttysNNN> or --app <Name>. Find a session\'s tty with:');
+      console.error("  ps -eo pid=,tty=,command= | grep -E ' claude| codex'");
+      process.exit(1);
+    }
+    const { injectObservedSelection } = await import('./observed-inject.js');
+    const index = parseInt(opts.index, 10) || 0;
+    const result = await injectObservedSelection(
+      { tty: opts.tty, appName: opts.app, label: opts.label }, index,
+    );
+    if (result.ok) {
+      console.log(`Delivered via ${result.via} (index ${index}).`);
+    } else {
+      console.error(`Not delivered: ${result.reason}`);
+      process.exit(2);
+    }
+  });
+
+program
   .command('diag')
   .description('Generate diagnostic dump')
   .option('-p, --port <port>', 'Bridge server port', String(BRIDGE_WS_PORT))

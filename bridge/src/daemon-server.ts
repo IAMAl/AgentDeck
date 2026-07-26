@@ -2721,9 +2721,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       if (type === 'select_option' && typeof command.index === 'number') {
         const idx = command.index as number;
         const obs = passiveSessionObserver.collect([])
-          .find((s) => s.id === `observed:claude:${uuid}`);
-        const tty = (obs as { tty?: string } | undefined)?.tty;
-        injectObservedSelection(tty, idx).then((r) => {
+          .find((s) => s.id === `observed:claude:${uuid}`) as
+            { tty?: string; appName?: string } | undefined;
+        // The option's visible label lets app-hosted prompts press the matching
+        // native button instead of guessing cursor movement.
+        const label = ov?.options?.[idx]?.label;
+        injectObservedSelection(
+          { tty: obs?.tty, appName: obs?.appName, label }, idx,
+        ).then((r) => {
           debug('daemon', r.ok
             ? `observed selection injected via ${r.via} (idx ${idx}, ${uuid.slice(0, 8)})`
             : `observed selection NOT injected: ${r.reason} (${uuid.slice(0, 8)})`);

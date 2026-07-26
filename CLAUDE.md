@@ -163,6 +163,7 @@ agentdeck dashboard          # TUI monitoring dashboard with terrarium (alias: d
 agentdeck devices            # Connected devices
 agentdeck qr                 # Pairing QR code
 agentdeck diag               # Diagnostic dump
+agentdeck inject-test        # Test observed-answer injection (--tty ttysNNN | --app Name --label text)
 agentdeck pixoo {scan|add|list|remove|test}
 agentdeck timebox {scan|add|list|remove|test|sync}   # Divoom Timebox Mini (BLE)
 agentdeck wifi-setup         # ESP32 WiFi provisioning (--ssid, --password)

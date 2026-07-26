@@ -88,6 +88,9 @@ interface ClaudeSessionFile {
 export interface ObservedSession extends EnrichedSession {
   /** Controlling terminal ("ttys008") — the observed-answer injection target. */
   tty?: string;
+  /** Owning .app for GUI-hosted sessions ("Claude", "ChatGPT") — the app-hosted
+   *  injection target when there is no tty. */
+  appName?: string;
   controlMode: 'observed';
   pid: number;
   cwd?: string;
@@ -399,8 +402,34 @@ async function collectProcessInfo(): Promise<ProcInfo[]> {
   }
 }
 
+/** Extract the enclosing macOS app name from an executable path, e.g.
+ *  "/Applications/ChatGPT.app/Contents/Resources/codex …" → "ChatGPT". */
+export function appNameFromCommand(command: string): string | undefined {
+  const m = command.match(/\/([^/]+)\.app\//);
+  return m ? m[1] : undefined;
+}
+
+/** Walk up the process tree (bounded) looking for the .app bundle that hosts
+ *  this process. GUI-hosted agent sessions (Claude.app, ChatGPT.app) have no
+ *  tty, so the owning app is how the injector finds their UI. */
+export function resolveHostApp(
+  pid: number,
+  byPid: Map<number, ProcInfo>,
+  maxDepth = 6,
+): string | undefined {
+  let cur = byPid.get(pid);
+  for (let i = 0; i < maxDepth && cur; i++) {
+    const name = appNameFromCommand(cur.command);
+    if (name) return name;
+    if (!cur.ppid || cur.ppid <= 1) break;
+    cur = byPid.get(cur.ppid);
+  }
+  return undefined;
+}
+
 function collectClaudeSessions(processes: ProcInfo[]): ObservedSession[] {
   const configDirs = claudeConfigDirs();
+  const byPid = new Map(processes.map((p) => [p.pid, p]));
   const sessions: ObservedSession[] = [];
   for (const proc of processes) {
     if (!cmdHasBinary(proc.command, 'claude') || proc.command.includes('--print')) continue;
@@ -425,6 +454,7 @@ function collectClaudeSessions(processes: ProcInfo[]): ObservedSession[] {
       controlMode: 'observed',
       cwd: sessionFile.cwd,
       tty: proc.tty,
+      appName: proc.tty ? undefined : resolveHostApp(proc.pid, byPid),
       currentTask: summary.currentTask,
       goal: summary.goal,
       contextPercent: summary.contextPercent,
