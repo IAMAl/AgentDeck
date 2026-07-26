@@ -20,4 +20,8 @@ int encoderReadDelta();
 // threshold, LONG_PRESS once while held past it (fires a single time).
 KeyEvent encoderPollKey(uint32_t nowMs);
 
+// Milliseconds the center key has been held, 0 when it is up. Lets a caller
+// implement hold-to-act (push-to-talk) alongside the discrete key events.
+uint32_t encoderKeyHeldMs(uint32_t nowMs);
+
 }  // namespace Input

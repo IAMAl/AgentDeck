@@ -416,10 +416,9 @@ static void uiTask(void* param) {
     Ring::init();
     Knob::create();
 
-    // Side key: long-press = power off (vendor idiom). Active-low.
+    // GPIO6 is read only for the probe below — the vendor header calls it a
+    // user key, but this board exposes no such button.
     pinMode(BOARD_PIN_USER_KEY, INPUT_PULLUP);
-    bool userKeyPrev = true;
-    uint32_t userKeyDownMs = 0;
 
     Serial.println("[UI] Knob screen created, entering main loop");
 
@@ -496,37 +495,49 @@ static void uiTask(void* param) {
             prevAwaiting = anyAwaiting;
         }
 
-        // Side key: hold to talk. Capture starts once the press is clearly
-        // deliberate (250ms) and streams until release. Keep holding past 6s
-        // and it becomes a power-off instead — well beyond any spoken command,
-        // so a long sentence can never shut the board down mid-word.
+        // Hold-to-talk on the ENCODER, not a side key: the CC1101 board has
+        // no user-pressable button besides the encoder and RST, so the vendor
+        // header's BOARD_USER_KEY is not a control we can offer. Holding at
+        // the list level records; releasing sends. Inside a session the same
+        // hold still means BACK, so talking never fights navigation.
         {
-            bool down = (digitalRead(BOARD_PIN_USER_KEY) == LOW);
-            if (down && userKeyPrev) userKeyDownMs = now;   // falling edge
-            uint32_t held = (down && userKeyDownMs != 0) ? (now - userKeyDownMs) : 0;
-
-            if (down && held >= 250 && !Audio::micCapturing() && Audio::micReady()) {
+            uint32_t held = Input::encoderKeyHeldMs(now);
+            bool wantTalk = Knob::atListLevel() && held >= 400;
+            if (wantTalk && !Audio::micCapturing() && Audio::micReady()) {
                 Audio::micStart(Knob::focusedSessionId());
-                Knob::notify("listening...");
+                // Name the target while recording: the list is a carousel, so
+                // "who am I talking to" is exactly the session on screen.
+                Knob::setListening(Knob::focusedSessionLabel());
             }
-            if (down && held >= 6000) {
-                if (Audio::micCapturing()) Audio::micStop(true);
-                Serial.println("[Power] side key held 6s — powering off");
-                Serial.flush();
-                UI::setBrightness(0);
-                Ring::update(now, -1, false, true /* dark */);
-                Input::powerOff();  // does not return
+            if (held == 0 && Audio::micCapturing()) {
+                Audio::micStop(false);
+                Knob::clearListening();
+                Knob::notify("sent to host");
             }
-            if (!down) {
-                if (Audio::micCapturing()) {
-                    Audio::micStop(false);
-                    Knob::notify("sent to host");
-                }
-                userKeyDownMs = 0;
-            }
-            userKeyPrev = !down;
         }
         Audio::micPump();
+
+        // Power off is a detail-menu item now (there is no side key to hold).
+        if (Knob::consumePowerOffRequest()) {
+            Serial.println("[Power] menu power-off");
+            Serial.flush();
+            UI::setBrightness(0);
+            Ring::update(now, -1, false, true /* dark */);
+            Input::powerOff();  // does not return
+        }
+
+        // One-shot probe: does GPIO6 (vendor BOARD_USER_KEY) move at all on
+        // this hardware? Logged so the phantom-button question is settled by
+        // measurement rather than by reading the vendor header.
+        {
+            static bool userKeyPrevLevel = true;
+            bool lvl = (digitalRead(BOARD_PIN_USER_KEY) != LOW);
+            if (lvl != userKeyPrevLevel) {
+                Serial.printf("[Probe] GPIO%d (BOARD_USER_KEY) -> %s\n",
+                              BOARD_PIN_USER_KEY, lvl ? "HIGH" : "LOW");
+                userKeyPrevLevel = lvl;
+            }
+        }
 
         lockState();
         g_state.applyPendingSessionClear(now);

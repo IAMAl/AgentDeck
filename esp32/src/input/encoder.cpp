@@ -57,6 +57,15 @@ int encoderReadDelta() {
     return detents;
 }
 
+// Shared with encoderKeyHeldMs so hold-to-talk and the discrete key events
+// read the same press.
+static bool s_keyDown = false;
+static uint32_t s_keyDownSince = 0;
+
+uint32_t encoderKeyHeldMs(uint32_t nowMs) {
+    return s_keyDown ? (uint32_t)(nowMs - s_keyDownSince) : 0;
+}
+
 KeyEvent encoderPollKey(uint32_t nowMs) {
     static bool prevDown = false;
     static uint32_t downSince = 0;
@@ -65,9 +74,11 @@ KeyEvent encoderPollKey(uint32_t nowMs) {
     constexpr uint32_t LONG_MS = 600;
 
     bool down = (digitalRead(s_pinKey) == LOW);
+    s_keyDown = down;
     if (down && !prevDown) {
         prevDown = true;
         downSince = nowMs;
+        s_keyDownSince = nowMs;
         longFired = false;
         return KeyEvent::NONE;
     }

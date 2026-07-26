@@ -27,6 +27,7 @@ enum MenuKind : uint8_t {
     MI_STOP,      // session interrupt
     MI_CONTINUE,  // send_prompt "go on"
     MI_HISTORY,   // query_session_timeline -> History scrub view
+    MI_POWER,     // power the board off (no side key exists on this hardware)
     MI_MODE,      // session_command switch_mode (Shift+Tab cycle; managed only)
     MI_BACK,      // leave detail
 };
@@ -68,6 +69,13 @@ static char s_detailSessionId[32] = {0};  // session the detail view entered
 
 // History scrub cursor: -1 = pin to latest entry once the backfill lands.
 static int s_scrubIdx = -1;
+
+// Set by the Power off menu item; the UI task performs the shutdown so the
+// LVGL callback never blocks on hardware teardown.
+static bool s_powerOffRequested = false;
+
+// Non-empty while push-to-talk is capturing; holds the target session label.
+static char s_listeningLabel[48] = {0};
 
 // Transient "sent" flash — one-frame-cheap optimistic press feedback.
 static char s_flashText[48] = {0};
@@ -280,6 +288,7 @@ static void buildMenu(const SessionSnap& s) {
             snprintf(modeLabel, sizeof(modeLabel), "Mode (Shift+Tab)");
         addMenuItem(modeLabel, MI_MODE, 0, false);
     }
+    addMenuItem("Power off", MI_POWER, 0, false);
     addMenuItem("Back", MI_BACK, 0, false);
 
     if (s_menuIdx >= s_menuCount) s_menuIdx = s_menuCount - 1;
@@ -339,6 +348,10 @@ static void executeMenuItem(const SessionSnap& s, const MenuItem& m) {
             sendSessionCommand(s.id, "switch_mode");
             flash("sent: mode cycle");
             break;  // stay in DETAIL so repeated cycling is one press each
+        case MI_POWER:
+            s_powerOffRequested = true;
+            flash("powering off");
+            break;
         case MI_BACK:
         default:
             s_mode = Mode::LIST;
@@ -614,6 +627,40 @@ void onKey(Input::KeyEvent evt) {
     }
 }
 
+const char* focusedSessionLabel() {
+    static char label[48];
+    label[0] = '\0';
+    int idx = (s_mode == Mode::DETAIL || s_mode == Mode::SCRUB)
+        ? findSessionById(s_detailSessionId) : s_listIdx;
+    SessionSnap s;
+    if (idx >= 0 && snapshotSession(idx, s)) {
+        snprintf(label, sizeof(label), "%s · %s",
+                 s.projectName[0] ? s.projectName : "(no project)",
+                 agentShortLabel(s.agentType));
+    }
+    return label;
+}
+
+void setListening(const char* targetLabel) {
+    strncpy(s_listeningLabel, targetLabel ? targetLabel : "", sizeof(s_listeningLabel) - 1);
+    s_listeningLabel[sizeof(s_listeningLabel) - 1] = '\0';
+    Utf8::sanitizeLvglText(s_listeningLabel);
+}
+
+void clearListening() {
+    s_listeningLabel[0] = '\0';
+}
+
+bool atListLevel() {
+    return s_mode == Mode::LIST;
+}
+
+bool consumePowerOffRequest() {
+    bool v = s_powerOffRequested;
+    s_powerOffRequested = false;
+    return v;
+}
+
 const char* focusedSessionId() {
     static char sid[32];
     sid[0] = '\0';
@@ -668,6 +715,7 @@ void update(float dt) {
 
     bool flashOn = s_flashText[0] && (int32_t)(s_flashUntilMs - now) > 0;
     if (!flashOn) s_flashText[0] = '\0';
+    bool listening = s_listeningLabel[0] != '\0';
 
     // Status cluster inputs (battery, radio link) — part of the signature so
     // the header refreshes exactly when they change.
@@ -705,6 +753,12 @@ void update(float dt) {
                  have ? (unsigned long)(s.elapsedSec / 60) : 0,
                  connected ? 1 : 0, s_flashText,
                  battBucket, pw.charging ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0);
+    }
+    // Listening banner is part of the signature so it appears the instant the
+    // hold starts and disappears on release.
+    {
+        size_t n = strlen(sig);
+        snprintf(sig + n, sizeof(sig) - n, "|L%.24s", s_listeningLabel);
     }
     if (strcmp(sig, s_lastSig) == 0) return;
     strncpy(s_lastSig, sig, sizeof(s_lastSig) - 1);
@@ -770,8 +824,14 @@ void update(float dt) {
         renderListBody(connected, count);
     }
 
-    // Footer: flash feedback wins; otherwise the interaction hint.
-    if (flashOn) {
+    // Footer: the listening banner outranks everything — while the user is
+    // speaking, the one thing they need on screen is who is listening.
+    if (listening) {
+        char line[72];
+        snprintf(line, sizeof(line), LV_SYMBOL_AUDIO " listening -> %s", s_listeningLabel);
+        lv_label_set_text(s_footer, line);
+        lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusAmber), 0);
+    } else if (flashOn) {
         lv_label_set_text(s_footer, s_flashText);
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusGreen), 0);
     } else {

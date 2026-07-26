@@ -18,6 +18,7 @@
 #include "../boards/board_config.h"
 #endif
 #if defined(BOARD_T_EMBED)
+#include "../ui/knob/knob_ui.h"
 #include "../input/power_monitor.h"
 #include "../input/ir_receiver.h"
 #endif
@@ -1037,6 +1038,19 @@ void parseMessage(const char* json, size_t length) {
         handleSessionsList(obj);
     } else if (strcmp(type, "timeline_event") == 0) {
         handleTimelineEvent(obj);
+#if defined(BOARD_T_EMBED)
+    } else if (strcmp(type, "voice_result") == 0) {
+        // What the host actually heard. Shown even when empty/failed — a
+        // device that displays nothing is indistinguishable from a dead mic.
+        const char* text = obj["text"] | "";
+        const char* err = obj["error"] | "";
+        char note[64];
+        if (err[0]) snprintf(note, sizeof(note), "voice error");
+        else if (!text[0]) snprintf(note, sizeof(note), "heard nothing");
+        else snprintf(note, sizeof(note), "\"%s\"", text);
+        Utf8::utf8TrimEnd(note);
+        Knob::notify(note);
+#endif
     } else if (strcmp(type, "timeline_history") == 0) {
         handleTimelineHistory(obj);
     } else if (strcmp(type, "wifi_provision") == 0) {
