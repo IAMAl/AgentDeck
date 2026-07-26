@@ -56,9 +56,31 @@ static bool readU8(uint8_t addr, uint8_t reg, uint8_t* out, uint8_t* errOut) {
 
 namespace Input {
 
+void i2cScanLog(const char* tag) {
+    Serial.printf("[I2C] scan @%s:", tag);
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", addr);
+    }
+    Serial.println();
+}
+
 void powerInit() {
-    Wire.begin(BOARD_PIN_I2C_SDA, BOARD_PIN_I2C_SCL);
+    // Pin the bus pins on the peripheral itself, then begin. Libraries that
+    // call the argument-less `Wire.begin()` (Adafruit_PN532 does) would
+    // otherwise re-initialize on the ESP32-S3 defaults and kill SCL 18 —
+    // measured: after nfcInit the gauge at 0x55 stopped answering
+    // (device_info batteryDiag 4) and an I2C scan found nothing at all.
+    Wire.setPins(BOARD_PIN_I2C_SDA, BOARD_PIN_I2C_SCL);
+    Wire.begin();
     powerPoll(0);
+    if (!s_status.valid) {
+        // An empty scan here means the PWR_EN rail is down, not that the driver
+        // is misconfigured — see powerOff().
+        Serial.printf("[I2C] gauge silent (err %u), PWR_EN=%d — scanning bus\n",
+                      s_status.gaugeErr, digitalRead(BOARD_PIN_PWR_EN));
+        i2cScanLog("boot");
+    }
     s_lastPollMs = 0;  // let the first UI-loop poll run immediately too
 }
 
@@ -99,12 +121,22 @@ PowerStatus powerStatus() {
 }
 
 void powerOff() {
-    // Drop the latch: on battery this is a hard power-off. On USB the rail
-    // stays externally fed, so fall through to deep sleep with the side key
-    // as the wake source — same user-visible result (dark, silent, resumable).
-    digitalWrite(BOARD_PIN_PWR_EN, LOW);
-    delay(50);
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)BOARD_PIN_USER_KEY, 0);
+    // NEVER drop PWR_EN while USB-powered. The rail is a soft latch: once
+    // released it stays off until a physical power cycle, and software cannot
+    // re-arm it — driving the pin high again on the next boot does nothing.
+    // Measured the hard way (2026-07-26): after one menu power-off on USB the
+    // gauge, charger and PN532 all vanished from I2C and stayed gone across
+    // reboots while PWR_EN read high, which looked exactly like a broken I2C
+    // driver. On USB we only deep-sleep; the rail stays up.
+    PowerStatus ps = powerStatus();
+    if (!ps.usbPowered) {
+        digitalWrite(BOARD_PIN_PWR_EN, LOW);
+        delay(50);
+    } else {
+        Serial.println("[Power] USB-powered: deep sleep only (rail latch left armed)");
+    }
+    // No wake source is wired on this board (the vendor's BOARD_USER_KEY has
+    // no physical button), so waking means pressing RST.
     esp_deep_sleep_start();
 }
 

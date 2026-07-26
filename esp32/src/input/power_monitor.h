@@ -23,6 +23,10 @@ struct PowerStatus {
 
 void powerInit();
 
+// Log every address answering on the shared I2C bus. Used to pin down which
+// init step kills the bus when a peripheral stops responding.
+void i2cScanLog(const char* tag);
+
 // Cheap cadence guard — reads I2C at most every few seconds.
 void powerPoll(uint32_t nowMs);
 

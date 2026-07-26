@@ -22,10 +22,23 @@ static constexpr uint16_t READ_TIMEOUT_MS = 30;
 namespace Input {
 
 bool nfcInit() {
+    // Adafruit_PN532::begin() calls Wire.begin() with NO arguments. That is
+    // safe here only because powerInit() pinned the bus with Wire.setPins()
+    // first — without it this call silently moved SCL to the S3 default and
+    // took the fuel gauge down with it.
     s_nfc.begin();
     uint32_t version = s_nfc.getFirmwareVersion();
     if (version == 0) {
         Serial.println("[NFC] PN532 not answering — NFC disabled");
+        // Say what IS on the bus: this distinguishes "chip absent / different
+        // address" from "chip present but wedged", which the vendor spec sheet
+        // alone cannot.
+        Serial.print("[NFC] I2C scan:");
+        for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+            Wire.beginTransmission(addr);
+            if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", addr);
+        }
+        Serial.println();
         s_enabled = false;
         return false;
     }
@@ -36,6 +49,8 @@ bool nfcInit() {
                   (unsigned long)((version >> 8) & 0xFF));
     return true;
 }
+
+bool nfcReady() { return s_enabled; }
 
 bool nfcPoll(uint32_t nowMs, char* uidOut, size_t uidOutLen) {
     if (!s_enabled || uidOutLen < 15) return false;

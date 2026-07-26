@@ -416,9 +416,9 @@ static void uiTask(void* param) {
     Ring::init();
     Knob::create();
 
-    // GPIO6 is read only for the probe below — the vendor header calls it a
-    // user key, but this board exposes no such button.
-    pinMode(BOARD_PIN_USER_KEY, INPUT_PULLUP);
+    // The vendor header calls GPIO6 BOARD_USER_KEY, but this board exposes no
+    // such button: measured on hardware, it never moves and the only physical
+    // controls are the rotary encoder and RST. Nothing binds to it.
 
     Serial.println("[UI] Knob screen created, entering main loop");
 
@@ -503,6 +503,10 @@ static void uiTask(void* param) {
         {
             uint32_t held = Input::encoderKeyHeldMs(now);
             bool wantTalk = Knob::atListLevel() && held >= 400;
+            if (wantTalk && !Audio::micCapturing() && !Audio::micReady()) {
+                // Visible failure beats a dead-feeling button.
+                Knob::notify("mic unavailable");
+            }
             if (wantTalk && !Audio::micCapturing() && Audio::micReady()) {
                 Audio::micStart(Knob::focusedSessionId());
                 // Name the target while recording: the list is a carousel, so
@@ -524,19 +528,6 @@ static void uiTask(void* param) {
             UI::setBrightness(0);
             Ring::update(now, -1, false, true /* dark */);
             Input::powerOff();  // does not return
-        }
-
-        // One-shot probe: does GPIO6 (vendor BOARD_USER_KEY) move at all on
-        // this hardware? Logged so the phantom-button question is settled by
-        // measurement rather than by reading the vendor header.
-        {
-            static bool userKeyPrevLevel = true;
-            bool lvl = (digitalRead(BOARD_PIN_USER_KEY) != LOW);
-            if (lvl != userKeyPrevLevel) {
-                Serial.printf("[Probe] GPIO%d (BOARD_USER_KEY) -> %s\n",
-                              BOARD_PIN_USER_KEY, lvl ? "HIGH" : "LOW");
-                userKeyPrevLevel = lvl;
-            }
         }
 
         lockState();

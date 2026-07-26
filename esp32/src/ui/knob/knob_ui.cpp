@@ -642,7 +642,11 @@ const char* focusedSessionLabel() {
 }
 
 void setListening(const char* targetLabel) {
-    strncpy(s_listeningLabel, targetLabel ? targetLabel : "", sizeof(s_listeningLabel) - 1);
+    // Never store an empty label: an empty one reads as "not listening" and the
+    // banner disappears, which is exactly how a working capture looked like a
+    // dead button when no session was on screen.
+    const char* label = (targetLabel && targetLabel[0]) ? targetLabel : "(no session)";
+    strncpy(s_listeningLabel, label, sizeof(s_listeningLabel) - 1);
     s_listeningLabel[sizeof(s_listeningLabel) - 1] = '\0';
     Utf8::sanitizeLvglText(s_listeningLabel);
 }

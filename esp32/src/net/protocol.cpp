@@ -21,6 +21,8 @@
 #include "../ui/knob/knob_ui.h"
 #include "../input/power_monitor.h"
 #include "../input/ir_receiver.h"
+#include "../input/nfc_reader.h"
+#include "../audio/mic_capture.h"
 #endif
 #if defined(BOARD_T_DISPLAY_PRO)
 #include "../input/touch_strip.h"
@@ -967,9 +969,11 @@ static void sendDeviceInfo() {
         // today (grow as ir/subghz land).
         {
             JsonArray caps = resp["capabilities"].to<JsonArray>();
-            caps.add("battery");
-            caps.add("nfc");
-            caps.add("audio");
+            if (Input::powerStatus().valid) caps.add("battery");
+            // Advertise only what actually initialized — a capability the
+            // daemon cannot use is worse than an absent one.
+            if (Input::nfcReady()) caps.add("nfc");
+            if (Audio::micReady()) caps.add("audio");
             if (Input::irReady()) caps.add("ir_rx");
         }
         Input::PowerStatus ps = Input::powerStatus();
