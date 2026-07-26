@@ -1,6 +1,8 @@
 # Voice Setup
 
-AgentDeck's voice assistant uses Apple's **on-device `SFSpeechRecognizer`** (the Speech framework). **Nothing to install** — no whisper.cpp, no sox, no model download. macOS and iOS manage the dictation model themselves; AgentDeck piggybacks on whatever the user already granted for system dictation.
+AgentDeck's voice assistant uses Apple's **on-device `SFSpeechRecognizer`** (the Speech framework). **Nothing to install** — no whisper.cpp, no model download. macOS and iOS manage the dictation model themselves; AgentDeck piggybacks on whatever the user already granted for system dictation.
+
+**Both daemons use the same engine.** The Swift daemon calls the framework directly; the Node (CLI) daemon reaches it through the bundled Swift helper (`bridge/fm-helper/AgentDeckFMHelper.swift`) that already serves Foundation Models for the APME judge — `{"type":"transcribe","wav":…}` in, `{"text":…}` out, plus `{"type":"speak"}` for replies. The helper ships prebuilt in the npm package and self-compiles with `xcrun swiftc` if it is missing, so there is still nothing for a user to install. Host-microphone capture (not transcription) is the one thing that still wants `sox`; device-sourced audio from an ESP32 board does not.
 
 The flow:
 
@@ -98,5 +100,7 @@ Earlier releases relied on `whisper.cpp` + a local HTTP server (port 9100) + `so
 - Matching node-pty / node.js ABI for the bridge
 
 That was fine for power users but meaningful setup friction for everyone else — three of the four reviewer-flagged risks at launch time were traceable to it. Apple's `SFSpeechRecognizer` provides equivalent on-device transcription for the 15-second-per-turn commands AgentDeck actually cares about, for free, with zero install, and without privacy compromise (`requiresOnDeviceRecognition = true`). Removing whisper reduced the install surface and made the App Store build simpler to audit against Apple Review Guideline 2.5.2.
+
+The Node daemon kept a whisper.cpp path (binary discovery, model tiering, a `whisper-server` on port 9100) after the Apple side dropped it. That asymmetry ended on 2026-07-26: `voice.ts` now transcribes through the bundled Swift helper, and `whisper-server-manager.ts` plus the `WHISPER_*` / `MODELS_*` path constants were deleted. One engine, both daemons.
 
 If you need whisper.cpp's accuracy on longer recordings or specialized jargon (medical, legal, etc.), that use case is out of scope for AgentDeck's short-command voice UX. Build a separate recording tool.

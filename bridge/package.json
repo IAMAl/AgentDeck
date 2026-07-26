@@ -23,6 +23,7 @@
   "scripts": {
     "build": "tsc",
     "build:fm-helper": "node scripts/build-fm-helper.mjs",
+    "prepack": "node scripts/build-fm-helper.mjs",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",

@@ -48,7 +48,7 @@ All surfaces follow the same rule:
 | Stream Deck family | Yes | Yes | Requires Elgato Stream Deck host software |
 | Claude Code hook installation | Yes | Yes | Explicit `NSOpenPanel` file consent |
 | Codex lifecycle observation | Yes | Yes | Explicit `NSOpenPanel`; managed TOML block only |
-| Voice input | Yes | Yes | On-device Apple speech path in Tier 1 |
+| Voice input | Yes | Yes | Apple on-device speech in both tiers — Tier 1 calls the framework, Tier 2 the bundled Swift helper. macOS-only; no whisper/model install |
 | Device Preview catalog | Yes | Yes | CLI-only targets appear only with external daemon |
 | APME Layer 2 LLM evaluation | Yes | Yes | Apple Intelligence default; opt-in HTTP alternatives |
 | APME Layer 1 deterministic evaluation | No | Yes | Requires `git` / package-manager subprocesses |

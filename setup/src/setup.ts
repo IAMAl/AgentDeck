@@ -414,25 +414,22 @@ function checkOptionalDeps() {
   console.log('----- Optional Dependencies -----');
 
   if (IS_WIN) {
-    // Voice input (sox/whisper) on AgentDeck currently targets macOS only.
-    // Skip the prompts on Windows so the user isn't told to run `brew`.
-    warn('Voice input (sox + whisper.cpp) is macOS-only — skipped.');
+    // Voice needs Apple's on-device speech recognizer, so it is macOS-only.
+    // Say so instead of printing `brew` instructions a Windows user can't use.
+    warn('Voice input is macOS-only (Apple on-device speech) — skipped.');
     return;
   }
 
-  if (which('sox') || which('rec')) {
-    ok('sox installed (voice recording)');
-  } else {
-    warn('sox not found — voice input won\'t work');
-    console.log('     Install with: brew install sox');
-  }
+  // Transcription needs nothing installed: it runs through the bundled Swift
+  // helper against Apple's on-device recognizer. Only host-mic capture still
+  // wants sox — and device-sourced audio (ESP32 knob) doesn't even need that.
+  ok('Voice transcription: Apple on-device speech (nothing to install)');
 
-  if (which('whisper-cli') || which('whisper')) {
-    ok('whisper.cpp installed (voice transcription)');
+  if (which('sox') || which('rec')) {
+    ok('sox installed (host microphone capture)');
   } else {
-    warn('whisper.cpp not found — voice transcription won\'t work');
-    console.log('     Install with: brew install whisper-cpp');
-    console.log('     Then download model: whisper-cli --download-model large-v3-turbo');
+    warn('sox not found — host-mic voice capture unavailable');
+    console.log('     Install with: brew install sox   (not needed for device-sourced audio)');
   }
 }
 

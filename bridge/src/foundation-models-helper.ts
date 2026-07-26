@@ -24,6 +24,11 @@ let nextRequestId = 1;
 const pending = new Map<number, Pending>();
 
 const HELPER_REQUEST_TIMEOUT_MS = 60_000;
+// Short-command transcription is sub-second once the model is warm; the
+// generous ceiling covers the OS finishing its one-time dictation download.
+const TRANSCRIBE_TIMEOUT_MS = 45_000;
+// Synthesis blocks until playback finishes, so this bounds an actual spoken reply.
+const SPEAK_TIMEOUT_MS = 120_000;
 
 function dataDir(): string {
   return process.env.AGENTDECK_DATA_DIR || join(homedir(), '.agentdeck');
@@ -257,4 +262,41 @@ export function stopFoundationModelsHelper(): void {
     helperProcess = null;
   }
   rejectAllPending('Foundation Models helper stopped');
+}
+
+/**
+ * Transcribe a WAV with Apple's on-device speech recognizer through the same
+ * bundled Swift helper the judge uses. This is the CLI daemon's *only* STT
+ * path: whisper.cpp was retired because it demanded arm64 Homebrew, a
+ * ~1.5 GB model download and a second server process (docs/voice-setup.md).
+ * Same engine, same privacy posture (`requiresOnDeviceRecognition`) as the
+ * Swift daemon's native path, with nothing for the user to install.
+ */
+export async function transcribeWithHelper(
+  wavPath: string,
+  locale?: string,
+): Promise<string> {
+  const response = await requestHelper(
+    { type: 'transcribe', wav: wavPath, ...(locale ? { locale } : {}) },
+    TRANSCRIBE_TIMEOUT_MS,
+  );
+  if (typeof response.error === 'string') {
+    throw new Error(`${response.error}: ${String(response.reason ?? '')}`.trim());
+  }
+  const text = typeof response.text === 'string' ? response.text.trim() : '';
+  return text;
+}
+
+/** Speak a reply through the host's audio output (AVSpeechSynthesizer). */
+export async function speakWithHelper(
+  text: string,
+  opts: { locale?: string; voice?: string; rate?: number } = {},
+): Promise<void> {
+  const response = await requestHelper(
+    { type: 'speak', text, ...opts },
+    SPEAK_TIMEOUT_MS,
+  );
+  if (typeof response.error === 'string') {
+    throw new Error(`${response.error}: ${String(response.reason ?? '')}`.trim());
+  }
 }
