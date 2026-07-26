@@ -30,6 +30,16 @@ Cadence 흐름: 타이머 웨이크 + "AgentDeck battery sync" 설정 on + boot-
 - 딥슬립 cadence는 **하드웨어 전류/래치 거동 미검증** — 래치 hold 시 실제 슬립 전류와 타이머 웨이크 성공 여부는 설정 켠 실기에서 확인해야 한다(다음 세션 항목).
 - **OTA 배포 대기**: 세션 종료 시점에 X3·X4 모두 오프라인(데몬 /devices 18분 미등장 — 전원 꺼진 듯). 최종 펌웨어 ef8f9154가 `firmware/update.bin`에 스테이징돼 있음 — 보드가 켜지면 `agentdeck esp32-ota xteink_x4 --firmware ~/github/crosspoint-agentdeck/firmware/update.bin` (x3 동일) 후 재접속 buildHash로 판정.
 
+### 전원 재인가 후 배포전 — 플랩 공진 포렌식과 안정성 수정 (AgentDeck c733570f + 포크 d5c62148)
+
+보드를 켜자 X4는 ef8f9154 OTA 성공(재접속 buildHash 판정), X3는 "접속 직후 사망" 플랩. 추적 결과 세 겹:
+
+1. **데몬 O(n²) 초기버스트**: `buildCappedTimelineHistory`가 엔트리마다 이벤트 전체를 재직렬화(+예산 소진 후에도 계속 측정) — 타임라인이 자란 저녁엔 접속 1회당 수십 ms 동기 CPU. 플랩 클라이언트와 공진하면 이벤트 루프 포화(`sample`로 실측: stream read+llhttp 70%). → 증분 바이트 계산 + 조기 break.
+2. **미태그 보드에 12KB 버스트**: 퍼스트파티 esp32 펌웨어는 `?clientType=esp32`로 접속해 보드 취급을 받는데 **XTeink 포크는 태그 누락(re-port 드리프트)** — 힙이 가장 빠듯한 X3(SD CJK 폰트 캐시)가 접속 직후 12KB 프레임에 OOM→closе→재접속 루프. → (a) 보드행 ≤4096B 불변식을 WS 초기버스트에도 적용(`ESP32_INITIAL_TIMELINE_HISTORY_MAX_BYTES=3584`), (b) 포크에 태그 추가, (c) **board-IP 기억**: device_info를 보낸 적 있는 IP는 다음 접속부터 첫 바이트부터 보드 취급(태그 없는 구펌웨어도 두 번째 접속부터 보호).
+3. **플랩 가드 + 펌웨어 쿨다운 사다리**: 데몬은 30s에 >6회 재접속 IP의 히스토리 버스트를 스킵(서비스는 유지 — 거부하면 복구 중 보드가 영원히 눈멂); 펌웨어는 단명 연결 3연속 시 30s 재접속 중지 + "Link unstable" 상태줄(캐시 Face 유지).
+
+판정과 남은 것: **X4 = d5c62148 라이브**(M6 전체+안정성 스택). **X3 = 6ccbe140 잔류** — 최종 원인은 앱이 아니라 **유닛 고유 RF 손실**(같은 위치의 X4 정상, X3만 SYN_RCVD 12s+ 고착 = 핸드셰이크 패킷 손실; USB도 죽은 그 유닛). 5.4MB OTA가 손실 링크를 못 넘음 — 기회주의 재시도 루프 가동, 실패 시 File Transfer 웹 업로드가 확실한 경로. 참고: 저녁 내내의 "보드 침묵"은 대부분 병렬 세션의 데몬 stop/start 사이클과 데몬 행이 겹친 것 — 보드는 "Connecting" 상태줄로 정직하게 반응하고 있었다.
+
 ## 2026-07-26 — XTeink M5.5 Deck 영속화 + OTA 수신 stall 타임아웃
 
 `crosspoint-agentdeck` 포크 커밋 d98d7abd(M5.5) + 6c4506b1(stall fix). 배포는 전부 `agentdeck esp32-ota xteink_{x3,x4} --firmware` WiFi OTA.
