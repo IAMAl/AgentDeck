@@ -23,5 +23,11 @@ TouchEvent touchPoll(uint32_t nowMs);
 uint32_t touchDownSamples();
 /** Diagnostics for device_info: decoded gestures (tap/hold/swipe) since boot. */
 uint32_t touchGestures();
+/** Diagnostics: last TAP position and max raw coords seen (coordinate-space
+ *  forensics for a mis-oriented controller). -1 / 0 until data arrives. */
+int16_t touchLastX();
+int16_t touchLastY();
+int16_t touchMaxX();
+int16_t touchMaxY();
 
 }  // namespace Input

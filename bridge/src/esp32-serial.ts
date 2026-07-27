@@ -173,6 +173,10 @@ export interface SerialConnection {
     touchReady?: boolean;
     touchDownSamples?: number;
     touchGestures?: number;
+    touchLastX?: number;
+    touchLastY?: number;
+    touchMaxX?: number;
+    touchMaxY?: number;
     alsReady?: boolean;
   } | null;
   /** True once a device_info arrived on THIS connection (vs. cache-seeded).
@@ -824,6 +828,10 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           touchReady: (msg as any).touchReady,
           touchDownSamples: (msg as any).touchDownSamples,
           touchGestures: (msg as any).touchGestures,
+          touchLastX: (msg as any).touchLastX,
+          touchLastY: (msg as any).touchLastY,
+          touchMaxX: (msg as any).touchMaxX,
+          touchMaxY: (msg as any).touchMaxY,
           alsReady: (msg as any).alsReady,
         };
         conn.deviceInfoFresh = true;

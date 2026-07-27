@@ -1004,6 +1004,10 @@ static void sendDeviceInfo() {
         resp["touchReady"] = Input::touchReady();
         resp["touchDownSamples"] = Input::touchDownSamples();
         resp["touchGestures"] = Input::touchGestures();
+        resp["touchLastX"] = Input::touchLastX();
+        resp["touchLastY"] = Input::touchLastY();
+        resp["touchMaxX"] = Input::touchMaxX();
+        resp["touchMaxY"] = Input::touchMaxY();
         resp["alsReady"] = Input::lightReady();
         Input::PowerStatus ps = Input::powerStatus();
         // Advertise only what actually initialized (t_embed rule): the caps
@@ -1029,9 +1033,10 @@ static void sendDeviceInfo() {
     resp["otaFreeSketchSpace"] = ota.freeSketchSpace;
     if (!ota.supported) resp["otaReason"] = ota.reason;
 
-    // 768: the t_embed capabilities array + battery telemetry pushed the frame
-    // past the old 512 (serializeJson truncates silently on overflow).
-    char buf[768];
+    // 896: t_embed capabilities + battery pushed past 512, and the strip's
+    // touch forensics fields pushed past 768 (serializeJson truncates
+    // silently on overflow — size for the fattest board, not the average).
+    char buf[896];
     serializeJson(resp, buf, sizeof(buf));
     // Both transports: serial for the USB-attached identify flow, WS so a
     // WiFi-only board (InkDeck) is registrable by the daemon without a cable.

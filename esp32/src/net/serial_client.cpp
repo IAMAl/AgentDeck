@@ -156,6 +156,10 @@ static void sendDeviceInfoSerial() {
         resp["touchReady"] = Input::touchReady();
         resp["touchDownSamples"] = Input::touchDownSamples();
         resp["touchGestures"] = Input::touchGestures();
+        resp["touchLastX"] = Input::touchLastX();
+        resp["touchLastY"] = Input::touchLastY();
+        resp["touchMaxX"] = Input::touchMaxX();
+        resp["touchMaxY"] = Input::touchMaxY();
         resp["alsReady"] = Input::lightReady();
         Input::PowerStatus ps = Input::powerStatus();
         // Mirrors protocol.cpp sendDeviceInfo — keep the two ladders in
@@ -181,7 +185,9 @@ static void sendDeviceInfoSerial() {
     resp["otaFreeSketchSpace"] = ota.freeSketchSpace;
     if (!ota.supported) resp["otaReason"] = ota.reason;
 
-    char buf[768];
+    // Mirrors protocol.cpp: sized for the fattest board's field set —
+    // serializeJson truncates silently on overflow.
+    char buf[896];
     serializeJson(resp, buf, sizeof(buf));
     serialWriteJsonLine(buf);
 }
