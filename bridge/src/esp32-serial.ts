@@ -722,6 +722,13 @@ export function capturePanicLine(conn: SerialConnection, line: string): boolean 
 // Daemon-installed sink for device-originated commands arriving over serial.
 let serialCommandSink: ((cmd: Record<string, unknown>) => void) | null = null;
 let serialVoiceSink: ((port: string, msg: Record<string, unknown>) => void) | null = null;
+let serialQuiesceCheck: ((port: string) => boolean) | null = null;
+
+/** While true for a port, the daemon holds its outbound serial writes —
+ *  used to keep the line half-duplex during a board→daemon photo upload. */
+export function setSerialQuiesceCheck(check: (port: string) => boolean): void {
+  serialQuiesceCheck = check;
+}
 export function setSerialCommandSink(sink: (cmd: Record<string, unknown>) => void): void {
   serialCommandSink = sink;
 }
@@ -1021,6 +1028,15 @@ function scheduleWriteFlush(conn: SerialConnection, delayMs: number): void {
 function flushNextWrite(conn: SerialConnection): void {
   conn.writeTimer = null;
   if (!conn.connected) return;
+  // Half-duplex quiesce: while a board is streaming a photo up this port,
+  // hold our own writes. HWCDC drops blocks under full-duplex traffic (the
+  // ack-only-keepalive lesson, in the other direction) — daemon broadcasts
+  // landing mid-upload cost ~2 chunk lines per photo regardless of the
+  // board's TX pacing. Captures run seconds; the queue just waits.
+  if (serialQuiesceCheck?.(conn.port)) {
+    scheduleWriteFlush(conn, 100);
+    return;
+  }
   const json = conn.writeQueue.shift();
   if (!json) return;
   if (conn.fd == null) {

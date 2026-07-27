@@ -1318,9 +1318,10 @@ void parseMessage(const char* json, size_t length) {
                 for (int li = 0; li < 4; li++) {
                     Serial.printf("[AudioTest] ladder step %d/4 — volume %d%% (%.0f dB)\n",
                                   li + 1, kLevels[li], -60.0f + kLevels[li] * 0.6f);
-                    Audio::playbackBegin(16000);
-                    delay(120);
+                    // Set first: playbackBegin() spawns the task that inits
+                    // the codec, and that init applies the stored level.
                     Es8311::setVolume(kLevels[li]);
+                    Audio::playbackBegin(16000);
                     static int16_t lb[512];
                     float ph = 0.0f;
                     const int tot = 16000 * 1200 / 1000;
@@ -1347,11 +1348,8 @@ void parseMessage(const char* json, size_t length) {
             if (!Audio::playbackInit()) {
                 Serial.println("[AudioTest] playbackInit failed");
             } else {
-                Audio::playbackBegin(16000);
-                // The playback task initialises the codec, so the volume write
-                // has to land after it comes up.
-                delay(120);
                 Es8311::setVolume(vol);
+                Audio::playbackBegin(16000);
 
                 constexpr int kRate = 16000;
                 const int total = (kRate * ms) / 1000;

@@ -46,7 +46,7 @@ import {
 import { resolveSessionIdPrefix } from './session-id-resolve.js';
 import { injectObservedSelection, injectObservedText } from './observed-inject.js';
 import {
-  setSerialCommandSink, setSerialVoiceSink, sendSerialJson,
+  setSerialCommandSink, setSerialVoiceSink, setSerialQuiesceCheck, sendSerialJson,
   serialPortConnected, serialPortCapabilities, serialPortBoard,
   liveSerialPortForBoard, serialBoardsAttached,
 } from './esp32-serial.js';
@@ -1153,6 +1153,53 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         ],
         modules: moduleHealthProvider(),
       }));
+      return;
+    }
+    // Device photo upload — a whole JPEG as one request body. The chunked
+    // WS/serial path is loss-prone on this hardware (HWCDC drops 64-byte
+    // blocks; the board's WS TX jammed after the first binary frame), and a
+    // partial JPEG is worthless, so a board with WiFi posts the image over
+    // plain TCP and lets the kernel handle ordering and retransmit.
+    if (req.method === 'POST' && pathname === '/esp32/photo') {
+      const ip = req.socket.remoteAddress ?? '';
+      if (!isLocalConnection(ip)) {
+        const token = parsedUrl.searchParams.get('token') ?? '';
+        if (!validateToken(token)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+      }
+      (async () => {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of req) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buf.length;
+          if (total > 8 * 1024 * 1024) throw new Error('photo_too_large');
+          chunks.push(buf);
+        }
+        if (total === 0) throw new Error('empty_body');
+        const jpeg = Buffer.concat(chunks);
+        const board = parsedUrl.searchParams.get('board') ?? 'esp32';
+        const saved = devicePhoto.saveDirect(jpeg, {
+          board,
+          sessionId: parsedUrl.searchParams.get('sessionId') ?? '',
+          width: Number(parsedUrl.searchParams.get('w') ?? 0) || 0,
+          height: Number(parsedUrl.searchParams.get('h') ?? 0) || 0,
+        });
+        // Reply on the board's own transport (serial when it is cabled), the
+        // same way the chunked path did — the HTTP response only confirms
+        // receipt of the bytes.
+        await finishPhotoCapture(saved, photoResultSinkFor(board));
+        return { ok: true, bytes: saved.bytes, path: saved.path };
+      })().then((result) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      }).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+      });
       return;
     }
     if (req.method === 'POST' && pathname === '/esp32/ota') {
@@ -3468,6 +3515,34 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // Voice from a USB-attached board. Without this the mic worked only while the
   // board was on WiFi — and attaching USB parks WiFi, so plugging in to charge
   // silently removed the feature.
+  // Half-duplex guard: hold daemon→board serial writes while that port has an
+  // open photo capture (see flushNextWrite — full-duplex CDC drops blocks).
+  setSerialQuiesceCheck((port) => devicePhoto.isOpen(port));
+
+  /**
+   * Where a photo_result goes for an HTTP-uploaded photo: the request carries
+   * no socket to answer on, so resolve the board's live transport the same
+   * way a queued voice reply does (serial first, then its WiFi socket).
+   */
+  const photoResultSinkFor = (board: string): ReplySink => {
+    const port = liveSerialPortForBoard(board);
+    if (port) return serialSinkFor(port);
+    for (const [key, sock] of wifiEsp32Sockets) {
+      if (sock.readyState !== WebSocket.OPEN) continue;
+      if (wifiEsp32Devices.get(key)?.board === board || key === board) {
+        return stableSink(sock);
+      }
+    }
+    return {
+      send: () => {},
+      sendBinary: () => {},
+      isOpen: () => false,
+      capabilities: () => [],
+      describe: () => `http:${board}(no live transport)`,
+      deviceKey: () => board,
+    };
+  };
+
   setSerialVoiceSink((port, msg) => {
     if (msg.type === 'voice_begin') {
       deviceVoice.begin(port, msg);

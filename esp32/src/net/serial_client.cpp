@@ -55,16 +55,24 @@ void serialWriteJsonLine(const char* buf) {
     // when a write spans multiple blocks (measured: deterministic 64-byte
     // holes mid-line, 7/10 corrupt device_info replies). Pace one FIFO block
     // per drain so the newline-framed JSON the daemon parses arrives intact.
-    // The T-Display-S3-Pro hits the same silicon path: its 2.8 KB base64
-    // photo_chunk lines arrived ~half-intact (photo_begin/photo_end torn,
-    // 4-5 of N chunks surviving) until paced the same way (2026-07-27).
+    // The T-Display-S3-Pro hits the same silicon path, harder: its 2.8 KB
+    // base64 photo_chunk lines still lost ~2 lines per upload at the InkDeck
+    // recipe (60 B / 300 µs) while daemon broadcasts streamed inbound — the
+    // ack-only-keepalive note below already records that full-duplex raises
+    // the drop odds. Sub-FIFO blocks with a longer settle survive it.
+#if defined(BOARD_T_DISPLAY_PRO)
+    constexpr size_t CHUNK = 48;
+    constexpr uint32_t SETTLE_US = 500;
+#else
     constexpr size_t CHUNK = 60;
+    constexpr uint32_t SETTLE_US = 300;
+#endif
     size_t len = strlen(buf);
     for (size_t off = 0; off < len; off += CHUNK) {
         size_t n = (len - off) < CHUNK ? (len - off) : CHUNK;
         Serial.write((const uint8_t*)buf + off, n);
         Serial.flush();
-        delayMicroseconds(300);
+        delayMicroseconds(SETTLE_US);
     }
     Serial.write((const uint8_t*)"\n", 1);
     Serial.flush();

@@ -170,6 +170,30 @@ export class DevicePhotoCollector {
     };
   }
 
+  /**
+   * Save a photo that arrived whole (HTTP POST body) rather than assembled
+   * from chunks. Same directory, retention and result shape as end().
+   */
+  saveDirect(jpeg: Buffer, meta: {
+    board: string; sessionId: string; width: number; height: number;
+  }): PhotoCaptureResult {
+    mkdirSync(this.photoDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const path = join(this.photoDir, `${stamp}-${meta.board}.jpg`);
+    writeFileSync(path, jpeg);
+    prunePhotoDir(this.photoDir);
+    debug('photo', `direct upload: ${jpeg.length} bytes → ${path}`);
+    return {
+      sessionId: meta.sessionId,
+      board: meta.board,
+      path,
+      bytes: jpeg.length,
+      width: meta.width,
+      height: meta.height,
+      truncated: false,
+    };
+  }
+
   /** Drop a capture whose socket died mid-stream. */
   abandon(conn: unknown): void {
     if (this.open.delete(conn)) debug('photo', 'capture abandoned (socket closed)');
