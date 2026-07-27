@@ -34,8 +34,18 @@ bool ready();
 /** Power the amplifier down and park the codec. */
 void stop();
 
-/** 0-100. Maps onto the codec's 0x00-0xFF DAC volume register. */
+/**
+ * 0-100, mapped onto -60..0 dB of the codec's DAC volume register.
+ *
+ * Takes effect immediately AND becomes the level begin() restores on its next
+ * run. That matters: begin() executes on the playback task, so a caller that
+ * sets a level and then starts playback is racing roughly 40 I2C transactions.
+ * Storing the level removes the race instead of timing around it.
+ */
 void setVolume(int percent);
+
+/** The level begin() will apply, without touching the codec now. */
+int volume();
 
 }  // namespace Es8311
 

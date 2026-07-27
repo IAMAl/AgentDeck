@@ -1308,7 +1308,7 @@ void parseMessage(const char* json, size_t length) {
             // volume can be picked by ear in one pass instead of one reflash
             // per guess.
             const bool ladder = obj["ladder"] | false;
-            int vol = obj["vol"].is<int>() ? obj["vol"].as<int>() : 75;
+            int vol = obj["vol"].is<int>() ? obj["vol"].as<int>() : 70;
             int hz  = obj["hz"].is<int>()  ? obj["hz"].as<int>()  : 0;
             int ms  = obj["ms"].is<int>()  ? obj["ms"].as<int>()  : 2000;
             if (ms < 100) ms = 100;

@@ -50,6 +50,12 @@ constexpr uint8_t REGFF_VERSION     = 0xFF;
 constexpr uint8_t ADDR = BOARD_ES8311_I2C_ADDR;
 
 bool s_ready = false;
+// Survives begin(): the playback task re-inits the codec, and without a stored
+// level that init would silently undo whatever the caller just set.
+// -18 dB. Picked by ear on the ips10 amplifier (2026-07-28): 0 dB and above
+// were reported painfully loud twice, while -18 dB was still clearly audible
+// as the quietest of three verified steps.
+int  s_volume = 70;
 
 bool wr(uint8_t reg, uint8_t val) { return UI::hwI2cWriteReg8(ADDR, reg, val); }
 bool rd(uint8_t reg, uint8_t* val) { return UI::hwI2cReadReg8(ADDR, reg, val); }
@@ -233,9 +239,7 @@ bool begin(uint32_t sampleRate) {
     v &= 0x9F;
     if (!wr(REG31_DAC, v)) return false;
 
-    // 80 was painfully loud on the ips10 amplifier when measured by ear
-    // (2026-07-28). Start quiet; callers raise it deliberately.
-    setVolume(35);
+    setVolume(s_volume);
     paEnable(true);
 
     s_ready = true;
@@ -256,10 +260,13 @@ bool begin(uint32_t sampleRate) {
 void setVolume(int percent) {
     if (percent < 0) percent = 0;
     if (percent > 100) percent = 100;
+    s_volume = percent;
     const float db  = -60.0f + (float)percent * 0.6f;
     const int   reg = (int)((db + 95.5f) * 2.0f + 0.5f);
     wr(REG32_DAC, (uint8_t)(reg < 0 ? 0 : (reg > 255 ? 255 : reg)));
 }
+
+int volume() { return s_volume; }
 
 void stop() {
     paEnable(false);
