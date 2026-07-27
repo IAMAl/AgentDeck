@@ -1001,6 +1001,26 @@ void requestPortrait() { s_stripPortrait = true; }
 #endif
 
 #if defined(BOARD_IPS10)
+bool hwI2cReadReg8(uint8_t addr, uint8_t reg, uint8_t* out) {
+    if (!i2c_handle || !out) return false;
+    return i2cReadReg(i2c_handle, addr, reg, out);
+}
+
+bool hwI2cWriteReg8(uint8_t addr, uint8_t reg, uint8_t val) {
+    if (!i2c_handle) return false;
+    i2c_device_config_t dc;
+    memset(&dc, 0, sizeof(dc));
+    dc.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    dc.device_address  = addr;
+    dc.scl_speed_hz    = 100000;
+    i2c_master_dev_handle_t dev = nullptr;
+    if (i2c_master_bus_add_device(i2c_handle, &dc, &dev) != ESP_OK) return false;
+    const uint8_t payload[2] = { reg, val };
+    esp_err_t err = i2c_master_transmit(dev, payload, sizeof(payload), 50);
+    i2c_master_bus_rm_device(dev);
+    return err == ESP_OK;
+}
+
 void hwI2cDumpDevice(uint8_t addr) {
     if (!i2c_handle) { Serial.println("[I2CDiag] touch I2C bus not initialised"); return; }
     Serial.printf("[I2CDiag] --- register dump 0x%02X (read-only) ---\n", addr);

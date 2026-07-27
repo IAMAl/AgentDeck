@@ -1,7 +1,13 @@
-#if defined(BOARD_T_EMBED)
+// board_config.h first: BOARD_HAS_SPEAKER comes from a board header, not from
+// a -D build flag, so the guard below cannot see it until this is included.
+#include "../../boards/board_config.h"
+
+#if defined(BOARD_HAS_SPEAKER)
 
 #include "speaker_playback.h"
-#include "../../boards/board_config.h"
+#if defined(BOARD_SPK_CODEC_ES8311)
+#include "es8311_codec.h"
+#endif
 
 #include <Arduino.h>
 #include <ESP_I2S.h>
@@ -61,7 +67,13 @@ static size_t ringRead(uint8_t* out, size_t want) {
 static void playbackTask(void* param) {
     (void)param;
     I2SClass i2s;
+#if defined(BOARD_PIN_SPK_MCLK)
+    // Codec boards need a master clock; a bare I2S amplifier does not.
+    i2s.setPins(BOARD_PIN_SPK_BCLK, BOARD_PIN_SPK_LRCLK, BOARD_PIN_SPK_DIN, -1,
+                BOARD_PIN_SPK_MCLK);
+#else
     i2s.setPins(BOARD_PIN_SPK_BCLK, BOARD_PIN_SPK_LRCLK, BOARD_PIN_SPK_DIN, -1, -1);
+#endif
     if (!i2s.begin(I2S_MODE_STD, (uint32_t)s_sampleRate,
                    I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
         Serial.println("[Speaker] I2S begin failed");
@@ -70,6 +82,16 @@ static void playbackTask(void* param) {
         vTaskDelete(nullptr);
         return;
     }
+
+#if defined(BOARD_SPK_CODEC_ES8311)
+    // Codec init must follow i2s.begin(): the ES8311 locks to MCLK, so the
+    // clock has to already be running when its clock-manager registers are
+    // programmed. Failure is not fatal here — I2S keeps streaming into a silent
+    // codec, and the log line is what tells them apart.
+    if (!Es8311::begin((uint32_t)s_sampleRate)) {
+        Serial.println("[Speaker] ES8311 init failed — samples will go nowhere");
+    }
+#endif
 
     // Wait for the prebuffer (or for the utterance to prove itself short).
     uint32_t waitStart = millis();
@@ -193,4 +215,4 @@ void playbackStop() {
 
 }  // namespace Audio
 
-#endif  // BOARD_T_EMBED
+#endif  // BOARD_HAS_SPEAKER

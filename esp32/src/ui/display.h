@@ -50,6 +50,15 @@ void hwI2cProbe(int sdaOverride = -1, int sclOverride = -1);
 
 /** Dump registers 0x00–0x4A plus the ID/version trio of a confirmed device. */
 void hwI2cDumpDevice(uint8_t addr);
+
+/**
+ * Single-register access on the panel's I2C bus, for peripherals that share it
+ * with touch (the ES8311 codec at 0x18). Routed through here rather than
+ * handing out the bus handle so `driver/i2c_master.h` stays out of every
+ * consumer of this header — and so there is exactly one bus on those pads.
+ */
+bool hwI2cReadReg8(uint8_t addr, uint8_t reg, uint8_t* out);
+bool hwI2cWriteReg8(uint8_t addr, uint8_t reg, uint8_t val);
 #endif
 
 /**

@@ -13,9 +13,12 @@
 #include <WiFi.h>
 #include <Update.h>
 #include <mbedtls/base64.h>
+// Unconditional: the board headers define capability macros (BOARD_HAS_SPEAKER,
+// BOARD_SPK_CODEC_ES8311, ...) that the guards below test. Only the -DBOARD_*
+// selectors come from build flags; everything else needs this include first.
+#include "../boards/board_config.h"
 #if defined(BOARD_IPS35) || defined(BOARD_AMOLED)
 #include <Wire.h>
-#include "../boards/board_config.h"
 #endif
 #if defined(BOARD_T_EMBED)
 #include "../ui/knob/knob_ui.h"
@@ -35,6 +38,10 @@
 #endif
 #if defined(BOARD_IPS10)
 #include "../ui/display.h"         // UI::hwI2cProbe — audio-codec hardware probe
+#endif
+#if defined(BOARD_SPK_CODEC_ES8311)
+#include "../audio/speaker_playback.h"
+#include "../audio/es8311_codec.h"
 #endif
 
 // Reusable JSON document — sized for typical bridge messages
@@ -1001,6 +1008,18 @@ static void sendDeviceInfo() {
         }
     }
 #endif
+#if defined(BOARD_IPS10)
+    {
+        // Speaker capability, advertised on the WiFi path only — and that is
+        // deliberate, not an oversight. This board's host link is a CH340
+        // pinned at 115200 (~11.5 KB/s), while a 16 kHz PCM16 reply base64'd
+        // into JSON needs ~44 KB/s. Serial physically cannot carry it, so the
+        // serial device_info in serial_client.cpp stays quiet and the daemon's
+        // `audio_out` gate keeps voice replies on the socket that can.
+        JsonArray caps = resp["capabilities"].to<JsonArray>();
+        if (Audio::playbackReady()) caps.add("audio_out");
+    }
+#endif
 #if defined(BOARD_T_DISPLAY_PRO)
     {
         // Remote peripheral diag — lets /devices answer "did touch/ALS init?"
@@ -1246,6 +1265,122 @@ void parseMessage(const char* json, size_t length) {
         }
 #else
         Serial.println("[I2CDiag] Not supported on this board");
+#endif
+#if defined(BOARD_HAS_SPEAKER) && !defined(BOARD_T_EMBED)
+    } else if (strcmp(type, "audio_play_begin") == 0) {
+        // Spoken reply from the host. The T-Embed arm above additionally drives
+        // its knob UI ("speaking" state); this board has no such surface yet, so
+        // it is playback only.
+        Audio::playbackBegin(obj["sampleRate"] | 16000);
+    } else if (strcmp(type, "audio_play_chunk") == 0) {
+        // Serial-transport counterpart of the binary WS frame. Present for
+        // symmetry, but see the device_info note: this board's 115200 link
+        // cannot sustain a reply, so in practice the PCM arrives over WS.
+        const char* b64 = obj["d"] | "";
+        size_t b64len = strlen(b64);
+        if (b64len > 0 && b64len < 4096) {
+            static uint8_t pcm[3072];
+            size_t got = 0;
+            if (mbedtls_base64_decode(pcm, sizeof(pcm), &got,
+                                      (const unsigned char*)b64, b64len) == 0 && got > 0) {
+                Audio::playbackFeed(pcm, got);
+            }
+        }
+    } else if (strcmp(type, "audio_play_end") == 0) {
+        Audio::playbackEnd();
+#endif
+    } else if (strcmp(type, "audio_test") == 0) {
+        // Firmware-local, same rationale as i2c_diag above. Plays a 1 s 440 Hz
+        // tone so the ES8311 pin-map hypothesis can be judged by ear — that is
+        // the only instrument available for it. Silence is a real result: it
+        // says the codec initialised over I2C (its own log line proves that)
+        // but the I2S pins or PA-enable are wrong.
+#if defined(BOARD_SPK_CODEC_ES8311)
+        // Params so level and content can be tuned by ear without a reflash:
+        //   vol   codec DAC volume 0-100          (default deliberately low)
+        //   hz    fixed tone, or 0 for a sweep
+        //   ms    duration
+        // The default is a 200 Hz -> 3 kHz sweep rather than a fixed tone: a
+        // buzzer can only sit at one frequency, so a smooth glide is the
+        // cheapest proof that this is a real DAC driving a real speaker.
+        {
+            // ladder: play the same sweep at rising levels so a comfortable
+            // volume can be picked by ear in one pass instead of one reflash
+            // per guess.
+            const bool ladder = obj["ladder"] | false;
+            int vol = obj["vol"].is<int>() ? obj["vol"].as<int>() : 75;
+            int hz  = obj["hz"].is<int>()  ? obj["hz"].as<int>()  : 0;
+            int ms  = obj["ms"].is<int>()  ? obj["ms"].as<int>()  : 2000;
+            if (ms < 100) ms = 100;
+            if (ms > 10000) ms = 10000;
+            if (ladder) {
+                static const int kLevels[] = { 60, 70, 80, 90 };
+                for (int li = 0; li < 4; li++) {
+                    Serial.printf("[AudioTest] ladder step %d/4 — volume %d%% (%.0f dB)\n",
+                                  li + 1, kLevels[li], -60.0f + kLevels[li] * 0.6f);
+                    Audio::playbackBegin(16000);
+                    delay(120);
+                    Es8311::setVolume(kLevels[li]);
+                    static int16_t lb[512];
+                    float ph = 0.0f;
+                    const int tot = 16000 * 1200 / 1000;
+                    for (int d = 0; d < tot; d += 512) {
+                        for (int i = 0; i < 512; i++) {
+                            float pr = (float)(d + i) / (float)tot;
+                            ph += 2.0f * PI * (200.0f + pr * 2800.0f) / 16000.0f;
+                            if (ph > 2.0f * PI) ph -= 2.0f * PI;
+                            float env = pr > 0.9f ? (1.0f - (pr - 0.9f) / 0.1f) : 1.0f;
+                            lb[i] = (int16_t)(6000.0f * env * sinf(ph));
+                        }
+                        Audio::playbackFeed((const uint8_t*)lb, sizeof(lb));
+                        delay(20);
+                    }
+                    Audio::playbackEnd();
+                    delay(900);
+                }
+                Serial.println("[AudioTest] ladder done");
+                return;
+            }
+
+            Serial.printf("[AudioTest] %s, %d ms, volume %d%% — listen\n",
+                          hz > 0 ? "fixed tone" : "200 Hz -> 3 kHz sweep", ms, vol);
+            if (!Audio::playbackInit()) {
+                Serial.println("[AudioTest] playbackInit failed");
+            } else {
+                Audio::playbackBegin(16000);
+                // The playback task initialises the codec, so the volume write
+                // has to land after it comes up.
+                delay(120);
+                Es8311::setVolume(vol);
+
+                constexpr int kRate = 16000;
+                const int total = (kRate * ms) / 1000;
+                static int16_t buf[512];
+                // Fixed amplitude well below full scale — headroom for the amp,
+                // and the codec register is the real volume control.
+                constexpr float kAmp = 2200.0f;
+                float phase = 0.0f;
+                for (int done = 0; done < total; done += 512) {
+                    for (int i = 0; i < 512; i++) {
+                        float progress = (float)(done + i) / (float)total;
+                        float f = (hz > 0) ? (float)hz : (200.0f + progress * 2800.0f);
+                        // Phase accumulator, not sin(2*pi*f*t): sweeping the
+                        // frequency inside the latter tears the waveform at
+                        // every buffer edge and you hear clicks, not a glide.
+                        phase += 2.0f * PI * f / (float)kRate;
+                        if (phase > 2.0f * PI) phase -= 2.0f * PI;
+                        // Fade the last 10% so it ends without a thump.
+                        float env = progress > 0.9f ? (1.0f - (progress - 0.9f) / 0.1f) : 1.0f;
+                        buf[i] = (int16_t)(kAmp * env * sinf(phase));
+                    }
+                    Audio::playbackFeed((const uint8_t*)buf, sizeof(buf));
+                    delay(20);
+                }
+                Audio::playbackEnd();
+            }
+        }
+#else
+        Serial.println("[AudioTest] Not supported on this board");
 #endif
     }
     // Ignore: encoder_state, button_state, deck_slot_map, voice_state

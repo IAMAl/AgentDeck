@@ -8,7 +8,7 @@
 // every shutter press reported "no link".
 #include "../../boards/board_config.h"
 #include "../state/agent_state.h"
-#if defined(BOARD_T_EMBED)
+#if defined(BOARD_HAS_SPEAKER)
 #include "../audio/speaker_playback.h"
 #endif
 
@@ -119,7 +119,7 @@ static void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
             break;
 
         case WStype_BIN:
-#if defined(BOARD_T_EMBED)
+#if defined(BOARD_HAS_SPEAKER)
             // Inbound binary is spoken-reply PCM, bracketed by
             // audio_play_begin/end. Dropped when the ring is full: a late frame
             // is worse than a gap, and blocking here would stall WS reads.
