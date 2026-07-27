@@ -31,14 +31,10 @@
 // ({"type":"i2c_diag"}); the same sweep also found unidentified devices at
 // 0x32 and 0x36.
 //
-// Still 0 because presence of the codec is not a playback path: whether a
-// speaker and the two vendor-claimed mics are actually wired to it is
-// unmeasured, and the I2S / MCLK / PA-enable pin map is unknown. Setting this
-// to 1 requires that pin map plus an ES8311 I2C init sequence (unlike the
-// T-Embed's bare I2S amp, this is a codec).
-//
-// BOARD_HAS_AUDIO gates the *mic* / wake-word path, which is a separate
-// question from playback — see BOARD_HAS_SPEAKER below.
+// BOARD_HAS_AUDIO gates the *mic* / wake-word path only, which is a separate
+// question from playback — playback is live, see BOARD_HAS_SPEAKER below.
+// Capture stays unbuilt: the vendor claims two microphones, nothing has
+// verified them, and the codec's ADC half is unconfigured.
 #define BOARD_HAS_AUDIO      0
 
 // ---- Speaker playback via the ES8311 -------------------------------------
