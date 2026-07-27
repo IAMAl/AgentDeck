@@ -158,13 +158,15 @@ fleet's first **image input channel**. Point the strip at a whiteboard, an app
 screen, an error dialog; press the shutter; the target session gets a prompt
 with the saved file path — the visual counterpart of the knob's dictation.
 
-- **Wire**: `photo_begin` / binary WS JPEG frames / `photo_end`, a one-shot
-  clone of the voice capture bracket; over USB serial the bytes ride base64
-  `photo_chunk` lines (the strip is usually powered from the host, which parks
-  its radio — the camera must survive that, same as the knob's mic). The
-  transport is latched at `photo_begin`; a link flip mid-upload aborts rather
-  than delivering a corrupt JPEG, and `photo_end` carries the byte count so
-  the daemon can reject a frame-lossy assembly.
+- **Wire**: one `POST /esp32/photo` carrying the whole JPEG. Chunking was
+  tried first (a `photo_begin` / frames / `photo_end` clone of the voice
+  bracket) and lost photos two ways on this board — the HWCDC drops whole
+  64-byte FIFO blocks, costing ~2 of 10 base64 lines per upload regardless of
+  pacing, and the WS client's TX jammed after the first binary frame. A JPEG
+  with a hole is worthless, so the byte-count guard refused them all. TCP
+  already solves ordering and retransmit, so the image rides a plain HTTP
+  body; the chunked paths remain the no-WiFi fallback behind a 20 s deadline
+  and an abort diag.
 - **Daemon**: assembles the JPEG under `~/.agentdeck/photos/` (retention-swept),
   routes `Look at the photo … {path}` through the same delivery ladder as
   dictated text (observed → terminal injection, managed → `send_prompt`),
@@ -172,14 +174,24 @@ with the saved file path — the visual counterpart of the knob's dictation.
   answers `photo_result` — surfaced as strip feedback like `voice_result` is
   on the knob. Template override: `photo.promptTemplate` in settings.json.
   Node daemon only (the injection rung is CLI-tier; matches voice).
-- **UI**: a fourth CAM page (rocker/swipe/tab) that exists only when the shield
-  probes at boot — the no-camera unit runs the same binary. Live 2:1
-  viewfinder (the full frame, so framing is WYSIWYG), explicit SNAP / lamp
-  chips per the Focus-page "labelled actions only" rule, BOOT doubles as the
-  shutter, and the awaiting-owns-the-strip snap exempts this page so a gate
-  can't yank a shot mid-framing. SCCB rides Wire's I2C port (no second driver
-  on the shared bus); pixel data uses the dedicated DVP pins, so the earlier
-  "capture degrades touch" concern shrank to camera bring-up only.
+- **UI — the shield's presence picks the unit's role.** Camera found at boot
+  means this is the handheld unit and it comes up as **Pocket**, a portrait
+  222×480 phone UI: LVGL pointer indev (so the session list scrolls with
+  momentum instead of the landscape gesture layer's page flips), tap a card to
+  focus, tap the CAM target bar to cycle which session receives the shot,
+  bottom nav plus rocker for tabs, BOOT for camera/shutter. No camera keeps the
+  landscape Focus Strip and its CAM-less three pages. One binary decides at
+  runtime. SCCB rides Wire's I2C port (no second driver on the shared bus);
+  pixel data uses the dedicated DVP pins, so the earlier "capture degrades
+  touch" concern shrank to camera bring-up only.
+- **Orientation is a measured board fact, not a guess.** The sensor sits 180°
+  to the panel in the portrait pose — established by cycling the rotation live
+  on the viewfinder, then frozen as a constant. Flipping a CW/CCW flag moves
+  the image 180°, so it can never correct a 90° error; three reflashes learned
+  that before the rotation became something the eye could land in one pass.
+  Because 180° preserves the frame's axes, a capture stays 480×320 while the
+  portrait viewfinder centre-crops it — the photo is wider than what was
+  framed.
 - **Sensor honesty**: the on-hand GC0308 is VGA-class fixed-focus — good for
   whiteboards, layouts, and big error text; not for reading code off a
   monitor. The OV5640 (5 MP, autofocus) drops into the same POGO header and
