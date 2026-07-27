@@ -19,6 +19,17 @@ bool touchInit();
 bool touchReady();
 TouchEvent touchPoll(uint32_t nowMs);
 
+/**
+ * Pocket (portrait) mode: the CST226SE's native portrait report matches the
+ * rotation-0 display directly, so LVGL's pointer indev reads raw points here
+ * and the gesture layer (touchPoll) stays out of the loop — two consumers
+ * polling the same controller would fight over press state.
+ */
+void touchSetPortrait(bool portrait);
+bool touchPortrait();
+/** Current raw point in display coordinates; true while a finger is down. */
+bool touchRawPoint(int16_t* x, int16_t* y);
+
 /** Diagnostics for device_info: raw finger-down poll hits since boot. */
 uint32_t touchDownSamples();
 /** Diagnostics for device_info: decoded gestures (tap/hold/swipe) since boot. */

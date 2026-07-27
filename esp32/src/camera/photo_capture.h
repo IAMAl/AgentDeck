@@ -53,6 +53,20 @@ bool grabPreview(uint16_t* dst, int dstW, int dstH);
  */
 bool captureJpeg(uint8_t** out, size_t* outLen, int* width, int* height);
 
+/**
+ * Portrait variants for the Pocket UI. How the sensor sits relative to the
+ * panel is a physical fact no datasheet states; it was established on
+ * hardware (180°) and is now a fixed board constant.
+ *
+ * The preview centre-crops to the destination aspect; the capture keeps the
+ * whole frame at the rotated dimensions.
+ */
+bool grabPreviewPortrait(uint16_t* dst, int dstW, int dstH);
+bool captureJpegPortrait(uint8_t** out, size_t* outLen, int* width, int* height);
+
+/** Sensor→upright rotation used by the portrait paths (0/1/2/3 = 0/90/180/270). */
+uint8_t rotationIndex();
+
 /** White illumination LED duty 0-255 (PWM — full-on runs hot). */
 void setLamp(uint8_t duty);
 

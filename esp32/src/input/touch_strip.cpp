@@ -48,6 +48,28 @@ bool touchReady() {
     return s_enabled;
 }
 
+static bool s_portrait = false;
+void touchSetPortrait(bool portrait) { s_portrait = portrait; }
+bool touchPortrait() { return s_portrait; }
+
+bool touchRawPoint(int16_t* x, int16_t* y) {
+    if (!s_enabled || !x || !y) return false;
+    int16_t xs[5] = {0}, ys[5] = {0};
+    uint8_t supported = s_touch.getSupportTouchPoint();
+    if (supported == 0 || supported > 5) supported = 1;
+    if (s_touch.getPoint(xs, ys, supported) <= 0) return false;
+    s_downSamples++;
+    if (xs[0] > s_maxX) s_maxX = xs[0];
+    if (ys[0] > s_maxY) s_maxY = ys[0];
+    // Native portrait report == rotation-0 display coords (the landscape
+    // transform below is the rotation-1 mapping of this same space).
+    *x = xs[0];
+    *y = ys[0];
+    s_lastGx = xs[0];
+    s_lastGy = ys[0];
+    return true;
+}
+
 uint32_t touchDownSamples() { return s_downSamples; }
 uint32_t touchGestures() { return s_gestures; }
 int16_t touchLastX() { return s_lastGx; }

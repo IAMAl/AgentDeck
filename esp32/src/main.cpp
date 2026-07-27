@@ -40,6 +40,7 @@
 #elif defined(BOARD_T_DISPLAY_PRO)
 #include "ui/display.h"
 #include "ui/ticker/ticker_ui.h"
+#include "ui/pocket/pocket_ui.h"
 #include "input/light_sensor.h"
 #include "input/power_monitor.h"
 #include "input/touch_strip.h"
@@ -342,14 +343,22 @@ static void tickerApplyBrightness(uint32_t now) {
 static void uiTask(void* param) {
     Serial.printf("[UI] Ticker task started on core %d\n", xPortGetCoreID());
 
+    // The camera probe decides the unit's role BEFORE the display comes up:
+    // a shield present means this is the handheld Pocket unit (portrait
+    // phone UI); absent means the desk-mounted landscape Focus Strip. The
+    // probe manages Wire itself and deinits straight after (power fence).
+    bool pocket = Camera::init();
+    if (pocket) UI::requestPortrait();
     UI::displayInit();
     Input::lightInit();
     Input::touchInit();
     Input::powerInit();
-    // After the I2C peripherals: the camera's SCCB config rides Wire's port.
-    // Probe failure just means no shield — the CAM page never appears.
-    Camera::init();
-    Ticker::create();
+    if (pocket) {
+        Input::touchSetPortrait(true);  // LVGL indev consumes raw points
+        Pocket::create();
+    } else {
+        Ticker::create();
+    }
 
     pinMode(BOARD_PIN_BTN1, INPUT_PULLUP);
     pinMode(BOARD_PIN_BTN2, INPUT_PULLUP);
@@ -370,15 +379,22 @@ static void uiTask(void* param) {
         if (dt_ms > 0) lv_tick_inc(dt_ms);
 
         // Four physical controls: RST is hard recovery; the three app-readable
-        // inputs are BOOT (focus/select) and the split rocker (previous/next).
+        // inputs are BOOT (focus/select | camera/shutter) and the split rocker
+        // (previous/next).
         for (int b = 0; b < 3; b++) {
             bool down = (digitalRead(btnPins[b]) == LOW);
             if (down && btnPrev[b] && (uint32_t)(now - btnLastMs[b]) > 220) {
                 btnLastMs[b] = now;
-                Ticker::buttonFeedback((uint8_t)b);
-                if (b == 0) Ticker::primaryAction();
-                else if (b == 1) Ticker::prevPage();
-                else Ticker::nextPage();
+                if (pocket) {
+                    if (b == 0) Pocket::primaryAction();
+                    else if (b == 1) Pocket::prevTab();
+                    else Pocket::nextTab();
+                } else {
+                    Ticker::buttonFeedback((uint8_t)b);
+                    if (b == 0) Ticker::primaryAction();
+                    else if (b == 1) Ticker::prevPage();
+                    else Ticker::nextPage();
+                }
             }
             btnPrev[b] = !down;
         }
@@ -387,12 +403,18 @@ static void uiTask(void* param) {
         g_state.applyPendingSessionClear(now);
         unlockState();
 
-        Input::TouchEvent touch = Input::touchPoll(now);
-        if (touch.gesture != Input::TouchGesture::NONE) Ticker::onTouch(touch);
+        if (!pocket) {
+            // Landscape only: the gesture layer is the sole touch consumer
+            // there. Pocket mode reads touch through the LVGL indev instead —
+            // two pollers would fight over the controller's press state.
+            Input::TouchEvent touch = Input::touchPoll(now);
+            if (touch.gesture != Input::TouchGesture::NONE) Ticker::onTouch(touch);
+        }
 
         Input::powerPoll(now);
         tickerApplyBrightness(now);
-        Ticker::update(dt);
+        if (pocket) Pocket::update(dt);
+        else Ticker::update(dt);
         lv_timer_handler();
 
         {

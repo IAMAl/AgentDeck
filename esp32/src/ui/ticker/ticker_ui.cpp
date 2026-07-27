@@ -680,7 +680,8 @@ static void snapPhoto() {
     // (2026-07-27, 5 chunks then silence). The page watcher in update()
     // re-acquires the preview once the upload has drained.
     Camera::release();
-    if (!Net::queuePhotoUpload(jpeg, len, sid, w, h)) {
+    if (!Net::queuePhotoHttpUpload(jpeg, len, sid, w, h) &&
+        !Net::queuePhotoUpload(jpeg, len, sid, w, h)) {
         free(jpeg);
         flash("no link - not sent");
         return;

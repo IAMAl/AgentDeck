@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <Preferences.h>
 #include <esp_camera.h>
 #include <img_converters.h>
 
@@ -144,6 +145,97 @@ bool grabPreview(uint16_t* dst, int dstW, int dstH) {
     return true;
 }
 
+// Sensor-to-panel rotation for the portrait pose: 180°, established on
+// hardware by cycling it on the viewfinder (2026-07-27). Not a guess and not
+// a user setting — the shield's mounting is fixed, so this is a board fact.
+static constexpr uint8_t CAM_PORTRAIT_ROT = 2;
+
+uint8_t rotationIndex() { return CAM_PORTRAIT_ROT; }
+
+// Upright frame dimensions for a rotation index.
+static inline void uprightDims(int sw, int sh, uint8_t rot, int* uw, int* uh) {
+    if (rot & 1) { *uw = sh; *uh = sw; }
+    else         { *uw = sw; *uh = sh; }
+}
+
+// Map an upright-space coordinate back to the sensor buffer.
+static inline void uprightToSrc(int ux, int uy, int sw, int sh, uint8_t rot,
+                                int* sx, int* sy) {
+    switch (rot & 3) {
+        case 0:  *sx = ux;              *sy = uy;              break;
+        case 1:  *sx = uy;              *sy = sh - 1 - ux;     break;  // 90° CW
+        case 2:  *sx = sw - 1 - ux;     *sy = sh - 1 - uy;     break;
+        default: *sx = sw - 1 - uy;     *sy = ux;              break;  // 270° CW
+    }
+}
+
+bool grabPreviewPortrait(uint16_t* dst, int dstW, int dstH) {
+    if (!s_active || !dst) return false;
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) return false;
+    if (fb->format != PIXFORMAT_RGB565) { esp_camera_fb_return(fb); return false; }
+    const uint16_t* src = (const uint16_t*)fb->buf;
+    int sw = fb->width, sh = fb->height;
+    uint8_t rot = rotationIndex();
+    int uw, uh;
+    uprightDims(sw, sh, rot, &uw, &uh);
+    // Centre-crop the upright frame to the viewfinder's aspect, then sample.
+    int cropW = uw, cropH = uh;
+    if ((long)uw * dstH > (long)uh * dstW) cropW = (int)((long)uh * dstW / dstH);
+    else                                   cropH = (int)((long)uw * dstH / dstW);
+    int offX = (uw - cropW) / 2, offY = (uh - cropH) / 2;
+    for (int y = 0; y < dstH; y++) {
+        uint16_t* outRow = dst + (size_t)y * dstW;
+        int uy = offY + (int)((long)y * cropH / dstH);
+        for (int x = 0; x < dstW; x++) {
+            int ux = offX + (int)((long)x * cropW / dstW);
+            int sx, sy;
+            uprightToSrc(ux, uy, sw, sh, rot, &sx, &sy);
+            // bswap for the little-endian canvas (see grabPreview).
+            outRow[x] = __builtin_bswap16(src[(size_t)sy * sw + sx]);
+        }
+    }
+    esp_camera_fb_return(fb);
+    return true;
+}
+
+bool captureJpegPortrait(uint8_t** out, size_t* outLen, int* width, int* height) {
+    if (!s_active || !out || !outLen) return false;
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) return false;
+    if (fb->format != PIXFORMAT_RGB565) { esp_camera_fb_return(fb); return false; }
+    int sw = fb->width, sh = fb->height;
+    uint8_t rot = rotationIndex();
+    int dw, dh;
+    uprightDims(sw, sh, rot, &dw, &dh);   // whole frame, no crop
+    uint16_t* rotBuf = (uint16_t*)heap_caps_malloc((size_t)dw * dh * 2, MALLOC_CAP_SPIRAM);
+    if (!rotBuf) { esp_camera_fb_return(fb); return false; }
+    const uint16_t* src = (const uint16_t*)fb->buf;
+    // Keep camera byte order — fmt2jpg's RGB565 contract is big-endian.
+    for (int y = 0; y < dh; y++) {
+        uint16_t* outRow = rotBuf + (size_t)y * dw;
+        for (int x = 0; x < dw; x++) {
+            int sx, sy;
+            uprightToSrc(x, y, sw, sh, rot, &sx, &sy);
+            outRow[x] = src[(size_t)sy * sw + sx];
+        }
+    }
+    esp_camera_fb_return(fb);
+    *out = nullptr;
+    *outLen = 0;
+    bool ok = fmt2jpg((uint8_t*)rotBuf, (size_t)dw * dh * 2, dw, dh,
+                      PIXFORMAT_RGB565, JPEG_QUALITY, out, outLen);
+    free(rotBuf);
+    if (width) *width = dw;
+    if (height) *height = dh;
+    if (!ok || !*out || *outLen == 0) {
+        Serial.println("[Camera] portrait JPEG encode failed");
+        if (*out) { free(*out); *out = nullptr; }
+        return false;
+    }
+    return true;
+}
+
 bool captureJpeg(uint8_t** out, size_t* outLen, int* width, int* height) {
     if (!s_active || !out || !outLen) return false;
     camera_fb_t* fb = esp_camera_fb_get();
@@ -182,7 +274,10 @@ bool acquire() { return false; }
 void release() {}
 bool active() { return false; }
 bool grabPreview(uint16_t*, int, int) { return false; }
+bool grabPreviewPortrait(uint16_t*, int, int) { return false; }
 bool captureJpeg(uint8_t**, size_t*, int*, int*) { return false; }
+bool captureJpegPortrait(uint8_t**, size_t*, int*, int*) { return false; }
+uint8_t rotationIndex() { return 0; }
 void setLamp(uint8_t) {}
 uint8_t lampDuty() { return 0; }
 }  // namespace Camera
