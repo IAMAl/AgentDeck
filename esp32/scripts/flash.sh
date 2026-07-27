@@ -16,8 +16,9 @@ Usage:
   $0 <environment> [port]
 
 Environments (canonical friendly name — panel/form + inches):
-  ips_35 | amoled_18 | box_40 | tft_114 | ips_101 | inkdeck | led_8x32
-  (legacy aliases still accepted: round_amoled, box_86, ttgo, ulanzi_tc001, ...)
+  ips_35 | amoled_18 | box_40 | tft_114 | ips_101 | inkdeck
+  t_embed | t_display_pro | led_8x32
+  (legacy aliases still accepted: round_amoled, box_86, knob, ticker, ...)
 
 Rules:
   - auto mode only selects boards that answer device_info_request
@@ -27,7 +28,11 @@ EOF
 }
 
 probe_running_boards() {
-python3 - <<'PY'
+local probe_python="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/penv/bin/python"
+if [ ! -x "$probe_python" ]; then
+    probe_python="$(command -v python3)"
+fi
+"$probe_python" - <<'PY'
 import glob
 import json
 import platform
@@ -85,6 +90,8 @@ map_env_to_pio() {
         tft_114|ttgo_t_display|ttgo) echo "ttgo" ;;
         ips_101|ips_10|ips10) echo "ips10" ;;
         inkdeck) echo "inkdeck" ;;
+        t_embed|tembed|knob) echo "t_embed" ;;
+        t_display_pro|tdisplaypro|ticker|s3pro|focus_strip) echo "t_display_pro" ;;
         *) echo "$1" ;;
     esac
 }
@@ -97,7 +104,9 @@ validate_env() {
         led_8x32|ulanzi_tc001|led8x32|\
         tft_114|ttgo_t_display|ttgo|\
         ips_101|ips_10|ips10|\
-        inkdeck) ;;
+        inkdeck|\
+        t_embed|tembed|knob|\
+        t_display_pro|tdisplaypro|ticker|s3pro|focus_strip) ;;
         *)
             echo "Unknown environment: $1" >&2
             usage >&2
@@ -110,15 +119,17 @@ warn_recovery_mode() {
     cat <<EOF
 No running firmware responded on $1.
 
-If this is an IPS/Round Native USB board in recovery mode:
+If this is a Native USB display board in recovery mode:
   1. Hold BOOT
   2. Connect USB or tap RST
   3. Release BOOT after the usbmodem port stays up
   4. Re-run with explicit env and port:
      $0 ips_35 $1
      $0 amoled_18 $1
+     $0 t_embed $1
+     $0 t_display_pro $1
 
-Do not guess IPS vs Round from the usbmodem number alone.
+Do not guess a board model from the usbmodem number alone.
 EOF
 }
 

@@ -2,6 +2,72 @@
 
 ---
 
+## 2026-07-27 — T-Display-S3-Pro physical-key edge affordances
+
+The T-Display-S3-Pro's two long side controls each conceal two switches, so a
+generic detached button legend did not match the hardware. In the firmware's
+landscape pose the UI now places short 44 px capsules beside the actual rocker
+halves. The first photo-derived versions were horizontally too long and mapped
+to the wrong edge/pairs; direct device feedback established the landscape
+geometry as right-side upper = previous/next and right-side lower =
+power/Focus, both ordered left to right. The electrical `RST` label was replaced
+by a single power icon because the user-visible result is screen-off/restart.
+App-readable keys flash cyan when pressed. Persistent LVGL labels use
+flash-backed static strings; no new render-loop buffer/allocation was introduced.
+
+---
+
+## 2026-07-27 — Knob 크리처 캐러셀 + Focus Strip 물리 입력/터치 재설계
+
+T-Embed list를 텍스트 카드에서 정본 A8 크리처 glyph 중심의 휠 캐러셀로
+바꿨다. 선택 크리처는 상태색 halo 안에서 중앙을 차지하고 이전/다음
+크리처는 양옆에 낮은 opacity로 보여 encoder detent와 시각 변화가 바로
+연결된다. glyph는 flash-backed 정적 descriptor라 프레임 버퍼나 지속
+할당을 추가하지 않는다.
+
+T-Display-S3-Pro의 네 물리 버튼을 다시 확인했다. 앱이 읽는 입력은
+BOOT(GPIO0)와 분할 rocker(GPIO12/16) 세 개이고, 네 번째 RST는 하드웨어
+reset이다. rocker는 이전/다음, BOOT는 Focus/선택, RST는 복구로 역할을
+고정했다. auto-cycle을 제거하고 터치 header tab·좌우 swipe·Sessions
+row focus를 추가했으며, 승인/거부는 Focus 하단의 명시적 버튼에서만
+보내도록 바꿔 임의 tap/hold 오발을 제거했다.
+
+상단 배터리는 SY6970 ADC를 연속 변환 모드로 명시적으로 켠 뒤 실제
+cell voltage와 charge state를 표시한다. 이 charger에는 fuel-gauge SOC
+register가 없으므로 정확한 척하는 퍼센트는 표시하지 않는다.
+
+---
+
+## 2026-07-27 — Companion Knob ↔ Focus Strip 연동 + 가독성/알림 보완
+
+새 보드의 기능은 많아졌지만 폼팩터의 강점이 UI에 완전히 연결되지는
+않아 있었다. Knob 문서의 `focus_session`은 실제 펌웨어가 보내지 않았고,
+Focus Strip은 daemon의 `focusedSessionId`를 보관하지 않아 두 기기가
+같은 세션을 가리킬 수 없었다. 이제 Knob에서 세션 진입 시 focus를
+전송하고, ESP32 공용 상태가 focus를 수신한다. Strip 선택 순서는
+**awaiting → explicit focus → processing → roster**이며 Sessions 페이지에도
+focus rail을 표시한다. 외부 focus는 Knob list carousel을 한 번만 맞춰
+사용자의 이후 회전을 방해하지 않는다.
+
+가독성은 정보량을 줄이는 쪽으로 고쳤다. T-Embed는 16px 한글 fallback을
+싣고 본문/질문/메뉴/History를 16px로 올렸으며, detail 메뉴는 4×20px에서
+3×27px 행으로 바꿨다. S3-Pro는 22px 헤더와 12px 5행 roster를 버리고
+28px 헤더, 16px 본문, 우선순위 3행으로 재구성했다. 수동 페이지 이동은
+auto-cycle을 멈추며 헤더가 AUTO/MANUAL을 명시한다.
+
+Pager chime도 aggregate `anyAwaiting` edge에서 세션 ID 집합 edge로 바꿨다.
+따라서 A가 계속 기다리는 동안 B가 새로 기다려도 B의 알림이 빠지지
+않는다. WS2812의 disconnected 파란 breath는 제거해 amber awaiting만
+애니메이션한다. LVGL 재구성의 fragmentation은 60초마다 total/largest
+block을 함께 기록해 실기 soak에서 관측 가능하게 했다.
+
+표준 flash helper와 deploy registry에도 `t_embed`/`knob`,
+`t_display_pro`/`ticker` alias를 등록했다. Shipping 보드인데도 공용
+device-identification 경로에서 unknown environment로 거절되던 운영상
+누락을 제거했다.
+
+---
+
 ## 2026-07-27 — 스피커를 귀로 확인할 수단 (`agentdeck speak`)
 
 AgentDeck 0c54eea0. 음성 왕복의 재생 절반은 **구현돼 있었지만 확인할 방법이 없었다**. 프로덕션 경로에서 보드가 발화하는 조건은 "받아쓰기가 세션 전달에 성공해 보드를 arm 했고, 그 세션이 턴을 끝냈을 때" 하나뿐이다. 갓 플래시한 앰프가 소리를 내는지 알려면 마이크 버튼을 손으로 누르고 에이전트 턴을 기다려야 했다 — 하드웨어 확인 수단으로는 쓸 수 없다.

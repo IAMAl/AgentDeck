@@ -41,6 +41,7 @@
 #include "ui/display.h"
 #include "ui/ticker/ticker_ui.h"
 #include "input/light_sensor.h"
+#include "input/power_monitor.h"
 #include "input/touch_strip.h"
 #else
 #include "ui/display.h"
@@ -281,8 +282,8 @@ static void networkTask(void* param) {
 }
 
 #if defined(BOARD_T_DISPLAY_PRO)
-// ===== UI task — Tide Ticker (Core 1) =====
-// 480x222 always-on strip: usage gauges + session ticker, 3-button paging,
+// ===== UI task — Focus Strip (Core 1) =====
+// 480x222 always-on strip: touch tabs/actions + 3 app-readable buttons,
 // LTR-553 auto-dim composed with the host display-sleep contract.
 static void tickerApplyBrightness(uint32_t now) {
     static int lastApplied = -1;
@@ -313,6 +314,7 @@ static void uiTask(void* param) {
     UI::displayInit();
     Input::lightInit();
     Input::touchInit();
+    Input::powerInit();
     Ticker::create();
 
     pinMode(BOARD_PIN_BTN1, INPUT_PULLUP);
@@ -333,14 +335,16 @@ static void uiTask(void* param) {
         if (dt > 0.1f) dt = 0.1f;
         if (dt_ms > 0) lv_tick_inc(dt_ms);
 
-        // Buttons (active LOW): BTN1 prev page, BTN2 next page, BTN3 auto-cycle
+        // Four physical controls: RST is hard recovery; the three app-readable
+        // inputs are BOOT (focus/select) and the split rocker (previous/next).
         for (int b = 0; b < 3; b++) {
             bool down = (digitalRead(btnPins[b]) == LOW);
             if (down && btnPrev[b] && (uint32_t)(now - btnLastMs[b]) > 220) {
                 btnLastMs[b] = now;
-                if (b == 0) Ticker::prevPage();
-                else if (b == 1) Ticker::nextPage();
-                else Ticker::toggleAutoCycle();
+                Ticker::buttonFeedback((uint8_t)b);
+                if (b == 0) Ticker::primaryAction();
+                else if (b == 1) Ticker::prevPage();
+                else Ticker::nextPage();
             }
             btnPrev[b] = !down;
         }
@@ -349,12 +353,21 @@ static void uiTask(void* param) {
         g_state.applyPendingSessionClear(now);
         unlockState();
 
-        Input::TouchGesture tg = Input::touchPoll(now);
-        if (tg != Input::TouchGesture::NONE) Ticker::onTouch(tg);
+        Input::TouchEvent touch = Input::touchPoll(now);
+        if (touch.gesture != Input::TouchGesture::NONE) Ticker::onTouch(touch);
 
+        Input::powerPoll(now);
         tickerApplyBrightness(now);
         Ticker::update(dt);
         lv_timer_handler();
+
+        {
+            static uint32_t lastHeapLogMs = 0;
+            if ((uint32_t)(now - lastHeapLogMs) >= 60000) {
+                lastHeapLogMs = now;
+                logHeap("focus-strip");
+            }
+        }
 
         uint32_t work = millis() - now;
         vTaskDelay(pdMS_TO_TICKS(work < RENDER_INTERVAL_MS ? (RENDER_INTERVAL_MS - work) : 1));
@@ -476,25 +489,45 @@ static void uiTask(void* param) {
             }
         }
 
-        // Awaiting edge: a session just entered a genuine response-wait →
-        // pager chime + panel wake (derived from sessions_list; no new event).
+        // Awaiting edge: alert per session, not on the aggregate boolean. With
+        // the old anyAwaiting edge, session B could start waiting while A was
+        // already waiting and the pager stayed silent.
         bool anyAwaiting = false;
+        char awaitingIds[10][32] = {};
+        uint8_t awaitingCount = 0;
         lockState();
         for (uint8_t i = 0; i < g_state.sessionCount; i++) {
             if (strstr(g_state.sessions[i].state, "awaiting") != nullptr) {
                 anyAwaiting = true;
-                break;
+                if (awaitingCount < 10) {
+                    strncpy(awaitingIds[awaitingCount], g_state.sessions[i].id,
+                            sizeof(awaitingIds[awaitingCount]) - 1);
+                    awaitingCount++;
+                }
             }
         }
         bool connectedNow = g_state.wsConnected;
         unlockState();
         {
-            static bool prevAwaiting = false;
-            if (anyAwaiting && !prevAwaiting && connectedNow) {
+            static char prevAwaitingIds[10][32] = {};
+            static uint8_t prevAwaitingCount = 0;
+            bool newlyAwaiting = false;
+            for (uint8_t i = 0; i < awaitingCount && !newlyAwaiting; i++) {
+                bool seen = false;
+                for (uint8_t j = 0; j < prevAwaitingCount; j++) {
+                    if (strcmp(awaitingIds[i], prevAwaitingIds[j]) == 0) {
+                        seen = true;
+                        break;
+                    }
+                }
+                newlyAwaiting = !seen;
+            }
+            if (newlyAwaiting && connectedNow) {
                 Chime::playAttention();
                 s_lastInputMs = now;  // wake the panel with the chime
             }
-            prevAwaiting = anyAwaiting;
+            memcpy(prevAwaitingIds, awaitingIds, sizeof(prevAwaitingIds));
+            prevAwaitingCount = awaitingCount;
         }
 
         // Hold-to-talk on the ENCODER, not a side key: the CC1101 board has
@@ -542,6 +575,17 @@ static void uiTask(void* param) {
 
         Knob::update(dt);
         Ring::update(now, Knob::selectedSessionIdx(), connected, ringDark);
+
+        // These views rebuild only on visible state changes, but rotary input can
+        // still exercise LVGL's allocator heavily. Surface both total and largest
+        // free blocks so hardware soak tests catch fragmentation, not just OOM.
+        {
+            static uint32_t lastHeapLogMs = 0;
+            if ((uint32_t)(now - lastHeapLogMs) >= 60000) {
+                lastHeapLogMs = now;
+                logHeap("knob");
+            }
+        }
 
         lv_timer_handler();
 
@@ -992,7 +1036,7 @@ void setup() {
     // Native USB CDC: wait for host connection (up to 3 seconds)
     for (int i = 0; i < 30 && !Serial; i++) delay(100);
     delay(200);
-    Serial.println("\n=== AgentDeck T-Display-S3-Pro Tide Ticker ===");
+    Serial.println("\n=== AgentDeck T-Display-S3-Pro Focus Strip ===");
 #else
     // Native USB CDC: wait for host connection (up to 3 seconds)
     for (int i = 0; i < 30 && !Serial; i++) delay(100);

@@ -16,7 +16,7 @@ static constexpr uint8_t CMD_CURRENT = 0x0C;  // s16 mA, negative = discharging
 static constexpr uint8_t CHARGER_ADDR = 0x6B;
 static constexpr uint8_t CHARGER_REG_STATUS = 0x0B;
 
-static Input::PowerStatus s_status = {false, 0, false, false, 0, 0};
+static Input::PowerStatus s_status = {false, 0, 0, false, false, 0, 0};
 static uint32_t s_lastPollMs = 0;
 static constexpr uint32_t POLL_INTERVAL_MS = 5000;
 
@@ -112,6 +112,7 @@ void powerPoll(uint32_t nowMs) {
     s_status.chargerErr = chargerErr;
     s_status.valid = gaugeOk;
     s_status.soc = (uint8_t)soc;
+    s_status.voltageMv = 0;  // BQ27220 SOC is authoritative on T-Embed
     s_status.usbPowered = powerGood;
     s_status.charging = charging;
 }
@@ -149,4 +150,119 @@ void powerOff() {
 
 }  // namespace Input
 
-#endif  // BOARD_T_EMBED
+#elif defined(BOARD_T_DISPLAY_PRO)
+
+#include "power_monitor.h"
+#include "../../boards/board_config.h"
+
+#include <Arduino.h>
+#include <Wire.h>
+
+// T-Display-S3-Pro uses an SY6970 charger at 0x6A. It is not a coulomb-counting
+// fuel gauge, so the UI deliberately presents its measured cell voltage rather
+// than inventing a precise percentage.
+static constexpr uint8_t PMU_ADDR = 0x6A;
+static constexpr uint8_t REG_ADC_CONTROL = 0x02;
+static constexpr uint8_t REG_STATUS = 0x0B;
+static constexpr uint8_t REG_BATTERY_ADC = 0x0E;
+static constexpr uint8_t REG_PART_INFO = 0x14;
+static constexpr uint32_t POLL_INTERVAL_MS = 5000;
+
+static Input::PowerStatus s_status = {false, 0, 0, false, false, 0, 0};
+static uint32_t s_lastPollMs = 0;
+
+static bool readReg(uint8_t reg, uint8_t* out, uint8_t* errOut = nullptr) {
+    Wire.beginTransmission(PMU_ADDR);
+    Wire.write(reg);
+    uint8_t err = Wire.endTransmission(false);
+    if (err != 0) {
+        if (errOut) *errOut = err;
+        return false;
+    }
+    uint8_t got = Wire.requestFrom(PMU_ADDR, (uint8_t)1);
+    if (got != 1) {
+        if (errOut) *errOut = (uint8_t)(100 + got);
+        return false;
+    }
+    *out = Wire.read();
+    if (errOut) *errOut = 0;
+    return true;
+}
+
+static bool writeReg(uint8_t reg, uint8_t value, uint8_t* errOut = nullptr) {
+    Wire.beginTransmission(PMU_ADDR);
+    Wire.write(reg);
+    Wire.write(value);
+    uint8_t err = Wire.endTransmission();
+    if (errOut) *errOut = err;
+    return err == 0;
+}
+
+namespace Input {
+
+void i2cScanLog(const char* tag) {
+    Serial.printf("[I2C] scan @%s:", tag);
+    for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", addr);
+    }
+    Serial.println();
+}
+
+void powerInit() {
+    Wire.setPins(BOARD_PIN_I2C_SDA, BOARD_PIN_I2C_SCL);
+    Wire.begin();
+
+    uint8_t part = 0, adc = 0, err = 0;
+    if (!readReg(REG_PART_INFO, &part, &err) || !readReg(REG_ADC_CONTROL, &adc, &err)) {
+        s_status.chargerErr = err;
+        Serial.printf("[Power] SY6970 unavailable (err %u)\n", err);
+        return;
+    }
+    // ADC_START=1 and ADC_RATE=1: enable continuous conversions. Without this,
+    // REG0E can retain a reset/stale value and a battery indicator looks alive
+    // while reporting nonsense.
+    if (!writeReg(REG_ADC_CONTROL, (uint8_t)(adc | 0xC0), &err)) {
+        s_status.chargerErr = err;
+        Serial.printf("[Power] SY6970 ADC enable failed (err %u)\n", err);
+        return;
+    }
+    Serial.printf("[Power] SY6970 ready (part 0x%02X), battery ADC continuous\n", part);
+    delay(20);
+    powerPoll(0);
+    s_lastPollMs = 0;
+}
+
+void powerPoll(uint32_t nowMs) {
+    if (nowMs != 0 && (uint32_t)(nowMs - s_lastPollMs) < POLL_INTERVAL_MS) return;
+    s_lastPollMs = nowMs;
+
+    uint8_t rawV = 0, status = 0, errV = 0, errStatus = 0;
+    bool voltageOk = readReg(REG_BATTERY_ADC, &rawV, &errV);
+    bool statusOk = readReg(REG_STATUS, &status, &errStatus);
+    uint16_t mv = 0;
+    if (voltageOk && (rawV & 0x7F) != 0)
+        mv = (uint16_t)(2304 + (rawV & 0x7F) * 20);
+
+    s_status.valid = voltageOk && mv >= 2800 && mv <= 4600;
+    s_status.voltageMv = s_status.valid ? mv : 0;
+    s_status.soc = 0;  // SY6970 has no fuel-gauge SOC register
+    s_status.usbPowered = statusOk && (((status >> 5) & 0x07) != 0);
+    uint8_t chargeState = (uint8_t)((status >> 3) & 0x03);
+    s_status.charging = statusOk && (chargeState == 1 || chargeState == 2);
+    s_status.gaugeErr = errV;
+    s_status.chargerErr = errStatus;
+}
+
+PowerStatus powerStatus() {
+    return s_status;
+}
+
+void powerOff() {
+    // The Pro's physical RST remains the recovery control; no software power
+    // latch is offered by this surface.
+}
+
+}  // namespace Input
+
+#endif  // BOARD_T_EMBED / BOARD_T_DISPLAY_PRO

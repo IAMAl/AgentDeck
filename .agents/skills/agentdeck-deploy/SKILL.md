@@ -23,7 +23,7 @@ Parse the argument string to determine target(s). Multiple targets can be combin
 | `ipad` | iPad Air M2 only |
 | `macos` / `mac` | macOS app only |
 | `apple` | iOS + macOS |
-| `esp32` | All connected ESP32 boards (LVGL only — excludes Ulanzi TC001) |
+| `esp32` | All connected ESP32 display boards (excludes Ulanzi TC001) |
 | `esp32-all` | All ESP32 boards including Ulanzi TC001 |
 | `inkdeck` | InkDeck e-ink only |
 | `ulanzi` / `tc001` | Ulanzi TC001 LED matrix only |
@@ -60,6 +60,8 @@ Parse the argument string to determine target(s). Multiple targets can be combin
 | **TTGO T-Display** (135×240) | `tft_114` | `ttgo` | `/dev/cu.wchusbserial*` | ESP32-D0WDQ6, CH340 |
 | **IPS 10.1"** (800×1280) | `ips_101` | `ips10` | `/dev/cu.wchusbserial*` | ESP32-P4 + C6 |
 | **InkDeck** (800×480 e-ink) | `inkdeck` | `inkdeck` | `/dev/cu.usbmodem*` | XIAO ESP32-S3 Plus |
+| **T-Embed CC1101** (170×320 + encoder) | `t_embed` | `t_embed` | `/dev/cu.usbmodem*` | ESP32-S3, native USB |
+| **T-Display-S3-Pro** (222×480) | `t_display_pro` | `t_display_pro` | `/dev/cu.usbmodem*` | ESP32-S3, native USB |
 | **Ulanzi TC001** (8×32 LED) | `led_8x32` | `led8x32` | `/dev/cu.usbserial-*` | ESP32-D0WD classic, CH340 |
 
 ## Execution Steps
@@ -208,7 +210,7 @@ pnpm package
 
 **CRITICAL: Build and flash ONE AT A TIME** — PlatformIO lock + serial port conflicts.
 
-**Ulanzi TC001 is a separate target.** The `esp32` target deploys LVGL boards only (86 Box, IPS 3.5", Round AMOLED). Use `ulanzi`, `tc001`, or `esp32-all` to include the Ulanzi TC001. This separation exists because:
+**Ulanzi TC001 is a separate target.** The `esp32` target deploys display boards only (86 Box, IPS 3.5", Round AMOLED, T-Embed CC1101, T-Display-S3-Pro, and InkDeck). Use `ulanzi`, `tc001`, or `esp32-all` to include the Ulanzi TC001. This separation exists because:
 - Ulanzi uses a different chip (ESP32-D0WD classic vs ESP32-S3)
 - Ulanzi uses FastLED matrix rendering, not LVGL — UI changes to cloud.cpp/theme.h don't affect it
 - Ulanzi requires a different flash procedure (esptool full-flash vs PIO upload)
@@ -230,9 +232,9 @@ done
 
 If the daemon is holding a serial port, stop the daemon (or use the flash helper that pauses/resumes it) before flashing — see `docs/esp32.md`.
 
-#### LVGL Boards (86 Box, IPS 3.5", Round AMOLED)
+#### Display Boards (86 Box, IPS 3.5", Round AMOLED, T-Embed CC1101, T-Display-S3-Pro)
 
-Flash each detected LVGL board:
+Flash each detected display board:
 ```bash
 # Match port to environment and flash
 pio run -e <environment> -t upload --upload-port <port>

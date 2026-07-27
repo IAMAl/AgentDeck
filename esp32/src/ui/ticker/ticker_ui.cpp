@@ -4,6 +4,7 @@
 #include "../../state/agent_state.h"
 #include "../../net/wifi_manager.h"
 #include "../../net/ws_client.h"
+#include "../../input/power_monitor.h"
 #include "../display.h"
 #include "../theme.h"
 #include "../agent_label.h"
@@ -15,19 +16,36 @@
 #include <string.h>
 
 static constexpr uint8_t PAGE_COUNT = 3;  // 0 FOCUS, 1 USAGE, 2 SESSIONS
-static constexpr uint32_t AUTO_CYCLE_MS = 8000;
+// In landscape the two short physical button pairs sit against the long
+// top/bottom edges near the right end. From left to right the upper pair is
+// previous/next (GPIO12/16); the lower pair is power-reset/Focus (RST/GPIO0).
+static constexpr int KEY_RAIL_H = 16;
+static constexpr int KEY_HINT_W = 44;
+static constexpr int KEY_HINT_GAP = 3;
+static constexpr int KEY_HINT_RIGHT_INSET = 54;
+static constexpr int KEY_HINT_X =
+    SCREEN_W - KEY_HINT_RIGHT_INSET - (KEY_HINT_W * 2 + KEY_HINT_GAP);
+static constexpr int HEADER_Y = KEY_RAIL_H;
+static constexpr int HEADER_H = 30;
+static constexpr int BODY_Y = HEADER_Y + HEADER_H;
+static constexpr int BODY_H = 222 - BODY_Y - KEY_RAIL_H;
 
 static uint8_t s_page = 0;
-static bool s_autoCycle = true;
-static uint32_t s_lastCycleMs = 0;
 
 static lv_obj_t* s_scr = nullptr;
-static lv_obj_t* s_headerLeft = nullptr;
-static lv_obj_t* s_headerRight = nullptr;
+static lv_obj_t* s_tabs[3] = {nullptr, nullptr, nullptr};
 static lv_obj_t* s_hdrWifi = nullptr;
+static lv_obj_t* s_hdrBattery = nullptr;
 static lv_obj_t* s_body = nullptr;
+static lv_obj_t* s_hintPrimary = nullptr;
+static lv_obj_t* s_hintPrev = nullptr;
+static lv_obj_t* s_hintNext = nullptr;
+static lv_obj_t* s_hintReset = nullptr;
+static char s_sessionRowIds[3][32] = {};
+static uint8_t s_sessionRowCount = 0;
+static uint32_t s_buttonActiveUntil[3] = {0, 0, 0};
 
-static char s_lastSig[224] = {0};
+static char s_lastSig[320] = {0};
 
 // Transient touch feedback shown on the Focus page hint line.
 static char s_flashText[32] = {0};
@@ -59,21 +77,49 @@ static void sendSessionEscape(const char* sid) {
     Net::queueOutbound(buf);
 }
 
+static void sendFocusSession(const char* sid) {
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"focus_session\",\"sessionId\":\"%s\"}", sid);
+    Net::queueOutbound(buf);
+}
+
 static void flash(const char* text) {
     strncpy(s_flashText, text, sizeof(s_flashText) - 1);
     s_flashText[sizeof(s_flashText) - 1] = '\0';
     s_flashUntilMs = millis() + 1200;
 }
 
-// The one session the Focus Strip captions: awaiting outranks everything,
-// then processing, then the first session. -1 = none.
+static bool sameSessionId(const char* a, const char* b) {
+    if (!a || !b || !a[0] || !b[0]) return false;
+    if (strcmp(a, b) == 0) return true;
+    // ESP32 roster ids are intentionally capped at 31 bytes. A state_update can
+    // arrive over WiFi with the daemon's full id, so accept the shared prefix.
+    size_t alen = strlen(a);
+    size_t blen = strlen(b);
+    size_t n = alen < blen ? alen : blen;
+    return n >= 31 && strncmp(a, b, n) == 0;
+}
+
+// Awaiting owns the strip. Otherwise follow the session explicitly focused by
+// the Companion Knob/another surface, then fall back to live work and the first.
 static int pickFocusSession() {
+    int firstAwaiting = -1;
+    int explicitFocus = -1;
     int firstProcessing = -1;
     for (uint8_t i = 0; i < g_state.sessionCount; i++) {
-        if (strstr(g_state.sessions[i].state, "awaiting") != nullptr) return i;
+        if (strstr(g_state.sessions[i].state, "awaiting") != nullptr) {
+            if (sameSessionId(g_state.sessions[i].id, g_state.focusedSessionId)) return i;
+            if (firstAwaiting < 0) firstAwaiting = i;
+        }
+        if (explicitFocus < 0 &&
+            sameSessionId(g_state.sessions[i].id, g_state.focusedSessionId))
+            explicitFocus = i;
         if (firstProcessing < 0 && strcmp(g_state.sessions[i].state, "processing") == 0)
             firstProcessing = i;
     }
+    if (firstAwaiting >= 0) return firstAwaiting;
+    if (explicitFocus >= 0) return explicitFocus;
     if (firstProcessing >= 0) return firstProcessing;
     return g_state.sessionCount > 0 ? 0 : -1;
 }
@@ -106,28 +152,74 @@ static uint32_t gaugeColor(float pct) {
     return Theme::StatusGreen;
 }
 
+static lv_obj_t* makeKeyHint(lv_obj_t* rail, const char* text, int x,
+                             uint32_t color) {
+    // One persistent 44x14 capsule per physical switch. The narrow geometry is
+    // intentional: the enclosure rocker is much shorter than the first
+    // full-edge label study.
+    lv_obj_t* chip = lv_obj_create(rail);
+    lv_obj_remove_style_all(chip);
+    lv_obj_set_size(chip, KEY_HINT_W, KEY_RAIL_H - 2);
+    lv_obj_set_pos(chip, x, 1);
+    lv_obj_set_style_bg_color(chip, lv_color_hex(Theme::MidWater), 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(chip, 3, 0);
+
+    lv_obj_t* hint = makeLabel(chip, &lv_font_montserrat_12, color, text);
+    lv_obj_set_style_text_letter_space(hint, 1, 0);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 0);
+    return hint;
+}
+
+static void updateKeyHints(uint32_t now) {
+    // Text is flash-backed and the label widgets live for the screen lifetime:
+    // changing page/button feedback does not allocate inside the render loop.
+    static const char* const prevLabels[PAGE_COUNT] = {
+        "SESS", "FOCUS", "USAGE"
+    };
+    static const char* const nextLabels[PAGE_COUNT] = {
+        "USAGE", "SESS", "FOCUS"
+    };
+    static uint8_t lastPage = 0xFF;
+    if (lastPage != s_page) {
+        lastPage = s_page;
+        lv_label_set_text_static(s_hintPrev, prevLabels[s_page]);
+        lv_label_set_text_static(s_hintNext, nextLabels[s_page]);
+    }
+
+    static bool lastActive[3] = {false, false, false};
+    lv_obj_t* hints[3] = {s_hintPrimary, s_hintPrev, s_hintNext};
+    for (uint8_t i = 0; i < 3; i++) {
+        bool active = (int32_t)(s_buttonActiveUntil[i] - now) > 0;
+        if (active == lastActive[i]) continue;
+        lastActive[i] = active;
+        lv_obj_set_style_text_color(
+            hints[i], lv_color_hex(active ? Theme::StatusCyan : Theme::HUDDim), 0);
+    }
+}
+
 // One full-fill gauge row: label | bar (fill = pct) | % numeral | reset.
 static void renderGaugeRow(lv_obj_t* parent, int y, const char* label,
                            float pct, const char* reset) {
-    lv_obj_t* name = makeLabel(parent, &lv_font_montserrat_14, Theme::HUDText, label);
+    lv_obj_t* name = makeLabel(parent, &lv_font_montserrat_16, Theme::HUDText, label);
     lv_obj_align(name, LV_ALIGN_TOP_LEFT, 10, y + 8);
 
     lv_obj_t* track = lv_obj_create(parent);
     lv_obj_remove_style_all(track);
-    lv_obj_set_size(track, 240, 30);
+    lv_obj_set_size(track, 250, 34);
     lv_obj_set_style_bg_color(track, lv_color_hex(Theme::MidWater), 0);
     lv_obj_set_style_bg_opa(track, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(track, 4, 0);
-    lv_obj_align(track, LV_ALIGN_TOP_LEFT, 110, y);
+    lv_obj_align(track, LV_ALIGN_TOP_LEFT, 118, y);
 
     bool haveData = pct >= 0.0f;
     if (haveData) {
         float clamped = pct > 100.0f ? 100.0f : pct;
-        int w = (int)(240.0f * clamped / 100.0f);
+        int w = (int)(250.0f * clamped / 100.0f);
         if (w > 0) {
             lv_obj_t* fill = lv_obj_create(track);
             lv_obj_remove_style_all(fill);
-            lv_obj_set_size(fill, w < 4 ? 4 : w, 30);
+            lv_obj_set_size(fill, w < 4 ? 4 : w, 34);
             lv_obj_set_style_bg_color(fill, lv_color_hex(gaugeColor(clamped)), 0);
             lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
             lv_obj_set_style_radius(fill, 4, 0);
@@ -137,16 +229,16 @@ static void renderGaugeRow(lv_obj_t* parent, int y, const char* label,
         // colors, white numerals).
         char pctText[8];
         snprintf(pctText, sizeof(pctText), "%d%%", (int)clamped);
-        lv_obj_t* p = makeLabel(track, &lv_font_montserrat_14, 0xFFFFFF, pctText);
+        lv_obj_t* p = makeLabel(track, &lv_font_montserrat_18, 0xFFFFFF, pctText);
         lv_obj_align(p, LV_ALIGN_LEFT_MID, 8, 0);
     } else {
-        lv_obj_t* p = makeLabel(track, &lv_font_montserrat_14, Theme::HUDFaint, "--");
+        lv_obj_t* p = makeLabel(track, &lv_font_montserrat_18, Theme::HUDFaint, "--");
         lv_obj_align(p, LV_ALIGN_LEFT_MID, 8, 0);
     }
 
-    lv_obj_t* r = makeLabel(parent, &lv_font_montserrat_12, Theme::HUDDim,
+    lv_obj_t* r = makeLabel(parent, &lv_font_montserrat_14, Theme::HUDDim,
                             (haveData && reset[0]) ? reset : "");
-    lv_obj_align(r, LV_ALIGN_TOP_LEFT, 362, y + 9);
+    lv_obj_align(r, LV_ALIGN_TOP_LEFT, 378, y + 9);
 }
 
 static void renderUsagePage() {
@@ -191,16 +283,16 @@ static void renderUsagePage() {
         return;
     }
 
-    int areaH = haveSubs ? 174 : 198;
+    int areaH = haveSubs ? BODY_H - 24 : BODY_H;
     int pitch = n > 0 ? areaH / (n > 0 ? n : 1) : 0;
-    if (pitch > 52) pitch = 52;
+    if (pitch > 48) pitch = 48;
     for (uint8_t i = 0; i < n; i++) {
-        renderGaugeRow(s_body, 4 + i * pitch, rows[i].label, rows[i].pct, rows[i].reset);
+        renderGaugeRow(s_body, 2 + i * pitch, rows[i].label, rows[i].pct, rows[i].reset);
     }
 
     if (haveSubs) {
         Utf8::sanitizeLvglText(subsLine);
-        lv_obj_t* s = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDDim, subsLine);
+        lv_obj_t* s = makeLabel(s_body, &lv_font_montserrat_14, Theme::HUDDim, subsLine);
         lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
         lv_obj_set_width(s, 460);
         lv_obj_align(s, LV_ALIGN_BOTTOM_LEFT, 10, -3);
@@ -240,7 +332,7 @@ static void renderFocusPage(const FocusSnap& f, bool connected) {
         // Full-height amber attention bar — the strip's "needs you" tint.
         lv_obj_t* bar = lv_obj_create(s_body);
         lv_obj_remove_style_all(bar);
-        lv_obj_set_size(bar, 6, 200);
+        lv_obj_set_size(bar, 7, BODY_H);
         lv_obj_set_style_bg_color(bar, lv_color_hex(Theme::StatusAmber), 0);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 0, 0);
@@ -248,41 +340,60 @@ static void renderFocusPage(const FocusSnap& f, bool connected) {
 
     lv_obj_t* dot = lv_obj_create(s_body);
     lv_obj_remove_style_all(dot);
-    lv_obj_set_size(dot, 12, 12);
+    lv_obj_set_size(dot, 14, 14);
     lv_obj_set_style_bg_color(dot, lv_color_hex(stateColorOf(f.state)), 0);
     lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(dot, 6, 0);
-    lv_obj_align(dot, LV_ALIGN_TOP_LEFT, 14, 12);
+    lv_obj_set_style_radius(dot, 7, 0);
+    lv_obj_align(dot, LV_ALIGN_TOP_LEFT, 15, 14);
 
-    lv_obj_t* brand = makeLabel(s_body, &lv_font_montserrat_14,
+    lv_obj_t* brand = makeLabel(s_body, &lv_font_montserrat_16,
                                 agentColor(f.agentType), agentShortLabel(f.agentType));
-    lv_obj_align(brand, LV_ALIGN_TOP_LEFT, 34, 9);
+    lv_obj_align(brand, LV_ALIGN_TOP_LEFT, 37, 11);
 
     lv_obj_t* proj = makeLabel(s_body, &font_kr_16, Theme::HUDText,
                                f.projectName[0] ? f.projectName : "(no project)");
-    lv_obj_set_width(proj, 250);
+    lv_obj_set_width(proj, 235);
     lv_label_set_long_mode(proj, LV_LABEL_LONG_DOT);
-    lv_obj_align(proj, LV_ALIGN_TOP_LEFT, 130, 7);
+    lv_obj_align(proj, LV_ALIGN_TOP_LEFT, 132, 11);
 
-    lv_obj_t* st = makeLabel(s_body, &lv_font_montserrat_12,
-                             stateColorOf(f.state), f.state);
-    lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -10, 10);
+    const char* status = f.awaiting ? "NEEDS INPUT"
+                       : strcmp(f.state, "processing") == 0 ? "WORKING"
+                       : strcmp(f.state, "idle") == 0 ? "READY" : f.state;
+    lv_obj_t* st = makeLabel(s_body, &lv_font_montserrat_14,
+                             stateColorOf(f.state), status);
+    lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -10, 12);
 
-    // The caption — one big readable line (well, up to four wrapped).
+    // A single high-contrast thought, with generous leading. Limiting its box
+    // keeps the interaction hint stable instead of letting logs fill the strip.
     lv_obj_t* cap = makeLabel(s_body, &font_kr_16, Theme::HUDText, f.caption);
     lv_obj_set_width(cap, 452);
     lv_label_set_long_mode(cap, LV_LABEL_LONG_WRAP);
-    lv_obj_set_height(cap, 128);
-    lv_obj_align(cap, LV_ALIGN_TOP_LEFT, 16, 38);
+    lv_obj_set_style_text_line_space(cap, 6, 0);
+    lv_obj_set_height(cap, f.awaiting ? 62 : 92);
+    lv_obj_align(cap, LV_ALIGN_TOP_LEFT, 16, 51);
 
     bool flashOn = s_flashText[0] != '\0';
-    const char* hint = flashOn ? s_flashText
-        : f.awaiting ? "tap: approve   hold: deny"
-                     : "";
-    if (hint[0]) {
-        lv_obj_t* h = makeLabel(s_body, &lv_font_montserrat_12,
-                                flashOn ? Theme::StatusGreen : Theme::StatusAmber, hint);
-        lv_obj_align(h, LV_ALIGN_BOTTOM_LEFT, 16, -4);
+    if (f.awaiting && !flashOn) {
+        auto actionChip = [&](int x, int w, const char* label, uint32_t color) {
+            lv_obj_t* chip = lv_obj_create(s_body);
+            lv_obj_remove_style_all(chip);
+            lv_obj_set_size(chip, w, 34);
+            lv_obj_set_pos(chip, x, BODY_H - 38);
+            lv_obj_set_style_bg_color(chip, lv_color_hex(color), 0);
+            lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(chip, 5, 0);
+            lv_obj_t* text = makeLabel(chip, &lv_font_montserrat_16, 0xFFFFFF, label);
+            lv_obj_align(text, LV_ALIGN_CENTER, 0, 0);
+        };
+        actionChip(272, 92, "DENY", Theme::StatusRed);
+        actionChip(372, 96, "APPROVE", Theme::StatusGreen);
+        lv_obj_t* hint = makeLabel(s_body, &lv_font_montserrat_12,
+                                   Theme::HUDFaint, "tap a labelled action");
+        lv_obj_align(hint, LV_ALIGN_BOTTOM_LEFT, 16, -11);
+    } else if (flashOn) {
+        lv_obj_t* h = makeLabel(s_body, &lv_font_montserrat_14,
+                                Theme::StatusGreen, s_flashText);
+        lv_obj_align(h, LV_ALIGN_BOTTOM_LEFT, 16, -10);
     }
 }
 
@@ -292,19 +403,41 @@ static void renderSessionsPage() {
         char projectName[40];
         char state[20];
         char line[100];
-    } rows[5];
+        bool focused;
+    } rows[3];
     uint8_t n = 0;
+    s_sessionRowCount = 0;
+    memset(s_sessionRowIds, 0, sizeof(s_sessionRowIds));
     lockState();
-    for (uint8_t i = 0; i < g_state.sessionCount && n < 5; i++) {
-        const SessionInfo& s = g_state.sessions[i];
+    uint8_t order[10];
+    uint8_t orderCount = 0;
+    auto addIndex = [&](uint8_t idx) {
+        for (uint8_t j = 0; j < orderCount; j++) if (order[j] == idx) return;
+        if (orderCount < 10) order[orderCount++] = idx;
+    };
+    // Preserve the same glance priority as Focus: waits, explicit focus, work,
+    // then the remaining roster. Three readable rows beat five tiny ones.
+    for (uint8_t i = 0; i < g_state.sessionCount; i++)
+        if (strstr(g_state.sessions[i].state, "awaiting") != nullptr) addIndex(i);
+    for (uint8_t i = 0; i < g_state.sessionCount; i++)
+        if (sameSessionId(g_state.sessions[i].id, g_state.focusedSessionId)) addIndex(i);
+    for (uint8_t i = 0; i < g_state.sessionCount; i++)
+        if (strcmp(g_state.sessions[i].state, "processing") == 0) addIndex(i);
+    for (uint8_t i = 0; i < g_state.sessionCount; i++) addIndex(i);
+
+    for (uint8_t oi = 0; oi < orderCount && n < 3; oi++) {
+        const SessionInfo& s = g_state.sessions[order[oi]];
         strncpy(rows[n].agentType, s.agentType, sizeof(rows[n].agentType));
         strncpy(rows[n].projectName, s.projectName, sizeof(rows[n].projectName));
         strncpy(rows[n].state, s.state, sizeof(rows[n].state));
         // Glance rule: milestone line, live tool belongs to state surfaces.
         strncpy(rows[n].line, s.lastEventText[0] ? s.lastEventText : s.activity,
                 sizeof(rows[n].line));
+        rows[n].focused = sameSessionId(s.id, g_state.focusedSessionId);
+        strncpy(s_sessionRowIds[n], s.id, sizeof(s_sessionRowIds[n]) - 1);
         n++;
     }
+    s_sessionRowCount = n;
     unlockState();
 
     if (n == 0) {
@@ -317,35 +450,51 @@ static void renderSessionsPage() {
     for (uint8_t i = 0; i < n; i++) {
         Utf8::sanitizeLvglText(rows[i].projectName);
         Utf8::sanitizeLvglText(rows[i].line);
-        int y = 2 + i * 39;
+        const int pitch = BODY_H / 3;
+        int y = 1 + i * pitch;
+
+        if (rows[i].focused || strstr(rows[i].state, "awaiting") != nullptr) {
+            lv_obj_t* rail = lv_obj_create(s_body);
+            lv_obj_remove_style_all(rail);
+            lv_obj_set_size(rail, 4, pitch - 5);
+            lv_obj_set_style_bg_color(
+                rail, lv_color_hex(strstr(rows[i].state, "awaiting") != nullptr
+                                       ? Theme::StatusAmber : Theme::StatusCyan), 0);
+            lv_obj_set_style_bg_opa(rail, LV_OPA_COVER, 0);
+            lv_obj_align(rail, LV_ALIGN_TOP_LEFT, 2, y + 2);
+        }
 
         lv_obj_t* dot = lv_obj_create(s_body);
         lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, 8, 8);
+        lv_obj_set_size(dot, 10, 10);
         lv_obj_set_style_bg_color(dot, lv_color_hex(stateColorOf(rows[i].state)), 0);
         lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(dot, 4, 0);
-        lv_obj_align(dot, LV_ALIGN_TOP_LEFT, 10, y + 8);
+        lv_obj_set_style_radius(dot, 5, 0);
+        lv_obj_align(dot, LV_ALIGN_TOP_LEFT, 12, y + 8);
 
-        lv_obj_t* brand = makeLabel(s_body, &lv_font_montserrat_12,
+        lv_obj_t* brand = makeLabel(s_body, &lv_font_montserrat_14,
                                     agentColor(rows[i].agentType),
                                     agentShortLabel(rows[i].agentType));
-        lv_obj_align(brand, LV_ALIGN_TOP_LEFT, 26, y);
+        lv_obj_align(brand, LV_ALIGN_TOP_LEFT, 30, y);
 
-        lv_obj_t* proj = makeLabel(s_body, &font_kr_12, Theme::HUDText,
+        lv_obj_t* proj = makeLabel(s_body, &font_kr_16, Theme::HUDText,
                                    rows[i].projectName);
-        lv_obj_set_width(proj, 150);
+        lv_obj_set_width(proj, 220);
         lv_label_set_long_mode(proj, LV_LABEL_LONG_DOT);
-        lv_obj_align(proj, LV_ALIGN_TOP_LEFT, 108, y);
+        lv_obj_align(proj, LV_ALIGN_TOP_LEFT, 122, y - 1);
 
-        lv_obj_t* line = makeLabel(s_body, &font_kr_12, Theme::HUDDim, rows[i].line);
-        lv_obj_set_width(line, 200);
+        lv_obj_t* line = makeLabel(s_body, &font_kr_16, Theme::HUDDim, rows[i].line);
+        lv_obj_set_width(line, 430);
         lv_label_set_long_mode(line, LV_LABEL_LONG_DOT);
-        lv_obj_align(line, LV_ALIGN_TOP_LEFT, 268, y);
+        lv_obj_align(line, LV_ALIGN_TOP_LEFT, 30, y + 24);
 
-        lv_obj_t* st = makeLabel(s_body, &lv_font_montserrat_12,
-                                 stateColorOf(rows[i].state), rows[i].state);
-        lv_obj_align(st, LV_ALIGN_TOP_LEFT, 26, y + 16);
+        const char* rowStatus = rows[i].focused ? "FOCUS"
+                              : strstr(rows[i].state, "awaiting") ? "INPUT"
+                              : strcmp(rows[i].state, "processing") == 0 ? "WORK"
+                              : "READY";
+        lv_obj_t* st = makeLabel(s_body, &lv_font_montserrat_14,
+                                 stateColorOf(rows[i].state), rowStatus);
+        lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -12, y);
     }
 }
 
@@ -356,24 +505,51 @@ void create() {
     lv_obj_set_style_bg_color(s_scr, lv_color_hex(Theme::DeepSea), 0);
     lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, 0);
 
+    lv_obj_t* topRail = lv_obj_create(s_scr);
+    lv_obj_remove_style_all(topRail);
+    lv_obj_set_size(topRail, 480, KEY_RAIL_H);
+    lv_obj_set_style_bg_opa(topRail, LV_OPA_TRANSP, 0);
+    lv_obj_align(topRail, LV_ALIGN_TOP_LEFT, 0, 0);
+    // Upper pair, left → right: previous page, next page.
+    s_hintPrev = makeKeyHint(topRail, "SESS", KEY_HINT_X, Theme::HUDDim);
+    s_hintNext = makeKeyHint(topRail, "USAGE",
+                             KEY_HINT_X + KEY_HINT_W + KEY_HINT_GAP,
+                             Theme::HUDDim);
+
     lv_obj_t* header = lv_obj_create(s_scr);
     lv_obj_remove_style_all(header);
-    lv_obj_set_size(header, 480, 22);
+    lv_obj_set_size(header, 480, HEADER_H);
     lv_obj_set_style_bg_color(header, lv_color_hex(Theme::MidWater), 0);
     lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
-    lv_obj_align(header, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_align(header, LV_ALIGN_TOP_LEFT, 0, HEADER_Y);
 
-    s_headerLeft = makeLabel(header, &lv_font_montserrat_12, Theme::HUDText, "AGENTDECK");
-    lv_obj_align(s_headerLeft, LV_ALIGN_LEFT_MID, 10, 0);
-    s_headerRight = makeLabel(header, &lv_font_montserrat_12, Theme::HUDDim, "");
-    lv_obj_align(s_headerRight, LV_ALIGN_RIGHT_MID, -10, 0);
-    s_hdrWifi = makeLabel(header, &lv_font_montserrat_12, Theme::HUDDim, LV_SYMBOL_WIFI);
-    lv_obj_align(s_hdrWifi, LV_ALIGN_RIGHT_MID, -60, 0);
+    static const char* tabNames[3] = {"FOCUS", "USAGE", "SESSIONS"};
+    static const int tabX[3] = {10, 84, 158};
+    for (int i = 0; i < 3; i++) {
+        s_tabs[i] = makeLabel(header, &lv_font_montserrat_14, Theme::HUDDim, tabNames[i]);
+        lv_obj_set_pos(s_tabs[i], tabX[i], 7);
+    }
+    s_hdrBattery = makeLabel(header, &lv_font_montserrat_14, Theme::HUDDim, "");
+    lv_obj_align(s_hdrBattery, LV_ALIGN_RIGHT_MID, -32, 0);
+    s_hdrWifi = makeLabel(header, &lv_font_montserrat_14, Theme::HUDDim, LV_SYMBOL_WIFI);
+    lv_obj_align(s_hdrWifi, LV_ALIGN_RIGHT_MID, -8, 0);
 
     s_body = lv_obj_create(s_scr);
     lv_obj_remove_style_all(s_body);
-    lv_obj_set_size(s_body, 480, 200);
-    lv_obj_align(s_body, LV_ALIGN_TOP_LEFT, 0, 22);
+    lv_obj_set_size(s_body, 480, BODY_H);
+    lv_obj_align(s_body, LV_ALIGN_TOP_LEFT, 0, BODY_Y);
+
+    lv_obj_t* bottomRail = lv_obj_create(s_scr);
+    lv_obj_remove_style_all(bottomRail);
+    lv_obj_set_size(bottomRail, 480, KEY_RAIL_H);
+    lv_obj_set_style_bg_opa(bottomRail, LV_OPA_TRANSP, 0);
+    lv_obj_align(bottomRail, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    // Lower pair, left → right: hard power/reset, Focus/select.
+    s_hintReset = makeKeyHint(bottomRail, LV_SYMBOL_POWER,
+                              KEY_HINT_X, Theme::StatusRed);
+    s_hintPrimary = makeKeyHint(bottomRail, "FOCUS",
+                                KEY_HINT_X + KEY_HINT_W + KEY_HINT_GAP,
+                                Theme::HUDDim);
 
     lv_screen_load(s_scr);
     s_lastSig[0] = '\0';
@@ -381,31 +557,67 @@ void create() {
 
 void nextPage() {
     s_page = (uint8_t)((s_page + 1) % PAGE_COUNT);
-    s_lastCycleMs = millis();
 }
 
 void prevPage() {
     s_page = (uint8_t)((s_page + PAGE_COUNT - 1) % PAGE_COUNT);
-    s_lastCycleMs = millis();
 }
 
-void toggleAutoCycle() {
-    s_autoCycle = !s_autoCycle;
-    s_lastCycleMs = millis();
-}
-
-void onTouch(Input::TouchGesture g) {
-    if (g == Input::TouchGesture::NONE) return;
+void primaryAction() {
     if (s_page != 0) {
-        if (g == Input::TouchGesture::TAP) {
+        s_page = 0;
+        flash("focus");
+        return;
+    }
+    lockState();
+    int idx = pickFocusSession();
+    char sid[32] = {0};
+    if (idx >= 0) strncpy(sid, g_state.sessions[idx].id, sizeof(sid) - 1);
+    unlockState();
+    if (sid[0]) {
+        sendFocusSession(sid);
+        flash("focused");
+    }
+}
+
+void buttonFeedback(uint8_t button) {
+    if (button >= 3) return;
+    s_buttonActiveUntil[button] = millis() + 260;
+}
+
+void onTouch(const Input::TouchEvent& event) {
+    if (event.gesture == Input::TouchGesture::NONE) return;
+    if (event.gesture == Input::TouchGesture::SWIPE_LEFT) {
+        nextPage();
+        return;
+    }
+    if (event.gesture == Input::TouchGesture::SWIPE_RIGHT) {
+        prevPage();
+        return;
+    }
+    if (event.gesture != Input::TouchGesture::TAP) return;
+
+    // Header tabs are direct, generously spaced targets.
+    if (event.y < BODY_Y) {
+        if (event.x < 74) s_page = 0;
+        else if (event.x < 148) s_page = 1;
+        else if (event.x < 254) s_page = 2;
+        return;
+    }
+
+    if (s_page == 2) {
+        int row = (event.y - BODY_Y) / (BODY_H / 3);
+        if (row >= 0 && row < s_sessionRowCount && s_sessionRowIds[row][0]) {
+            sendFocusSession(s_sessionRowIds[row]);
             s_page = 0;
-            s_lastCycleMs = millis();
+            flash("focused from sessions");
         }
         return;
     }
-    // Focus page: answer the captioned awaiting session. Same fallback pair
-    // the knob/ips10 use: a held gate resolves via requestId, a live prompt
-    // via select_option(0) / escape.
+    if (s_page != 0) return;
+
+    // Approval is only sent from the visible, explicit bottom action chips.
+    // A stray tap or long press elsewhere can never answer a permission gate.
     FocusSnap f = {};
     lockState();
     int idx = pickFocusSession();
@@ -417,21 +629,26 @@ void onTouch(Input::TouchGesture g) {
         strncpy(f.requestId, sess.requestId, sizeof(f.requestId));
     }
     unlockState();
-    if (!f.have || !f.awaiting) return;
-    if (g == Input::TouchGesture::TAP) {
+    if (!f.have) return;
+    if (f.awaiting && event.y >= BODY_Y + BODY_H - 44 && event.x >= 372) {
         if (f.requestId[0]) sendPermissionDecision(f.requestId, true);
         else sendSelectOption(f.id, 0);
         flash("sent: approve");
-    } else {
+    } else if (f.awaiting && event.y >= BODY_Y + BODY_H - 44 &&
+               event.x >= 272 && event.x < 364) {
         if (f.requestId[0]) sendPermissionDecision(f.requestId, false);
         else sendSessionEscape(f.id);
         flash("sent: deny");
+    } else {
+        sendFocusSession(f.id);
+        flash("focused");
     }
 }
 
 void update(float dt) {
     (void)dt;
     uint32_t now = millis();
+    updateKeyHints(now);
 
     bool flashOn = s_flashText[0] && (int32_t)(s_flashUntilMs - now) > 0;
     if (!flashOn) s_flashText[0] = '\0';
@@ -445,16 +662,11 @@ void update(float dt) {
     unlockState();
     if (anyAwaitingNow && s_page != 0) {
         s_page = 0;
-        s_lastCycleMs = now;
-    }
-
-    if (!anyAwaitingNow && s_autoCycle && (uint32_t)(now - s_lastCycleMs) > AUTO_CYCLE_MS) {
-        s_page = (uint8_t)((s_page + 1) % PAGE_COUNT);
-        s_lastCycleMs = now;
     }
 
     bool wifiUp = Net::wifiConnected();
     bool wsUp = Net::wsConnected();
+    Input::PowerStatus power = Input::powerStatus();
 
     // Focus snapshot (page 0 content)
     FocusSnap focus = {};
@@ -477,8 +689,10 @@ void update(float dt) {
                 strncpy(focus.caption, sess.activity, sizeof(focus.caption));
             else if (strcmp(sess.state, "processing") == 0 && sess.currentTool[0])
                 strncpy(focus.caption, sess.currentTool, sizeof(focus.caption));
-            else
+            else if (sess.lastEventText[0])
                 strncpy(focus.caption, sess.lastEventText, sizeof(focus.caption));
+            else
+                strncpy(focus.caption, "Ready for the next task", sizeof(focus.caption));
             focus.caption[sizeof(focus.caption) - 1] = '\0';
         }
         unlockState();
@@ -487,26 +701,38 @@ void update(float dt) {
     }
 
     // Signature: page + coarse usage buckets + session states/lines.
-    char sig[224];
+    char sig[320];
     {
         lockState();
         int c5 = (int)g_state.fiveHourPercent, c7 = (int)g_state.sevenDayPercent;
         int x5 = (int)g_state.codexPrimaryPercent, x7 = (int)g_state.codexSecondaryPercent;
-        char sess[96] = {0};
+        char sess[128] = {0};
         size_t off = 0;
-        for (uint8_t i = 0; i < g_state.sessionCount && off < sizeof(sess) - 20; i++) {
-            off += snprintf(sess + off, sizeof(sess) - off, "%.8s:%.10s|",
-                            g_state.sessions[i].state, g_state.sessions[i].lastEventText);
+        for (uint8_t i = 0; i < g_state.sessionCount && off < sizeof(sess) - 28; i++) {
+            off += snprintf(sess + off, sizeof(sess) - off, "%.6s:%.8s:%.12s|",
+                            g_state.sessions[i].state,
+                            g_state.sessions[i].projectName,
+                            g_state.sessions[i].lastEventText);
         }
         uint8_t count = g_state.sessionCount;
         bool connected = g_state.wsConnected;
         uint8_t subsCount = g_state.subscriptionCount;
+        char focused[32];
+        strncpy(focused, g_state.focusedSessionId, sizeof(focused) - 1);
+        focused[sizeof(focused) - 1] = '\0';
+        char resets[42];
+        snprintf(resets, sizeof(resets), "%.9s|%.9s|%.9s|%.9s",
+                 g_state.fiveHourReset, g_state.sevenDayReset,
+                 g_state.codexPrimaryReset, g_state.codexSecondaryReset);
         unlockState();
-        snprintf(sig, sizeof(sig), "%d|%d.%d.%d.%d|%d|%d|%d%d%d|%.6s%.10s%.28s|%d|%s",
-                 s_page, c5, c7, x5, x7, subsCount, count,
+        snprintf(sig, sizeof(sig), "%d|%d.%d.%d.%d|%s|%d|%d|%d%d%d|%d|%d%d|%.20s|%.6s%.10s%.36s|%.31s|%s",
+                 s_page,
+                 c5, c7, x5, x7, resets, subsCount, count,
                  connected ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0,
+                 power.voltageMv / 20, power.charging ? 1 : 0, power.usbPowered ? 1 : 0,
+                 s_flashText,
                  focus.state, focus.projectName, focus.caption,
-                 flashOn ? 1 : 0, sess);
+                 focused, sess);
     }
     if (strcmp(sig, s_lastSig) == 0) return;
     strncpy(s_lastSig, sig, sizeof(s_lastSig) - 1);
@@ -515,12 +741,24 @@ void update(float dt) {
     lv_obj_set_style_text_color(
         s_hdrWifi,
         lv_color_hex(wsUp ? Theme::StatusGreen : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
-
-    char right[24];
-    snprintf(right, sizeof(right), "%s  %d/%d",
-             s_page == 0 ? "FOCUS" : s_page == 1 ? "USAGE" : "SESSIONS",
-             s_page + 1, PAGE_COUNT);
-    lv_label_set_text(s_headerRight, right);
+    for (int i = 0; i < 3; i++) {
+        lv_obj_set_style_text_color(s_tabs[i],
+            lv_color_hex(i == s_page ? Theme::StatusCyan : Theme::HUDDim), 0);
+    }
+    if (power.valid) {
+        char battery[24];
+        snprintf(battery, sizeof(battery), "%s%s %.2fV",
+                 power.charging ? LV_SYMBOL_CHARGE : "",
+                 LV_SYMBOL_BATTERY_FULL, power.voltageMv / 1000.0f);
+        lv_label_set_text(s_hdrBattery, battery);
+        lv_obj_set_style_text_color(s_hdrBattery,
+            lv_color_hex(power.charging ? Theme::StatusBlue : Theme::HUDDim), 0);
+    } else if (power.usbPowered) {
+        lv_label_set_text(s_hdrBattery, "USB");
+        lv_obj_set_style_text_color(s_hdrBattery, lv_color_hex(Theme::StatusBlue), 0);
+    } else {
+        lv_label_set_text(s_hdrBattery, "");
+    }
 
     lv_obj_clean(s_body);
     {

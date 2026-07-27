@@ -174,6 +174,7 @@ interface WifiEsp32Device {
   /** Peripheral telemetry/diag from capability-advertising boards. */
   capabilities?: string[];
   batteryPercent?: number;
+  batteryVoltageMv?: number;
   batteryCharging?: boolean;
   usbPowered?: boolean;
   batteryDiag?: number;
@@ -308,6 +309,7 @@ function registerWifiEsp32(d: Record<string, unknown>, ws: WebSocket): void {
     // fields were invisible here for a day for exactly this reason).
     capabilities: Array.isArray(d.capabilities) ? d.capabilities as string[] : undefined,
     batteryPercent: typeof d.batteryPercent === 'number' ? d.batteryPercent : undefined,
+    batteryVoltageMv: typeof d.batteryVoltageMv === 'number' ? d.batteryVoltageMv : undefined,
     batteryCharging: typeof d.batteryCharging === 'boolean' ? d.batteryCharging : undefined,
     usbPowered: typeof d.usbPowered === 'boolean' ? d.usbPowered : undefined,
     batteryDiag: typeof d.batteryDiag === 'number' ? d.batteryDiag : undefined,

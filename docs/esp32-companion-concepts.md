@@ -1,12 +1,20 @@
 # ESP32 companion concepts — T-Embed CC1101 and T-Display-S3-Pro
 
-This is a concept study for the two **Evaluation** boards in the [hardware compatibility sheet](hardware-compatibility.md): what role each would play if promoted to Shipping. Nothing in this document is implemented and nothing here is a compatibility claim. The premise is deliberate: neither board should be a port of the existing dashboard — each earns its place by doing something the current fleet cannot.
+This began as the promotion study for two Evaluation boards and now serves as
+the design record for their **Shipping** roles in the
+[hardware compatibility sheet](hardware-compatibility.md). Implemented sections
+are marked with dates; exploratory sections remain proposals. The premise is
+unchanged: neither board should be a port of an existing dashboard — each earns
+its place by doing something the current fleet cannot.
 
-The single most important fact shaping both concepts: **the daemon already speaks a complete steering vocabulary** on port 9120 — `focus_session`, `navigate_option`, `select_option`, `session_command{escape|interrupt|respond}`, `review_run`, `permission_decision` (`bridge/src/daemon-server.ts`). Today only the Stream Deck plugin, the Ulanzi plugin, and the ips10 touch mosaic use it. Core steering from a new device therefore needs **no new command types** — only a device that can drive the existing ones.
+The single most important fact shaping both concepts: **the daemon already speaks a complete steering vocabulary** on port 9120 — `focus_session`, `navigate_option`, `select_option`, `session_command{escape|interrupt|respond}`, `review_run`, `permission_decision` (`bridge/src/daemon-server.ts`). The Companion Knob now drives that same vocabulary used by the Stream Deck plugin, Ulanzi plugin, and ips10 touch mosaic; the Focus Strip observes its shared focus. Core steering therefore needs **no board-specific command types**.
 
 ## T-Embed CC1101 — "Companion Knob"
 
-> **Status (2026-07-25): the docked steering-knob mode below is implemented and hardware-verified** — PlatformIO env `t_embed`, spec-sheet status Shipping, WiFi OTA verified (`agentdeck esp32-ota t_embed`). Steering is verified against the Node daemon; the Swift-daemon steering pass, the portable pager (incl. BLE phone relay), voice, and the peripheral primitives remain future phases, and their gap rows below stay live.
+> **Status (2026-07-27): Shipping and hardware-verified.** Docked steering,
+> battery pager/chime, fuel gauge, NFC, IR receive, encoder push-to-talk,
+> host STT→session routing, and spoken replies through the board speaker are
+> implemented. BLE phone relay and CC1101 sub-GHz capture remain future work.
 
 The compatibility sheet already states the thesis: the T-Embed is the only unit in the fleet with a rotary encoder and the only bidirectional-input candidate — every Shipping board is output-only apart from touch. A rotary encoder is exactly the shape of the existing steering vocabulary: rotate = move a cursor, press = commit, long-press = back. The board is a **dual-mode companion**: docked on the desk it is a steering knob; unplugged it is a battery pager you carry around the house.
 
@@ -24,7 +32,14 @@ Detail-level commands are state-dependent, mirroring the Stream Deck grammar: an
 
 ### Mode A — docked steering knob
 
-USB-powered on the desk. The 1.9″ 320×170 panel shows the focused session's detail (agent glyph, state, current tool or question, elapsed time). The 8× WS2812 ring is a session-status ring — up to eight sessions, one LED each, colored with the semantic status tokens. Per the design system rule, **only amber awaiting animates**; kelp and coral stay static. The ring makes the knob glanceable from across the room even though the panel is small.
+USB-powered on the desk. At list level the 1.9″ 320×170 panel is a visual
+carousel: the selected session's canonical agent creature occupies the center,
+the previous/next creatures peek from the sides, and project/state/context sit
+below it. One encoder detent therefore changes a silhouette before it changes a
+line of text. Pressing enters the selected session's readable command detail.
+The 8× WS2812 ring is a session-status ring — up to eight sessions, one LED
+each, colored with the semantic status tokens. Per the design system rule,
+**only amber awaiting animates**; kelp and coral stay static.
 
 ### Mode B — portable pager
 
@@ -34,9 +49,22 @@ On its 1300 mAh battery the board roams the local WiFi. The panel sleeps; the ri
 
 ### Mode C — voice remote (staged)
 
-- **Stage 1 (no new audio code)**: the speaker doubles as the pager chime, and press-and-hold becomes a push-to-talk trigger for the host-side voice pipeline. Note the routing gap: the `voice {start|stop|cancel}` command is currently handled by the per-session bridge only, not `daemon-server` — daemon routing must be added before a daemon-attached device can trigger it.
+- **Stage 1 (shipped)**: the speaker doubles as the pager chime, and
+  press-and-hold triggers the daemon-owned push-to-talk pipeline.
 - **Stage 2 (on-device wake word)**: the dormant `esp32/src/audio/wake_word.*` path (`BOARD_HAS_AUDIO`, currently defined in no env) is the revival candidate, using the onboard mic for local inference only — hands-free arming for stage 3 without streaming anything by default.
-- **Stage 3 — shipped 2026-07-26 (capture + transcribe + route)**: hold the side key, speak, release. The board streams PCM16 over **binary WS frames** bracketed by `voice_begin`/`voice_end` (never the ~200-byte text outbox); the daemon assembles a WAV, transcribes it with Apple's on-device recognizer through the bundled Swift helper, echoes `voice_result` back for the screen, and routes the text as a prompt to **the session the knob was pointing at** (the `voice_begin` frame carries that session id). Keep holding past 6 s and it becomes a power-off instead — far beyond any spoken command, so a long sentence can never shut the board down mid-word. Transcription locale is `voice.locale` in settings.json; without it the recognizer uses the system locale, which mangles speech in another language. Delivery is hardware-verified for observed sessions of any agent: because such a session has no command channel of its own, the transcript is typed into the terminal that owns it through the same injection ladder as the option keys, and `voice_result` reports whether that actually happened so a dropped prompt shows as `NOT sent` instead of looking like success. The reply comes back the same way: when that session's turn completes, the answer is synthesized to 16 kHz mono on the host and streamed to the board's own amplifier, which is the point of a device you carried away from the desk. Audio travels as binary WebSocket frames, or base64 inside JSON lines when the board is attached over USB — the serial transport is line-delimited, and raw PCM would tear that framing. Code-only answers are announced rather than read aloud.
+- **Stage 3 — shipped 2026-07-26 (capture + transcribe + route)**: hold the
+  **encoder at list level**, speak, release. The CC1101 variant has no exposed
+  side key; power-off therefore lives in the detail menu. The board streams
+  PCM16 over **binary WS frames** bracketed by `voice_begin`/`voice_end` (never
+  the ~200-byte text outbox); the daemon assembles a WAV, transcribes it with
+  Apple's on-device recognizer through the bundled Swift helper, echoes
+  `voice_result` back for the screen, and routes the text as a prompt to **the
+  session the knob was pointing at**. Transcription locale is `voice.locale` in
+  settings.json; without it the recognizer uses the system locale. Delivery is
+  hardware-verified for observed sessions of any agent. The reply is synthesized
+  to 16 kHz mono on the host and streamed to the board amplifier; USB transport
+  carries the same PCM base64-wrapped in line-delimited JSON. Code-only answers
+  are announced rather than read aloud.
 - **Stage 3 original sketch**: press-and-hold (or wake word), speak a question, release. The board streams mic audio to the daemon over a **binary WS side-channel** (the ~200-byte text outbox is explicitly not this path; PCM16 mono at 16 kHz is well within WiFi budget), host-side STT turns it into a prompt for the focused session — or a dedicated lightweight ask-agent when nothing is focused — and the reply comes back as host-side TTS audio streamed to the speaker, with the reply text mirrored on the panel. The board contributes exactly a microphone, a speaker, and a button; every heavy stage (STT, agent, TTS) stays on the host. Cost-sensitive defaults apply end to end: on-host local engines by default, API engines opt-in.
 
 ### Peripheral primitives — ship the floor, explore the ceiling
@@ -77,25 +105,57 @@ A ten-concept external study of the T-Embed form factor ("AI ORBIT CONTROLLER") 
 
 Hardware caveat: the study describes the **base** T-Embed (7-LED ring, dual mic, 1200 mAh, no radios). The on-hand unit is the CC1101 variant — 8-LED ring, single mic + speaker, 1300 mAh, plus the NFC/IR/sub-GHz set — so counts and peripherals in the spec sheet stay authoritative.
 
-## T-Display-S3-Pro — "Tide Ticker"
+## T-Display-S3-Pro — "Focus Strip"
 
-The 2.33″ 480×222 wide strip is the wrong shape for a terrarium and the right shape for a **ticker**: a always-on strip below the monitor or in front of the keyboard, showing the numbers a working session makes you tab away to check. It is a stationary desk fixture (USB-powered; the 470 mAh cell only bridges cable swaps).
+The 2.33″ 480×222 wide strip is the wrong shape for a terrarium and the right shape for a **Focus Strip**: an always-on surface below the monitor or in front of the keyboard. It is a stationary desk fixture (USB-powered; the 470 mAh cell only bridges cable swaps).
 
-Three pages, cycled with the three physical hardware buttons (reusing the TC001 `matrix_buttons` debounce/short-long idiom):
+Three direct pages ship. The split rocker (`GPIO12/16`) moves previous/next,
+`BOOT` (`GPIO0`) returns to or confirms Focus, and the fourth physical button,
+`RST`, remains an unconditional hardware recovery path. Touch mirrors the
+rocker with horizontal swipes and exposes three direct header tabs:
 
+In landscape, short 44 px live key capsules sit directly beside the matching
+buttons near the right end of the two long edges. In landscape, the upper pair
+is previous-page + next-page from left to right; the lower pair is power icon +
+Focus from left to right. Page destinations update as compact `SESS` / `USAGE`
+/ `FOCUS` labels and the pressed app key briefly lights cyan. The power/reset
+button is shown only as a power icon, matching the visible screen-off result
+rather than exposing the electrical reset name.
+The labels and widgets are static/flash-backed so this spatial affordance does
+not add render-loop allocation.
+
+- **Focus** — one prioritized session and one readable thought. Awaiting input
+  owns the page and renders separate, labelled **Deny** and **Approve** touch
+  targets. Generic taps and holds never answer a gate. Otherwise the explicit
+  daemon focus wins, followed by processing and roster fallback.
 - **Usage** — Claude and Codex quota windows (5 h primary, 7 d secondary) as full-height gauges with reset countdowns: the permanent large-format version of the Stream Deck E2/E3 dials. Gauges follow the established gauge grammar: full fill, sharp stage colors, white numerals.
-- **APME** — the composite score trend and the current Pareto **Recommend** verdict (which model for which category), resident on the desk instead of inside the dashboard's Recommend tab. Known gap: `apme_*` events are stripped from the ESP32 forward filter today, so this page needs either a compact board-facing summary event or a whitelist extension (see gap table).
-- **Ticker** — a one-line timeline milestone ticker following the glance rules: card detail shows milestones, live tool activity belongs to state, task rows are excluded from glance surfaces.
+- **Sessions** — the three highest-value rows (awaiting, explicit focus,
+  processing, then roster order), with project and latest milestone. This
+  deliberately replaces the earlier five-row tiny-text layout.
 
-Touch adds drill-down, not navigation: tap a gauge for the exact reset time, tap the recommend row for the runner-up and rationale. The **LTR-553 ambient light sensor** makes this the first board where the display-sleep contract gets a sensor input — brightness follows room light and the strip dims itself at night, handled entirely locally (no protocol change). Note the V1.1 backlight constraint from the spec sheet: constant-current drive with 16 levels, `USING_DISPLAY_PRO_V1` must stay undefined on the on-hand units, so the dim curve is quantized.
+Touch is first-class navigation: tap a header tab, swipe between pages, or tap a
+Sessions row to focus it. The **LTR-553 ambient light sensor** makes this the
+first board where the display-sleep contract gets a sensor input — brightness
+follows room light and the strip dims itself at night, handled entirely locally.
+The SY6970 charger has no coulomb-counting state-of-charge register, so its
+header reports the continuously sampled **cell voltage and charge state** rather
+than presenting an invented percentage. Note the V1.1 backlight constraint from
+the spec sheet: constant-current drive with 16 levels,
+`USING_DISPLAY_PRO_V1` must stay undefined on the on-hand units.
 
-**Desk-set pairing**: when the Companion Knob focuses a session, the Ticker receives the focus broadcast and highlights that session's usage and eval numbers — the two boards compose into one steering-plus-instrumentation desk set.
+**Desk-set pairing (implemented 2026-07-27)**: entering a session on the
+Companion Knob sends `focus_session`; the daemon's `focusedSessionId` is retained
+by the ESP32 state model, so the Focus Strip immediately follows that session
+and marks it in Sessions. A genuine response-wait still outranks focus. External
+focus broadcasts also move the Knob carousel once without fighting subsequent
+local rotation.
 
 **Exploratory**: the optional GC0308 camera could provide on-device presence detection for display wake (never streamed, never stored — on-device only as a hard privacy line). Deferred regardless: the camera's SCCB lines share the I2C bus with touch, the PMU, and the light sensor, so capture would degrade touch responsiveness.
 
-## Promotion gaps — Evaluation → Shipping checklist
+## Implementation record and remaining gaps
 
-What has to exist before either concept runs. This is the implementation session's checklist, not a design open question.
+Closed rows record what made Shipping possible; open rows are deliberate future
+work rather than hidden requirements of the current UI.
 
 | Gap | Where | Needed by |
 |---|---|---|
@@ -104,12 +164,12 @@ What has to exist before either concept runs. This is the implementation session
 | ~~`prepareForSerial` strips what the knob needs~~ — corrected 2026-07-25: both daemons already forward per-session `question`/`promptType`/`options`; only `requestId` is missing (neither daemon sends it), so approve/deny run the ips10 fallback (`select_option(0)`/`escape`) until it lands | `bridge/src/esp32-serial.ts` + Swift twin | Knob (works today; requestId later) |
 | Firmware outbound frames capped at ~200 bytes (`OUTBOX_LEN`) | `esp32/src/net/ws_client.cpp` | Any `respond`/`send_prompt`-class command |
 | ~~No LVGL encoder indev~~ — closed 2026-07-25: the knob consumes encoder events directly (`src/input/encoder.cpp` ISR decode → `ui/knob/` grammar); no LVGL indev/`lv_group` was needed | `esp32/src/ui/knob/` | Knob (done) |
-| `device_info` has no capability advertisement beyond OTA — battery, NFC, audio cannot be announced | `shared/src/protocol.ts` | Pager battery reporting, peripheral primitives, voice |
-| No `peripheral_event` / `peripheral_command` frames — NFC, IR, and sub-GHz have no protocol representation in either direction | `shared/src/protocol.ts` + daemon mapping config | Peripheral primitives |
+| ~~`device_info` has no capability advertisement~~ — closed: T-Embed advertises battery, NFC, IR, audio input/output and returns battery diagnostics | `shared/src/protocol.ts` + `esp32/src/net/protocol.cpp` | Done |
+| ~~No device→daemon peripheral frame~~ — closed for `peripheral_event` + NFC/IR receive/mapping. Daemon→device `peripheral_command`, IR replay, and sub-GHz capture remain open | `shared/src/protocol.ts` + daemon mapping config | RX floor done; actuation/sub-GHz later |
 | No BLE link on either end — firmware exposes no GATT service, and the mobile apps have no BLE central/relay role (plus the app-side relay needs a product-tier decision) | `esp32/` + `apple/` / `android/` | Phone-paired portable transport |
-| No audio streaming channel (text-frame WS only, ~200 B outbox) and no daemon-side STT→prompt / reply→TTS routing | `esp32/src/net/` + daemon voice pipeline | AI speaker (Mode C stage 3) |
-| `apme_*` events stripped by the ESP32 forward filter | `SERIAL_FORWARDED_EVENTS` in `shared/src/protocol.ts` | Ticker APME page |
-| `voice` command is session-bridge-only, not routed by `daemon-server` | `bridge/src/index.ts` vs `bridge/src/daemon-server.ts` | Voice stage 1 |
+| ~~No audio streaming/STT/TTS path~~ — closed: binary WS + base64 serial PCM, host STT→prompt, host TTS→board speaker, and explicit result/error feedback ship | `esp32/src/net/` + daemon voice pipeline | Done |
+| `apme_*` events remain outside the ESP32 forward filter. The shipping Focus Strip intentionally uses Focus/Usage/Sessions; forwarding is needed only if an exploratory APME page is revived | `SERIAL_FORWARDED_EVENTS` in `shared/src/protocol.ts` | Future only |
+| ~~Session-bridge-only `voice` command blocked daemon devices~~ — replaced by daemon-owned `voice_begin`/`voice_end` capture and reply routing | `bridge/src/daemon-server.ts` | Done |
 | New-board bring-up is a ~10-step compile-time checklist (board header, env, partitions, `display.cpp`, `main.cpp`, two duplicated board-string ladders, OTA list, docs) | `esp32/` | Both boards |
 | ~~No factory-firmware backup for the T-Display-S3-Pro~~ — closed 2026-07-25: 16 MB image captured and spot-verified | [`esp32/backups/MANIFEST.md`](../esp32/backups/MANIFEST.md) | Done |
 

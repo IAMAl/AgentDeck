@@ -12,6 +12,7 @@ namespace Input {
 struct PowerStatus {
     bool valid;        // gauge answered — battery UI may render
     uint8_t soc;       // state of charge, 0-100 %
+    uint16_t voltageMv;// measured cell voltage when the PMU exposes it
     bool usbPowered;   // charger power-good (VBUS present)
     bool charging;     // charger actively charging (pre/fast charge)
     // Last-read diagnostics, surfaced through device_info so a failing I2C
@@ -32,8 +33,7 @@ void powerPoll(uint32_t nowMs);
 
 PowerStatus powerStatus();
 
-// Clean shutdown: latch the power rail off (battery operation dies here) and
-// deep-sleep as the USB-powered fallback, waking on the side key.
+// Clean shutdown on boards that support a software power latch.
 void powerOff();
 
 }  // namespace Input

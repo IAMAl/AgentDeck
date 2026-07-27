@@ -544,6 +544,8 @@ export interface DeviceInfoMessage {
   capabilities?: string[];
   /** Battery state of charge 0-100 (boards with a fuel gauge, e.g. t_embed). */
   batteryPercent?: number;
+  /** Measured cell voltage for charger-only boards without a fuel-gauge SOC. */
+  batteryVoltageMv?: number;
   /** Charger reports active charging. */
   batteryCharging?: boolean;
   /** Charger reports external (USB) power good. */

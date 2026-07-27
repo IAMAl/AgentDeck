@@ -1,6 +1,6 @@
 #pragma once
 
-// ===== LilyGO T-Display-S3-Pro V1.1 (ST7796U 2.33" 480x222 + 3 buttons) =====
+// ===== LilyGO T-Display-S3-Pro V1.1 (ST7796U 2.33" 480x222 + touch) =====
 // MCU: ESP32-S3R8 (16MB QSPI flash, 8MB octal PSRAM)
 // The "Tide Ticker": a wide always-on desk strip (usage gauges + session
 // ticker). Pin map source: vendor examples/AdjustBacklight/utilities.h.
@@ -20,7 +20,9 @@
 #define BOARD_PIN_SPI_RST    47
 #define BOARD_PIN_BL         48
 
-// Buttons (active LOW). BTN1 sits on GPIO0 (boot strap — runtime-safe).
+// Four physical buttons: RST is wired directly to reset; the three
+// app-readable active-LOW controls are BOOT and the two halves of the rocker.
+// BTN1 sits on GPIO0 (boot strap — runtime-safe).
 #define BOARD_PIN_BTN1       0
 #define BOARD_PIN_BTN2       12
 #define BOARD_PIN_BTN3       16

@@ -8,6 +8,7 @@
 #include "../display.h"
 #include "../theme.h"
 #include "../agent_label.h"
+#include "../terrarium/creature_glyphs_generated.h"
 #include "../../util/utf8.h"
 
 #include <Arduino.h>
@@ -40,7 +41,7 @@ struct MenuItem {
 };
 
 static constexpr uint8_t MENU_MAX = SESSION_OPTIONS_CAP + 5;
-static constexpr uint8_t MENU_VISIBLE = 4;
+static constexpr uint8_t MENU_VISIBLE = 3;
 
 // Snapshot of the one session the UI is looking at (copied under lock).
 struct SessionSnap {
@@ -66,6 +67,7 @@ static int s_menuScroll = 0;
 static MenuItem s_menu[MENU_MAX];
 static uint8_t s_menuCount = 0;
 static char s_detailSessionId[32] = {0};  // session the detail view entered
+static char s_lastSharedFocus[32] = {0};
 
 // History scrub cursor: -1 = pin to latest entry once the backfill lands.
 static int s_scrubIdx = -1;
@@ -94,6 +96,44 @@ static lv_obj_t* s_body = nullptr;
 static lv_obj_t* s_footer = nullptr;
 
 static char s_lastSig[256] = {0};  // content signature — rebuild body on change
+
+// Canonical agent creatures, kept as flash-backed A8 masks. LVGL recolors the
+// masks at draw time, so the wheel carousel needs no runtime bitmap allocation.
+static lv_image_dsc_t s_glyphClaude;
+static lv_image_dsc_t s_glyphOpenClaw;
+static lv_image_dsc_t s_glyphOpenCode;
+static lv_image_dsc_t s_glyphCodex;
+static lv_image_dsc_t s_glyphAntigravity;
+
+static void buildGlyph(lv_image_dsc_t& glyph, const uint8_t* data, int w, int h) {
+    glyph.header.magic = LV_IMAGE_HEADER_MAGIC;
+    glyph.header.cf = LV_COLOR_FORMAT_A8;
+    glyph.header.flags = 0;
+    glyph.header.w = w;
+    glyph.header.h = h;
+    glyph.header.stride = w;
+    glyph.data_size = (uint32_t)(w * h);
+    glyph.data = data;
+}
+
+static void initGlyphs() {
+    using namespace CreatureGlyphs;
+    buildGlyph(s_glyphClaude, OCTOPUS_A8, OCTOPUS_W, OCTOPUS_H);
+    buildGlyph(s_glyphOpenClaw, OPENCLAW_MARK_A8, OPENCLAW_MARK_W, OPENCLAW_MARK_H);
+    buildGlyph(s_glyphOpenCode, OPENCODE_A8, OPENCODE_W, OPENCODE_H);
+    buildGlyph(s_glyphCodex, CODEX_A8, CODEX_W, CODEX_H);
+    buildGlyph(s_glyphAntigravity, ANTIGRAVITY_A8, ANTIGRAVITY_W, ANTIGRAVITY_H);
+}
+
+static const lv_image_dsc_t* glyphForAgent(const char* agentType) {
+    if (!agentType) return nullptr;
+    if (strstr(agentType, "openclaw")) return &s_glyphOpenClaw;
+    if (strstr(agentType, "opencode")) return &s_glyphOpenCode;
+    if (strstr(agentType, "antigravity")) return &s_glyphAntigravity;
+    if (strstr(agentType, "codex")) return &s_glyphCodex;
+    if (strstr(agentType, "claude")) return &s_glyphClaude;
+    return nullptr;
+}
 
 // ── outbound commands (thread-safe queue; drained on the network core) ──────
 
@@ -134,6 +174,13 @@ static void sendHistoryQuery(const char* sid) {
     char buf[112];
     snprintf(buf, sizeof(buf),
              "{\"type\":\"query_session_timeline\",\"sessionId\":\"%s\"}", sid);
+    Net::queueOutbound(buf);
+}
+
+static void sendFocusSession(const char* sid) {
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"focus_session\",\"sessionId\":\"%s\"}", sid);
     Net::queueOutbound(buf);
 }
 
@@ -395,26 +442,69 @@ static void renderListBody(bool connected, uint8_t sessionCount) {
     SessionSnap s;
     if (!snapshotSession(s_listIdx, s)) return;
 
-    // Agent brand chip + project name
-    lv_obj_t* brand = makeLabel(s_body, &lv_font_montserrat_14,
-                                agentColor(s.agentType),
-                                agentShortLabel(s.agentType));
-    lv_obj_align(brand, LV_ALIGN_TOP_LEFT, 8, 4);
+    // The encoder is a physical carousel: the selected agent creature owns the
+    // center, while the previous/next creatures peek in from either side. A
+    // detent now has an immediate visual identity change instead of merely
+    // replacing several similar text rows.
+    auto addCreature = [&](int idx, int x, int y, int scale, uint8_t opa) {
+        SessionSnap peer;
+        if (!snapshotSession(idx, peer)) return;
+        const lv_image_dsc_t* glyph = glyphForAgent(peer.agentType);
+        if (!glyph) return;
+        lv_obj_t* image = lv_image_create(s_body);
+        lv_image_set_src(image, glyph);
+        lv_image_set_scale(image, scale);
+        lv_obj_set_style_image_recolor(image, lv_color_hex(agentColor(peer.agentType)), 0);
+        lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+        lv_obj_set_style_opa(image, opa, 0);
+        lv_obj_set_pos(image, x, y);
+    };
+    if (sessionCount > 1) {
+        int prev = (s_listIdx + sessionCount - 1) % sessionCount;
+        int next = (s_listIdx + 1) % sessionCount;
+        addCreature(prev, 24, 8, 150, LV_OPA_40);
+        addCreature(next, 232, 8, 150, LV_OPA_40);
+    }
+
+    lv_obj_t* halo = lv_obj_create(s_body);
+    lv_obj_remove_style_all(halo);
+    lv_obj_set_size(halo, 78, 70);
+    lv_obj_set_style_bg_color(halo, lv_color_hex(Theme::MidWater), 0);
+    lv_obj_set_style_bg_opa(halo, LV_OPA_50, 0);
+    lv_obj_set_style_border_color(halo, lv_color_hex(stateColorOf(s.state)), 0);
+    lv_obj_set_style_border_width(halo, strstr(s.state, "awaiting") ? 3 : 1, 0);
+    lv_obj_set_style_radius(halo, 35, 0);
+    lv_obj_align(halo, LV_ALIGN_TOP_MID, 0, 0);
+
+    const lv_image_dsc_t* selectedGlyph = glyphForAgent(s.agentType);
+    if (selectedGlyph) {
+        lv_obj_t* image = lv_image_create(s_body);
+        lv_image_set_src(image, selectedGlyph);
+        lv_obj_set_style_image_recolor(image, lv_color_hex(agentColor(s.agentType)), 0);
+        lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+        lv_obj_align(image, LV_ALIGN_TOP_MID, 0, 3);
+    } else {
+        lv_obj_t* brand = makeLabel(s_body, &lv_font_montserrat_18,
+                                    agentColor(s.agentType), agentShortLabel(s.agentType));
+        lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 24);
+    }
 
     char elapsed[12];
     fmtElapsed(s.elapsedSec, elapsed, sizeof(elapsed));
     char stateLine[64];
-    snprintf(stateLine, sizeof(stateLine), "%s%s%s", statePhrase(s.state),
+    snprintf(stateLine, sizeof(stateLine), "%s  %s%s%s", agentShortLabel(s.agentType),
+             statePhrase(s.state),
              elapsed[0] ? " " LV_SYMBOL_BULLET " " : "", elapsed);
     lv_obj_t* st = makeLabel(s_body, &lv_font_montserrat_12,
                              stateColorOf(s.state), stateLine);
-    lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -8, 6);
+    lv_obj_align(st, LV_ALIGN_TOP_MID, 0, 68);
 
-    lv_obj_t* proj = makeLabel(s_body, &font_kr_12, Theme::HUDText,
+    lv_obj_t* proj = makeLabel(s_body, &font_kr_16, Theme::HUDText,
                                s.projectName[0] ? s.projectName : "(no project)");
     lv_obj_set_width(proj, 304);
+    lv_obj_set_style_text_align(proj, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(proj, LV_LABEL_LONG_DOT);
-    lv_obj_align(proj, LV_ALIGN_TOP_LEFT, 8, 26);
+    lv_obj_align(proj, LV_ALIGN_TOP_MID, 0, 84);
 
     // Context line: awaiting question > live tool > activity > last milestone.
     const char* ctx = "";
@@ -422,20 +512,21 @@ static void renderListBody(bool connected, uint8_t sessionCount) {
     else if (s.currentTool[0]) ctx = s.currentTool;
     else if (s.activity[0]) ctx = s.activity;
     else if (s.lastEventText[0]) ctx = s.lastEventText;
-    lv_obj_t* ctxl = makeLabel(s_body, &font_kr_12, Theme::HUDDim, ctx);
+    lv_obj_t* ctxl = makeLabel(s_body, &font_kr_16, Theme::HUDText, ctx);
     lv_obj_set_width(ctxl, 304);
-    lv_label_set_long_mode(ctxl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_height(ctxl, 48);
-    lv_obj_align(ctxl, LV_ALIGN_TOP_LEFT, 8, 46);
+    lv_obj_set_style_text_align(ctxl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ctxl, LV_LABEL_LONG_DOT);
+    lv_obj_set_height(ctxl, 20);
+    lv_obj_align(ctxl, LV_ALIGN_TOP_MID, 0, 105);
 
     // Awaiting badge: make "needs you" unmissable even on the context line.
     if (strstr(s.state, "awaiting") != nullptr) {
         lv_obj_t* bar = lv_obj_create(s_body);
         lv_obj_remove_style_all(bar);
-        lv_obj_set_size(bar, 3, 96);
+        lv_obj_set_size(bar, 4, 126);
         lv_obj_set_style_bg_color(bar, lv_color_hex(Theme::StatusAmber), 0);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
-        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 0, 2);
+        lv_obj_align(bar, LV_ALIGN_TOP_LEFT, 0, 0);
     }
 }
 
@@ -445,13 +536,14 @@ static void renderDetailBody(const SessionSnap& s) {
     if (strstr(s.state, "awaiting") && s.question[0]) head = s.question;
     else if (strcmp(s.state, "processing") == 0 && s.currentTool[0]) head = s.currentTool;
     else if (s.activity[0]) head = s.activity;
-    lv_obj_t* q = makeLabel(s_body, &font_kr_12, Theme::HUDText, head);
-    lv_obj_set_width(q, 304);
+    lv_obj_t* q = makeLabel(s_body, &font_kr_16, Theme::HUDText, head);
+    lv_obj_set_width(q, 262);
     lv_label_set_long_mode(q, LV_LABEL_LONG_WRAP);
-    lv_obj_set_height(q, 34);
+    lv_obj_set_height(q, 36);
     lv_obj_align(q, LV_ALIGN_TOP_LEFT, 8, 2);
 
-    // Menu window (4 rows x 20px)
+    // Three roomy rows are more legible than the former four 12px rows. The
+    // encoder makes the hidden remainder cheap to reach.
     if (s_menuIdx < s_menuScroll) s_menuScroll = s_menuIdx;
     if (s_menuIdx >= s_menuScroll + MENU_VISIBLE)
         s_menuScroll = s_menuIdx - MENU_VISIBLE + 1;
@@ -464,8 +556,8 @@ static void renderDetailBody(const SessionSnap& s) {
 
         lv_obj_t* rowObj = lv_obj_create(s_body);
         lv_obj_remove_style_all(rowObj);
-        lv_obj_set_size(rowObj, 312, 19);
-        lv_obj_align(rowObj, LV_ALIGN_TOP_LEFT, 4, 40 + row * 20);
+        lv_obj_set_size(rowObj, 312, 25);
+        lv_obj_align(rowObj, LV_ALIGN_TOP_LEFT, 4, 40 + row * 27);
         if (cur) {
             lv_obj_set_style_bg_color(rowObj, lv_color_hex(Theme::ShallowWater), 0);
             lv_obj_set_style_bg_opa(rowObj, LV_OPA_COVER, 0);
@@ -475,7 +567,7 @@ static void renderDetailBody(const SessionSnap& s) {
         char text[80];
         snprintf(text, sizeof(text), "%s%s%s", cur ? "> " : "  ", m.label,
                  m.recommended ? " *" : "");
-        lv_obj_t* l = makeLabel(rowObj, &font_kr_12,
+        lv_obj_t* l = makeLabel(rowObj, &font_kr_16,
                                 cur ? Theme::HUDText : Theme::HUDDim, text);
         lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
         lv_obj_set_width(l, 300);
@@ -487,7 +579,7 @@ static void renderDetailBody(const SessionSnap& s) {
         char pos[16];
         snprintf(pos, sizeof(pos), "%d/%d", s_menuIdx + 1, s_menuCount);
         lv_obj_t* p = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDFaint, pos);
-        lv_obj_align(p, LV_ALIGN_BOTTOM_RIGHT, -6, 0);
+        lv_obj_align(p, LV_ALIGN_TOP_RIGHT, -6, 3);
     }
 }
 
@@ -518,9 +610,10 @@ static void renderScrubBody() {
     lv_obj_t* h = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDFaint, head);
     lv_obj_align(h, LV_ALIGN_TOP_LEFT, 8, 2);
 
-    lv_obj_t* t = makeLabel(s_body, &font_kr_12, Theme::HUDText, cur.text);
+    lv_obj_t* t = makeLabel(s_body, &font_kr_16, Theme::HUDText, cur.text);
     lv_obj_set_width(t, 304);
     lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_line_space(t, 3, 0);
     lv_obj_set_height(t, 100);
     lv_obj_align(t, LV_ALIGN_TOP_LEFT, 8, 20);
 }
@@ -530,6 +623,7 @@ static void renderScrubBody() {
 namespace Knob {
 
 void create() {
+    initGlyphs();
     s_scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(s_scr, lv_color_hex(Theme::DeepSea), 0);
     lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, 0);
@@ -542,6 +636,8 @@ void create() {
     lv_obj_align(s_header, LV_ALIGN_TOP_LEFT, 0, 0);
 
     s_headerLeft = makeLabel(s_header, &lv_font_montserrat_12, Theme::HUDText, "AGENTDECK");
+    lv_obj_set_width(s_headerLeft, 156);
+    lv_label_set_long_mode(s_headerLeft, LV_LABEL_LONG_DOT);
     lv_obj_align(s_headerLeft, LV_ALIGN_LEFT_MID, 8, 0);
     s_headerRight = makeLabel(s_header, &lv_font_montserrat_12, Theme::HUDDim, "");
     lv_obj_align(s_headerRight, LV_ALIGN_RIGHT_MID, -8, 0);
@@ -615,6 +711,12 @@ void onKey(Input::KeyEvent evt) {
         SessionSnap s;
         if (!snapshotSession(s_listIdx, s)) return;
         strncpy(s_detailSessionId, s.id, sizeof(s_detailSessionId) - 1);
+        s_detailSessionId[sizeof(s_detailSessionId) - 1] = '\0';
+        // This was specified by the product grammar but never sent. Publishing
+        // it lets the Focus Strip and every other surface follow the knob.
+        sendFocusSession(s.id);
+        strncpy(s_lastSharedFocus, s.id, sizeof(s_lastSharedFocus) - 1);
+        s_lastSharedFocus[sizeof(s_lastSharedFocus) - 1] = '\0';
         s_menuIdx = 0;
         s_menuScroll = 0;
         buildMenu(s);
@@ -714,9 +816,27 @@ void update(float dt) {
     lockState();
     bool connected = g_state.wsConnected;
     uint8_t count = g_state.sessionCount;
+    char sharedFocus[32];
+    strncpy(sharedFocus, g_state.focusedSessionId, sizeof(sharedFocus) - 1);
+    sharedFocus[sizeof(sharedFocus) - 1] = '\0';
     unlockState();
 
     if (count > 0 && s_listIdx >= count) s_listIdx = count - 1;
+    // Follow a newly broadcast focus once at list level. Comparing the last
+    // broadcast value (rather than every frame) means local encoder rotation is
+    // never fought by a stale daemon focus.
+    if (s_mode == Mode::LIST) {
+        if (!sharedFocus[0]) {
+            // Remember a real clear so focusing the same session again later is
+            // still a new broadcast and recenters the carousel.
+            s_lastSharedFocus[0] = '\0';
+        } else if (strcmp(sharedFocus, s_lastSharedFocus) != 0) {
+            int focusedIdx = findSessionById(sharedFocus);
+            if (focusedIdx >= 0) s_listIdx = focusedIdx;
+            strncpy(s_lastSharedFocus, sharedFocus, sizeof(s_lastSharedFocus) - 1);
+            s_lastSharedFocus[sizeof(s_lastSharedFocus) - 1] = '\0';
+        }
+    }
 
     // Detail mode follows its session; if the session or its state changed,
     // rebuild the menu (an answered prompt must not leave stale options up).
@@ -818,9 +938,9 @@ void update(float dt) {
                  detail.projectName[0] ? detail.projectName : "?");
         lv_label_set_text(s_headerLeft, left);
         lv_obj_set_style_text_font(s_headerLeft, &font_kr_12, 0);
-        lv_label_set_text(s_headerRight, statePhrase(detail.state));
-        lv_obj_set_style_text_color(s_headerRight,
-                                    lv_color_hex(stateColorOf(detail.state)), 0);
+        // State already has a larger, colored line in the body. Keeping the
+        // right edge free prevents long phrases from colliding with WiFi/battery.
+        lv_label_set_text(s_headerRight, "");
     } else {
         lv_label_set_text(s_headerLeft, "AGENTDECK");
         lv_obj_set_style_text_font(s_headerLeft, &lv_font_montserrat_12, 0);

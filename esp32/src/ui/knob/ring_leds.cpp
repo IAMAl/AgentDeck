@@ -63,9 +63,9 @@ void update(uint32_t nowMs, int selectedIdx, bool connected, bool dark) {
 
     s_ring.clear();
     if (!connected) {
-        // Disconnected: single faint blue breath on LED 0 (searching cue).
-        uint8_t breath = (uint8_t)(DIMMED_SCALE + DIMMED_SCALE * pulse);
-        s_ring.setPixelColor(0, scaleColor(Theme::StatusBlue, breath));
+        // Connectivity is informational, not attention: keep it static so
+        // amber response-waits remain the ring's only animation.
+        s_ring.setPixelColor(0, scaleColor(Theme::StatusBlue, DIMMED_SCALE));
     } else {
         for (uint8_t i = 0; i < count; i++) {
             uint32_t rgb = stateColor(states[i]);

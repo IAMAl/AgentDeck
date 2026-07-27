@@ -290,6 +290,7 @@ describe('prepareForSerial (source)', () => {
       currentTool: 'Edit',
       projectName: 'AgentDeck',
       modelName: 'opus-4',
+      focusedSessionId: 'observed:claude:abcdefghijklmnopqrstuvwxyz',
       options: [{ index: 0, label: 'Allow', shortcut: 'y' }],
       question: 'Allow Edit?',
       gatewayAvailable: true,
@@ -301,6 +302,7 @@ describe('prepareForSerial (source)', () => {
     expect(prepared.currentTool).toBe('Edit');
     expect(prepared.projectName).toBe('AgentDeck');
     expect(prepared.modelName).toBe('opus-4');
+    expect(prepared.focusedSessionId).toBe('observed:claude:abcdefghijklmno');
     expect((prepared.options as unknown[])).toHaveLength(1);
     expect(prepared.gatewayAvailable).toBe(true);
   });

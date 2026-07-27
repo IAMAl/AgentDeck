@@ -166,6 +166,7 @@ export interface SerialConnection {
     /** Peripheral telemetry/diag (capability-advertising boards). */
     capabilities?: string[];
     batteryPercent?: number;
+    batteryVoltageMv?: number;
     batteryCharging?: boolean;
     usbPowered?: boolean;
     batteryDiag?: number;
@@ -392,6 +393,9 @@ export function prepareForSerial(event: BridgeEvent, _conn?: Pick<SerialConnecti
       type: 'state_update',
       state: e.state,
       permissionMode: e.permissionMode,
+      // Companion surfaces compose through the daemon focus. Cap to the same
+      // 31-byte id shape as sessions_list so firmware can compare directly.
+      focusedSessionId: limitString(e.focusedSessionId, 31),
       agentType: limitString(e.agentType, 15),
       currentTool: limitString(e.currentTool, 39),
       toolInput: limitString(e.toolInput, 79),
@@ -811,6 +815,7 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           processingCount: (msg as any).processingCount,
           capabilities: (msg as any).capabilities,
           batteryPercent: (msg as any).batteryPercent,
+          batteryVoltageMv: (msg as any).batteryVoltageMv,
           batteryCharging: (msg as any).batteryCharging,
           usbPowered: (msg as any).usbPowered,
           batteryDiag: (msg as any).batteryDiag,

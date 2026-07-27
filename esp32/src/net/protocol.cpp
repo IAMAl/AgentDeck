@@ -28,6 +28,7 @@
 #if defined(BOARD_T_DISPLAY_PRO)
 #include "../input/touch_strip.h"
 #include "../input/light_sensor.h"
+#include "../input/power_monitor.h"
 #endif
 
 // Reusable JSON document — sized for typical bridge messages
@@ -74,6 +75,10 @@ static void handleStateUpdate(JsonObject& obj) {
     lockState();
 
     g_state.state = parseState(obj["state"].as<const char*>());
+    if (obj["focusedSessionId"].is<const char*>()) {
+        copyTextU8(g_state.focusedSessionId, sizeof(g_state.focusedSessionId),
+                   obj["focusedSessionId"].as<const char*>());
+    }
 
     // Project & model
     if (obj["projectName"].is<const char*>())
@@ -994,6 +999,16 @@ static void sendDeviceInfo() {
         // without stealing the serial port.
         resp["touchReady"] = Input::touchReady();
         resp["alsReady"] = Input::lightReady();
+        Input::PowerStatus ps = Input::powerStatus();
+        if (ps.valid) {
+            JsonArray caps = resp["capabilities"].to<JsonArray>();
+            caps.add("battery");
+            resp["batteryVoltageMv"] = ps.voltageMv;
+            resp["batteryCharging"] = ps.charging;
+            resp["usbPowered"] = ps.usbPowered;
+        } else {
+            resp["batteryDiag"] = ps.gaugeErr;
+        }
     }
 #endif
     OtaCapability::Info ota = OtaCapability::get();

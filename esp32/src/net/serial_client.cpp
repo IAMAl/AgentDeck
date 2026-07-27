@@ -14,6 +14,7 @@
 #if defined(BOARD_T_DISPLAY_PRO)
 #include "../input/touch_strip.h"
 #include "../input/light_sensor.h"
+#include "../input/power_monitor.h"
 #endif
 #if !defined(BOARD_LED8X32) && !defined(BOARD_INKDECK)
 #include "../ui/screens/splash.h"
@@ -150,6 +151,16 @@ static void sendDeviceInfoSerial() {
         // without stealing the serial port.
         resp["touchReady"] = Input::touchReady();
         resp["alsReady"] = Input::lightReady();
+        Input::PowerStatus ps = Input::powerStatus();
+        if (ps.valid) {
+            JsonArray caps = resp["capabilities"].to<JsonArray>();
+            caps.add("battery");
+            resp["batteryVoltageMv"] = ps.voltageMv;
+            resp["batteryCharging"] = ps.charging;
+            resp["usbPowered"] = ps.usbPowered;
+        } else {
+            resp["batteryDiag"] = ps.gaugeErr;
+        }
     }
 #endif
     OtaCapability::Info ota = OtaCapability::get();

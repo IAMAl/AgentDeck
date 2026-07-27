@@ -1,8 +1,9 @@
 #pragma once
 
-// T-Display-S3-Pro "Tide Ticker" — a 480x222 always-on desk strip.
-// Page 0: Claude/Codex quota gauges. Page 1: session ticker rows.
-// Three hardware buttons page it (prev / next / auto-cycle toggle).
+// T-Display-S3-Pro "Focus Strip" — a 480x222 always-on desk strip.
+// Pages: prioritized focus, Claude/Codex usage, and high-value session rows.
+// Physical controls: split rocker = previous/next, BOOT = focus/select,
+// RST = hardware recovery. Touch provides tabs, swipes and explicit actions.
 
 #include "../../input/touch_strip.h"
 
@@ -13,10 +14,9 @@ void update(float dt);
 
 void nextPage();
 void prevPage();
-void toggleAutoCycle();
+void primaryAction();
+void buttonFeedback(uint8_t button);
 
-// Strip gesture: on the Focus page, TAP approves / HOLD denies the captioned
-// awaiting session; on other pages TAP jumps back to the Focus page.
-void onTouch(Input::TouchGesture g);
+void onTouch(const Input::TouchEvent& event);
 
 }  // namespace Ticker

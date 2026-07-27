@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-// LTR-553ALS ambient-light sensor (I2C 0x23) — drives the Tide Ticker's
+// LTR-553ALS ambient-light sensor (I2C 0x23) — drives the Focus Strip's
 // auto-dim. Entirely local: no protocol representation.
 
 namespace Input {

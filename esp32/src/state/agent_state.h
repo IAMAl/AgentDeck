@@ -165,6 +165,9 @@ struct DashboardState {
     // bridge/src/esp32-serial.ts and the daemon WS sessions_list. Keep in sync.
     SessionInfo sessions[10];
     uint8_t sessionCount;
+    // Session explicitly selected by a steering surface. The daemon includes
+    // it on state_update so companion devices can behave as one desk set.
+    char focusedSessionId[32];
     uint8_t octopusCount;   // derived: claude-code sessions alive
     uint8_t cloudCount;     // derived: Codex CLI/App sessions alive
     uint8_t opencodeCount;  // derived: opencode sessions alive
@@ -271,6 +274,7 @@ struct DashboardState {
         question[0] = '\0';
         promptType[0] = '\0';
         optionCount = 0;
+        focusedSessionId[0] = '\0';
         clearSessions();
         gatewayAvailable = false;
         gatewayConnected = false;
@@ -294,6 +298,7 @@ struct DashboardState {
         sessionClearPending = false;
         sessionClearPendingMs = 0;
         sessionCount = 0;
+        focusedSessionId[0] = '\0';
         octopusCount = 0;
         cloudCount = 0;
         opencodeCount = 0;
