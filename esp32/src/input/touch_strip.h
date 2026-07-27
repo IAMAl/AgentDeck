@@ -19,4 +19,9 @@ bool touchInit();
 bool touchReady();
 TouchEvent touchPoll(uint32_t nowMs);
 
+/** Diagnostics for device_info: raw finger-down poll hits since boot. */
+uint32_t touchDownSamples();
+/** Diagnostics for device_info: decoded gestures (tap/hold/swipe) since boot. */
+uint32_t touchGestures();
+
 }  // namespace Input

@@ -29,6 +29,8 @@
 #include "../input/touch_strip.h"
 #include "../input/light_sensor.h"
 #include "../input/power_monitor.h"
+#include "../ui/ticker/ticker_ui.h"
+#include "../camera/photo_capture.h"
 #endif
 
 // Reusable JSON document — sized for typical bridge messages
@@ -715,11 +717,13 @@ static void handleWifiProvision(JsonObject& obj) {
     unlockState();
 
     bool ok = false;
-#if defined(BOARD_IPS10)
+#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
     if (Net::serialConnected()) {
-        // USB serial is the primary IPS10 transport. Persist the daemon endpoint
-        // refresh, but do not wake the hosted C6 radio; WiFi will reconnect from
-        // the serial-timeout restore path when USB is actually removed.
+        // USB serial is the primary transport on these boards. Persist the
+        // credentials/endpoint but do not join now: on the IPS10 that avoids
+        // waking the hosted C6 radio; on the T-Display-S3-Pro a join while on
+        // the desk cable browned out the 3.3 V rail (E BOD loop, 2026-07-27).
+        // WiFi comes up from the serial-death path when USB actually goes away.
         Net::wifiSaveProvisionedCredentials(ssid, password);
         Net::wifiSaveProvisionedBridge(bridgeIp, bridgePort, authToken);
         ok = true;
@@ -998,11 +1002,18 @@ static void sendDeviceInfo() {
         // Remote peripheral diag — lets /devices answer "did touch/ALS init?"
         // without stealing the serial port.
         resp["touchReady"] = Input::touchReady();
+        resp["touchDownSamples"] = Input::touchDownSamples();
+        resp["touchGestures"] = Input::touchGestures();
         resp["alsReady"] = Input::lightReady();
         Input::PowerStatus ps = Input::powerStatus();
-        if (ps.valid) {
+        // Advertise only what actually initialized (t_embed rule): the caps
+        // array exists whenever either the charger or the camera answered.
+        if (ps.valid || Camera::present()) {
             JsonArray caps = resp["capabilities"].to<JsonArray>();
-            caps.add("battery");
+            if (ps.valid) caps.add("battery");
+            if (Camera::present()) caps.add("camera");
+        }
+        if (ps.valid) {
             resp["batteryVoltageMv"] = ps.voltageMv;
             resp["batteryCharging"] = ps.charging;
             resp["usbPowered"] = ps.usbPowered;
@@ -1102,6 +1113,15 @@ void parseMessage(const char* json, size_t length) {
         // The turn finished but held nothing worth reading aloud (a diff, a
         // tool-only turn). Say that rather than leaving the user waiting.
         Knob::notify("reply: nothing to read aloud");
+#endif
+#if defined(BOARD_T_DISPLAY_PRO)
+    } else if (strcmp(type, "photo_result") == 0) {
+        // Outcome of a CAM-page snap: delivered to the target session, or why
+        // not. Shown even on failure — same visibility rule as voice_result.
+        bool delivered = obj["delivered"] | false;
+        const char* errText = obj["error"] | "";
+        const char* reason = obj["deliverReason"] | "";
+        Ticker::onPhotoResult(delivered, errText[0] ? errText : reason);
 #endif
     } else if (strcmp(type, "timeline_history") == 0) {
         handleTimelineHistory(obj);

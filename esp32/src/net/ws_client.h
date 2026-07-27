@@ -71,6 +71,21 @@ bool queueAudioChunk(const uint8_t* data, size_t len);
 bool audioBacklogged();
 
 /**
+ * Hand a captured JPEG to the network task for upload, bracketed by
+ * photo_begin/photo_end. Takes ownership of `jpeg` (malloc'd by frame2jpg) —
+ * freed after the last chunk or on abort. The transport is latched at
+ * photo_begin: WS binary frames when connected, else base64 `photo_chunk`
+ * lines over serial (line-delimited JSON, same reasoning as audio_chunk).
+ * Returns false (without taking ownership) when an upload is already active
+ * or no transport is up.
+ */
+bool queuePhotoUpload(uint8_t* jpeg, size_t len, const char* sessionId,
+                      int width, int height);
+
+/** True while a photo upload is in flight. */
+bool photoUploadBusy();
+
+/**
  * Send a typed command with no extra fields.
  */
 void wsSendCommand(const char* type);

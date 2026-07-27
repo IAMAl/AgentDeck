@@ -13,6 +13,11 @@
 
 static TouchDrvCSTXXX s_touch;
 static bool s_enabled = false;
+// Remote diagnosability (device_info): raw finger-down poll hits vs decoded
+// gestures. "All touch dead" splits into chip-silent (samples 0) vs
+// gesture-logic (samples grow, gestures 0) without stealing the serial port.
+static uint32_t s_downSamples = 0;
+static uint32_t s_gestures = 0;
 
 static constexpr uint32_t TAP_MAX_MS = 450;
 static constexpr uint32_t HOLD_MS = 700;
@@ -38,6 +43,9 @@ bool touchReady() {
     return s_enabled;
 }
 
+uint32_t touchDownSamples() { return s_downSamples; }
+uint32_t touchGestures() { return s_gestures; }
+
 TouchEvent touchPoll(uint32_t nowMs) {
     TouchEvent event = {TouchGesture::NONE, 0, 0};
     if (!s_enabled) return event;
@@ -53,6 +61,7 @@ TouchEvent touchPoll(uint32_t nowMs) {
     uint8_t supported = s_touch.getSupportTouchPoint();
     if (supported == 0 || supported > 5) supported = 1;
     bool down = s_touch.getPoint(xs, ys, supported) > 0;
+    if (down) s_downSamples++;
 
     if (down && !prevDown) {
         prevDown = true;
@@ -81,10 +90,12 @@ TouchEvent touchPoll(uint32_t nowMs) {
         event.y = lastY;
         if (!holdFired && abs(dx) >= SWIPE_MIN_PX && abs(dx) > abs(dy)) {
             event.gesture = dx < 0 ? TouchGesture::SWIPE_LEFT : TouchGesture::SWIPE_RIGHT;
+            s_gestures++;
             return event;
         }
         if (!holdFired && held >= 30 && held < TAP_MAX_MS) {
             event.gesture = TouchGesture::TAP;
+            s_gestures++;
             return event;
         }
     }

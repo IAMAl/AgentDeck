@@ -43,6 +43,7 @@
 #include "input/light_sensor.h"
 #include "input/power_monitor.h"
 #include "input/touch_strip.h"
+#include "camera/photo_capture.h"
 #else
 #include "ui/display.h"
 #include "ui/screens/splash.h"
@@ -94,6 +95,18 @@ static void networkTask(void* param) {
     uint16_t currentBridgePort = 0;
     uint32_t lastMdnsRefreshMs = 0;
 
+#if defined(BOARD_T_DISPLAY_PRO)
+    // Brownout ladder, stage 3 (stages 1-2 live in wifiInit/handleWifiProvision):
+    // after a brownout reset, do not auto-join at all this boot — retrying is
+    // what turned one dip into a self-sustaining reboot loop. A later explicit
+    // wifi_provision over serial still works.
+    const bool wifiJoinSuppressed = (esp_reset_reason() == ESP_RST_BROWNOUT);
+    if (wifiJoinSuppressed) {
+        Serial.println("[WiFi] Brownout reset — WiFi auto-join disabled this boot");
+    }
+    uint32_t lastDeferredJoinMs = 0;
+#endif
+
 #if defined(BOARD_IPS10)
     if (Net::wifiConnected()) {
         char savedBridgeIp[16] = {0};
@@ -121,6 +134,24 @@ static void networkTask(void* param) {
 
         // === WiFi portal (non-blocking, processes captive portal if active) ===
         Net::wifiLoop();
+
+#if defined(BOARD_T_DISPLAY_PRO)
+        // Deferred WiFi join — wifiInit left the radio off (joining during
+        // boot bring-up browned out the camera unit; an idle-time join on the
+        // same supply succeeds). After the 25 s grace the board goes dual-home
+        // like the rest of the fleet: serial stays the primary state
+        // transport, and the WS socket carries what HWCDC cannot — photo
+        // blobs (64-byte FIFO holes tore ~half the base64 chunk lines) and
+        // WiFi OTA.
+        {
+            uint32_t nowDj = millis();
+            if (!wifiJoinSuppressed && nowDj > 25000 && !Net::wifiConnected() &&
+                (lastDeferredJoinMs == 0 || (uint32_t)(nowDj - lastDeferredJoinMs) > 60000)) {
+                lastDeferredJoinMs = nowDj;
+                Net::wifiTryDeferredJoin();
+            }
+        }
+#endif
 
 #if defined(BOARD_IPS10)
         // On IPS10, stop C6 network traffic as soon as USB serial is active.
@@ -315,6 +346,9 @@ static void uiTask(void* param) {
     Input::lightInit();
     Input::touchInit();
     Input::powerInit();
+    // After the I2C peripherals: the camera's SCCB config rides Wire's port.
+    // Probe failure just means no shield — the CAM page never appears.
+    Camera::init();
     Ticker::create();
 
     pinMode(BOARD_PIN_BTN1, INPUT_PULLUP);
