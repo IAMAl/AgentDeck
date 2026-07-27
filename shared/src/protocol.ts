@@ -401,6 +401,14 @@ export interface SessionInfo {
   /** Last review verdict (with reviewFindings) — devices render "risk: low · 2" on the REVIEW tile. */
   reviewRisk?: 'low' | 'medium' | 'high';
   reviewFindings?: number;
+  /** Observed sessions: this daemon can answer the session's LIVE on-screen
+   *  prompt by typing into its terminal/app host (`observed-inject.ts`), so a
+   *  deck may render its `options` as pressable instead of inert. Absent/false
+   *  means no reachable host was found, or the daemon cannot inject at all
+   *  (App Store Swift daemon — no subprocess). Emitted explicitly in BOTH
+   *  polarities: a flag only ever sent when true latches one-way under
+   *  retain-on-absent merging. */
+  liveAnswerable?: boolean;
   promptType?: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review';  // shape of the awaiting prompt (per-session, for inline approve/deny + option buttons on rich panels)
   options?: PromptOption[];  // per-session awaiting options (multi_select) — lets a 10-up panel render inline choices for any session, not just the focused one
   elapsedSec?: number;  // derived seconds since startedAt — devices without reliable NTP render elapsed without recomputing from a wall clock

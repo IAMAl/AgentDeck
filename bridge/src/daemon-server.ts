@@ -2463,11 +2463,16 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       .map((s) => {
         // Steering feedback for observed Claude sessions: devices render
         // "stopping at next tool" / queued-directive badges from these.
-        if (!s.id.startsWith('observed:claude:')) return s;
+        if (!s.id.startsWith('observed:claude:')) return { ...s, liveAnswerable: false };
+        // Can this daemon type into the session's live prompt? Only observed
+        // Claude routes select_option to the injector, and only with a host to
+        // aim at. Sent in both polarities — decks read it to decide whether an
+        // AskUserQuestion option is a button or an inert mirror of the terminal.
+        const liveAnswerable = Boolean(s.tty || s.appName);
         const snap = steeringSnapshot(s.id.slice('observed:claude:'.length));
-        if (!snap.stopRequested && snap.queuedDirectives === 0) return s;
         return {
           ...s,
+          liveAnswerable,
           ...(snap.stopRequested ? { stopRequested: true } : {}),
           ...(snap.queuedDirectives > 0 ? { queuedDirectives: snap.queuedDirectives } : {}),
         };
