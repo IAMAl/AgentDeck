@@ -25,5 +25,15 @@
 #define BOARD_NATIVE_W       800   // Panel native width
 #define BOARD_NATIVE_H       1280  // Panel native height
 
-// Audio: ES8311 Codec (present but not used for AgentDeck UI)
+// Audio: ES8311 codec CONFIRMED at I2C 0x18 on the touch bus (I2C_NUM_1,
+// SDA 7 / SCL 8) — chip ID 0xFD/0xFE = 0x83/0x11, version 0x01, ACK 5/5,
+// registers at reset defaults. Measured 2026-07-27 with UI::hwI2cProbe()
+// ({"type":"i2c_diag"}); the same sweep also found unidentified devices at
+// 0x32 and 0x36.
+//
+// Still 0 because presence of the codec is not a playback path: whether a
+// speaker and the two vendor-claimed mics are actually wired to it is
+// unmeasured, and the I2S / MCLK / PA-enable pin map is unknown. Setting this
+// to 1 requires that pin map plus an ES8311 I2C init sequence (unlike the
+// T-Embed's bare I2S amp, this is a codec).
 #define BOARD_HAS_AUDIO      0

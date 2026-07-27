@@ -30,7 +30,11 @@
 #include "../input/light_sensor.h"
 #include "../input/power_monitor.h"
 #include "../ui/ticker/ticker_ui.h"
+#include "../ui/pocket/pocket_ui.h"
 #include "../camera/photo_capture.h"
+#endif
+#if defined(BOARD_IPS10)
+#include "../ui/display.h"         // UI::hwI2cProbe — audio-codec hardware probe
 #endif
 
 // Reusable JSON document — sized for typical bridge messages
@@ -1121,12 +1125,14 @@ void parseMessage(const char* json, size_t length) {
 #endif
 #if defined(BOARD_T_DISPLAY_PRO)
     } else if (strcmp(type, "photo_result") == 0) {
-        // Outcome of a CAM-page snap: delivered to the target session, or why
-        // not. Shown even on failure — same visibility rule as voice_result.
+        // Outcome of a CAM snap: delivered to the target session, or why not.
+        // Shown even on failure — same visibility rule as voice_result. Both
+        // render trees get it; whichever is inactive no-ops.
         bool delivered = obj["delivered"] | false;
         const char* errText = obj["error"] | "";
         const char* reason = obj["deliverReason"] | "";
         Ticker::onPhotoResult(delivered, errText[0] ? errText : reason);
+        Pocket::onPhotoResult(delivered, errText[0] ? errText : reason);
 #endif
     } else if (strcmp(type, "timeline_history") == 0) {
         handleTimelineHistory(obj);
@@ -1219,6 +1225,27 @@ void parseMessage(const char* json, size_t length) {
         }
 #else
         Serial.println("[TouchDiag] Not supported on this board");
+#endif
+    } else if (strcmp(type, "i2c_diag") == 0) {
+        // Audio-codec hardware probe. Deliberately firmware-local: the daemon
+        // never originates it (daemon-server.ts's esp32WifiEvents allowlist
+        // would drop it anyway), so it costs no protocol surface — no
+        // shared/src/protocol.ts entry, no generate-protocol, no Swift/Kotlin
+        // mirrors, no XTeink fork re-port. Trigger it by writing the JSON line
+        // straight into the board's serial port, the way flash.sh does.
+        //   {"type":"i2c_diag"}                      sweep the touch bus
+        //   {"type":"i2c_diag","sda":N,"scl":N}      probe a candidate 2nd bus
+        //   {"type":"i2c_diag","dump":24}            register dump of a device
+#if defined(BOARD_IPS10)
+        if (obj["dump"].is<int>()) {
+            UI::hwI2cDumpDevice((uint8_t)(obj["dump"].as<int>()));
+        } else {
+            int sda = obj["sda"].is<int>() ? obj["sda"].as<int>() : -1;
+            int scl = obj["scl"].is<int>() ? obj["scl"].as<int>() : -1;
+            UI::hwI2cProbe(sda, scl);
+        }
+#else
+        Serial.println("[I2CDiag] Not supported on this board");
 #endif
     }
     // Ignore: encoder_state, button_state, deck_slot_map, voice_state
