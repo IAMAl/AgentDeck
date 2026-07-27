@@ -604,6 +604,44 @@ export interface AudioChunkMessage {
   d: string;
 }
 
+/**
+ * Device-sourced photo capture (T-Display-S3-Pro rear camera "show-and-tell").
+ * Same transport split as voice: over WebSocket the JPEG travels as binary
+ * frames between `photo_begin` and `photo_end`; over serial the same bytes
+ * ride base64 inside `photo_chunk` lines. A board must not mix the two on one
+ * connection, and must not interleave a photo with an open voice utterance.
+ * The daemon assembles the JPEG, saves it, and routes a prompt referencing the
+ * file path to the target session; it answers with a `photo_result` frame
+ * (`{delivered, sessionId, bytes?, error?, via?, deliverReason?}`) on the same
+ * transport, mirroring `voice_result`.
+ */
+export interface PhotoBeginMessage {
+  type: 'photo_begin';
+  board?: string;
+  /** Only 'jpeg' ships today. */
+  format?: string;
+  width?: number;
+  height?: number;
+  /** Session the photo is aimed at — the strip's focus pick. May be
+   *  device-truncated; the daemon restores it by unique prefix, and falls back
+   *  to its own focused session when empty. */
+  sessionId?: string;
+}
+
+export interface PhotoEndMessage {
+  type: 'photo_end';
+  board?: string;
+  cancel?: boolean;
+  /** Total JPEG bytes the board believes it sent (integrity cross-check). */
+  bytes?: number;
+}
+
+/** Base64 JPEG fragment; serial transport only. */
+export interface PhotoChunkMessage {
+  type: 'photo_chunk';
+  d: string;
+}
+
 export interface WifiProvisionAckMessage {
   type: 'wifi_provision_ack';
   success: boolean;
@@ -852,7 +890,10 @@ export type ESP32ToHostMessage =
   | PeripheralEventMessage
   | VoiceBeginMessage
   | VoiceEndMessage
-  | AudioChunkMessage;
+  | AudioChunkMessage
+  | PhotoBeginMessage
+  | PhotoEndMessage
+  | PhotoChunkMessage;
 
 /**
  * On-demand independent review lifecycle. Triggered by the REVIEW deck button

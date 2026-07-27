@@ -171,6 +171,8 @@ export interface SerialConnection {
     usbPowered?: boolean;
     batteryDiag?: number;
     touchReady?: boolean;
+    touchDownSamples?: number;
+    touchGestures?: number;
     alsReady?: boolean;
   } | null;
   /** True once a device_info arrived on THIS connection (vs. cache-seeded).
@@ -820,6 +822,8 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           usbPowered: (msg as any).usbPowered,
           batteryDiag: (msg as any).batteryDiag,
           touchReady: (msg as any).touchReady,
+          touchDownSamples: (msg as any).touchDownSamples,
+          touchGestures: (msg as any).touchGestures,
           alsReady: (msg as any).alsReady,
         };
         conn.deviceInfoFresh = true;
@@ -828,12 +832,15 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           persistDeviceInfoCache();
         }
       } else if (msg.type === 'voice_begin' || msg.type === 'voice_end' ||
-                 msg.type === 'audio_chunk') {
-        // Voice over USB. The serial transport is line-delimited JSON, so PCM
-        // travels base64-encoded inside `audio_chunk` rather than as raw bytes:
-        // raw PCM contains newlines and would tear the framing for every other
-        // reader of this port. Costs 33% — irrelevant on native-USB CDC, where
-        // the 115200 in the port settings is nominal.
+                 msg.type === 'audio_chunk' ||
+                 msg.type === 'photo_begin' || msg.type === 'photo_end' ||
+                 msg.type === 'photo_chunk') {
+        // Voice/photo over USB. The serial transport is line-delimited JSON, so
+        // PCM and JPEG bytes travel base64-encoded inside `audio_chunk` /
+        // `photo_chunk` rather than raw: raw bytes contain newlines and would
+        // tear the framing for every other reader of this port. Costs 33% —
+        // irrelevant on native-USB CDC, where the 115200 in the port settings
+        // is nominal.
         serialVoiceSink?.(conn.port, msg as unknown as Record<string, unknown>);
       } else if (['select_option', 'session_command', 'permission_decision',
                   'peripheral_event', 'query_session_timeline', 'focus_session',
