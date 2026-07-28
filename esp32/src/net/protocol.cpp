@@ -1307,13 +1307,13 @@ void parseMessage(const char* json, size_t length) {
         bool delivered = obj["delivered"] | false;
         const char* err = obj["error"] | "";
         char note[160];
-        if (err[0])           snprintf(note, sizeof(note), "음성 오류: %s", err);
-        else if (!text[0])    snprintf(note, sizeof(note), "아무것도 못 들었습니다");
-        else if (!delivered)  snprintf(note, sizeof(note), "전달 실패: \"%s\"", text);
+        if (err[0])           snprintf(note, sizeof(note), "Voice error: %s", err);
+        else if (!text[0])    snprintf(note, sizeof(note), "Heard nothing");
+        else if (!delivered)  snprintf(note, sizeof(note), "NOT sent: \"%s\"", text);
         else                  snprintf(note, sizeof(note), "\"%s\"", text);
         HUD::notify(note);
     } else if (strcmp(type, "voice_reply_skipped") == 0) {
-        HUD::notify("읽어줄 내용이 없습니다");
+        HUD::notify("Reply: nothing to read aloud");
 #endif
 #if defined(BOARD_PIN_MIC_DIN)
     } else if (strcmp(type, "mic_test") == 0) {

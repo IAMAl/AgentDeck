@@ -943,26 +943,51 @@ static void voiceBannerHide() {
     if (voiceBanner) lv_obj_set_style_opa(voiceBanner, LV_OPA_TRANSP, 0);
 }
 
+// Which session does a press talk to?
+//
+// The daemon's `focusedSessionId` is an *explicit user* focus
+// (`userFocusedSessionId ?? ''` on the daemon side). Nobody sets that on a wall
+// panel, so keying off it alone made the button do nothing at all — pressed,
+// returned early, no feedback. Prefer it when present, otherwise fall back to
+// the first live session, which is the primary card the operator is looking at.
+static bool voiceResolveTarget(char* idOut, size_t idCap, char* labelOut, size_t labelCap) {
+    bool found = false;
+    lockState();
+    if (g_state.focusedSessionId[0]) {
+        snprintf(idOut, idCap, "%s", g_state.focusedSessionId);
+        snprintf(labelOut, labelCap, "%s",
+                 g_state.projectName[0] ? g_state.projectName : g_state.focusedSessionId);
+        found = true;
+    } else {
+        for (uint8_t i = 0; i < g_state.sessionCount && !found; i++) {
+            const SessionInfo& si = g_state.sessions[i];
+            if (!si.alive || !si.id[0]) continue;
+            snprintf(idOut, idCap, "%s", si.id);
+            snprintf(labelOut, labelCap, "%s", si.projectName[0] ? si.projectName : si.id);
+            found = true;
+        }
+    }
+    unlockState();
+    return found;
+}
+
 static void voicePressCb(lv_event_t* e) {
     (void)e;
     if (!Audio::micReady()) {
-        HUD::notify("mic unavailable");
+        HUD::notify("Mic unavailable");
         return;
     }
-    lockState();
-    char target[32];
-    snprintf(target, sizeof(target), "%s", g_state.focusedSessionId);
-    char label[96];
-    snprintf(label, sizeof(label), "%s", g_state.projectName[0] ? g_state.projectName : "(no session)");
-    unlockState();
-    if (!target[0]) {
-        HUD::notify("no focused session to speak to");
+    char target[32] = {0};
+    char label[96] = {0};
+    if (!voiceResolveTarget(target, sizeof(target), label, sizeof(label))) {
+        HUD::notify("No active session to speak to");
         return;
     }
     Audio::micStart(target);
     HUD::setListening(label);
     lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(Theme::StatusAmber), 0);
-    lv_label_set_text(voiceBtnLabel, "듣는 중");
+    lv_obj_set_style_text_color(voiceBtnLabel, lv_color_hex(0x0B1D1A), 0);
+    lv_label_set_text(voiceBtnLabel, "Listening");
 }
 
 static void voiceReleaseCb(lv_event_t* e) {
@@ -970,8 +995,9 @@ static void voiceReleaseCb(lv_event_t* e) {
     if (!Audio::micCapturing()) return;
     Audio::micStop(false);
     HUD::clearListening();
-    lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(0x14312C), 0);
-    lv_label_set_text(voiceBtnLabel, "말하기");
+    lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(0x1D4A42), 0);
+    lv_obj_set_style_text_color(voiceBtnLabel, lv_color_hex(Theme::HUDText), 0);
+    lv_label_set_text(voiceBtnLabel, "Hold to talk");
 }
 
 // Called from update(): a transient notice has to clear itself, and update() is
@@ -1022,16 +1048,17 @@ static void voiceCreate(lv_obj_t* pane) {
     voiceBtn = lv_button_create(row);
     lv_obj_set_size(voiceBtn, 168, 76);
     lv_obj_set_style_radius(voiceBtn, 16, 0);
-    lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(0x14312C), 0);
+    lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(0x1D4A42), 0);
     lv_obj_set_style_bg_opa(voiceBtn, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(voiceBtn, lv_color_hex(Theme::HUDDim), 0);
-    lv_obj_set_style_border_width(voiceBtn, 1, 0);
+    lv_obj_set_style_border_color(voiceBtn, lv_color_hex(Theme::StatusGreen), 0);
+    lv_obj_set_style_border_width(voiceBtn, 2, 0);
     lv_obj_set_style_shadow_width(voiceBtn, 24, 0);
     lv_obj_set_style_shadow_opa(voiceBtn, (lv_opa_t)120, 0);
     lv_obj_set_style_shadow_color(voiceBtn, lv_color_hex(0x000000), 0);
     voiceBtnLabel = lv_label_create(voiceBtn);
-    lv_label_set_text(voiceBtnLabel, "말하기");
+    lv_label_set_text(voiceBtnLabel, "Hold to talk");
     lv_obj_set_style_text_font(voiceBtnLabel, &font_kr_20, 0);
+    lv_obj_set_style_text_color(voiceBtnLabel, lv_color_hex(Theme::HUDText), 0);
     lv_obj_center(voiceBtnLabel);
     // PRESSED/RELEASED, not CLICKED: this is hold-to-talk, and RELEASED still
     // fires when the finger slides off, which is the behaviour we want — a
@@ -2481,7 +2508,7 @@ void update() {
 #if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
 void setListening(const char* target) {
     char line[128];
-    snprintf(line, sizeof(line), "듣는 중 · %s", (target && target[0]) ? target : "(세션 없음)");
+    snprintf(line, sizeof(line), "Listening · %s", (target && target[0]) ? target : "(no session)");
     voiceBannerShow(line, Theme::StatusAmber);
     voiceNoticeUntilMs = 0;   // a live hold outranks any transient notice
 }
@@ -2492,7 +2519,7 @@ void clearListening() {
 
 void setSpeaking(const char* text) {
     char line[160];
-    snprintf(line, sizeof(line), "답변 · %s", (text && text[0]) ? text : "(재생 중)");
+    snprintf(line, sizeof(line), "Reply · %s", (text && text[0]) ? text : "(playing)");
     voiceBannerShow(line, Theme::StatusGreen);
     voiceNoticeUntilMs = 0;
 }
