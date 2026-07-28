@@ -57,4 +57,8 @@
 #define BOARD_PIN_SPK_LRCLK      10
 #define BOARD_PIN_SPK_DIN         9     // ESP32 data out → codec DSDIN
 #define BOARD_PIN_SPK_PA_EN      20     // power-amp enable
-#define BOARD_PIN_MIC_DIN        11     // codec ASDOUT → ESP32; capture is not built yet
+#define BOARD_PIN_MIC_DIN        11     // codec ASDOUT → ESP32 (RX verified 2026-07-28)
+// Capture rides the same full-duplex I2S as playback, so it is the codec's ADC
+// rather than a separate PDM peripheral. BOARD_HAS_AUDIO stays 0 — that gates
+// the dormant wake-word path, which is a different feature.
+#define BOARD_HAS_VOICE_CAPTURE  1

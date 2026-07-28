@@ -1,6 +1,12 @@
 #pragma once
 
 #include <lvgl.h>
+// Self-sufficient: the voice API below is gated on board-header capability
+// macros, not -D flags, so every includer must see them — and the guard in the
+// implementation must agree with the guard here or the definitions vanish while
+// the build still links everything else. That failure has now happened twice in
+// this tree; the include is the fix, not discipline.
+#include "../../../boards/board_config.h"
 
 namespace HUD {
 
@@ -20,5 +26,24 @@ void update();
  */
 void setVisible(bool visible);
 bool isVisible();
+
+#if defined(BOARD_HAS_VOICE_CAPTURE) || defined(BOARD_HAS_SPEAKER)
+/**
+ * Voice banners, mirroring the knob UI's contract so the protocol layer can
+ * call the same shapes on either board.
+ *
+ * The listening banner must stay up for the whole hold and name the target
+ * session — the operator has to be able to see who they are talking to before
+ * they finish talking. The speaking banner exists so a board that is playing a
+ * reply is not mistaken for a dead one, and so the reply is legible with the
+ * volume down.
+ */
+void setListening(const char* target);
+void clearListening();
+void setSpeaking(const char* text);
+void clearSpeaking();
+/** Transient one-line status (transcript, delivery failure, mic unavailable). */
+void notify(const char* text);
+#endif
 
 }  // namespace HUD

@@ -9,6 +9,9 @@
 #include "config.h"
 #include "net/serial_client.h"
 #include "net/ws_client.h"
+#if defined(BOARD_HAS_VOICE_CAPTURE)
+#include "../../audio/mic_capture.h"
+#endif
 #include <Arduino.h>
 #include <cstdarg>
 
@@ -907,6 +910,138 @@ static lv_obj_t* makeUsageBlock(lv_obj_t* parent, const lv_image_dsc_t* icon, ui
 }
 #endif // BOARD_IPS10
 
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+// ── Push-to-talk ──────────────────────────────────────────────────────────────
+// A dedicated hold target, unlike the knob's encoder press which is multiplexed
+// with "go back" and therefore needs a 400 ms arm threshold. Here press means
+// press: there is nothing else the control could mean.
+//
+// The target session is the daemon's own focus (`g_state.focusedSessionId`),
+// the same source the knob uses. Inventing a device-local selection UX here
+// would give the operator two different notions of "current session" to
+// reconcile, and the cards are deliberately passive status tiles.
+static lv_obj_t* voiceBtn = nullptr;
+static lv_obj_t* voiceBtnLabel = nullptr;
+static lv_obj_t* voiceBanner = nullptr;
+static lv_obj_t* voiceBannerLabel = nullptr;
+static char voiceNotice[128] = {0};
+static uint32_t voiceNoticeUntilMs = 0;
+
+static void voiceBannerShow(const char* text, uint32_t colour) {
+    if (!voiceBanner || !voiceBannerLabel) return;
+    char safe[128];
+    snprintf(safe, sizeof(safe), "%s", text ? text : "");
+    Utf8::sanitizeLvglText(safe);
+    Utf8::utf8TrimEnd(safe);
+    lv_label_set_text(voiceBannerLabel, safe);
+    lv_obj_set_style_border_color(voiceBanner, lv_color_hex(colour), 0);
+    lv_obj_set_style_text_color(voiceBannerLabel, lv_color_hex(colour), 0);
+    lv_obj_set_style_opa(voiceBanner, LV_OPA_COVER, 0);
+}
+
+static void voiceBannerHide() {
+    if (voiceBanner) lv_obj_set_style_opa(voiceBanner, LV_OPA_TRANSP, 0);
+}
+
+static void voicePressCb(lv_event_t* e) {
+    (void)e;
+    if (!Audio::micReady()) {
+        HUD::notify("mic unavailable");
+        return;
+    }
+    lockState();
+    char target[32];
+    snprintf(target, sizeof(target), "%s", g_state.focusedSessionId);
+    char label[96];
+    snprintf(label, sizeof(label), "%s", g_state.projectName[0] ? g_state.projectName : "(no session)");
+    unlockState();
+    if (!target[0]) {
+        HUD::notify("no focused session to speak to");
+        return;
+    }
+    Audio::micStart(target);
+    HUD::setListening(label);
+    lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(Theme::StatusAmber), 0);
+    lv_label_set_text(voiceBtnLabel, "듣는 중");
+}
+
+static void voiceReleaseCb(lv_event_t* e) {
+    (void)e;
+    if (!Audio::micCapturing()) return;
+    Audio::micStop(false);
+    HUD::clearListening();
+    lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(0x14312C), 0);
+    lv_label_set_text(voiceBtnLabel, "말하기");
+}
+
+// Called from update(): a transient notice has to clear itself, and update() is
+// the only thing already ticking on the LVGL thread.
+static void voiceTick() {
+    if (voiceNoticeUntilMs && (int32_t)(millis() - voiceNoticeUntilMs) >= 0) {
+        voiceNoticeUntilMs = 0;
+        if (!Audio::micCapturing()) voiceBannerHide();
+    }
+}
+
+// `pane` is the cards column (panelLeft), a flex column whose cellsBox has
+// flex_grow 1. Adding this row as a fixed-height sibling makes the treemap give
+// up the space rather than sit underneath: floating it absolutely put the button
+// on top of a live card, which the host simulator caught before any hardware did.
+static void voiceCreate(lv_obj_t* pane) {
+    lv_obj_t* row = lv_obj_create(pane);
+    lv_obj_set_size(row, ips10SidebarW - 28, 96);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_top(row, 8, 0);
+    lv_obj_set_style_pad_column(row, 12, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    voiceBanner = lv_obj_create(row);
+    lv_obj_set_height(voiceBanner, 76);
+    lv_obj_set_flex_grow(voiceBanner, 1);
+    lv_obj_set_style_bg_color(voiceBanner, lv_color_hex(0x0D2723), 0);
+    lv_obj_set_style_bg_opa(voiceBanner, (lv_opa_t)235, 0);
+    lv_obj_set_style_border_width(voiceBanner, 1, 0);
+    lv_obj_set_style_radius(voiceBanner, 12, 0);
+    lv_obj_set_style_pad_all(voiceBanner, 12, 0);
+    lv_obj_clear_flag(voiceBanner, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(voiceBanner, LV_OBJ_FLAG_CLICKABLE);
+    voiceBannerLabel = lv_label_create(voiceBanner);
+    lv_label_set_long_mode(voiceBannerLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(voiceBannerLabel, LV_PCT(100));
+    lv_obj_set_style_text_font(voiceBannerLabel, &font_kr_16, 0);
+    lv_label_set_text(voiceBannerLabel, "");
+    // Hidden by opacity, not LV_OBJ_FLAG_HIDDEN: a hidden flex child collapses
+    // and the button would slide left every time the banner appears.
+    lv_obj_set_style_opa(voiceBanner, LV_OPA_TRANSP, 0);
+
+    voiceBtn = lv_button_create(row);
+    lv_obj_set_size(voiceBtn, 168, 76);
+    lv_obj_set_style_radius(voiceBtn, 16, 0);
+    lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(0x14312C), 0);
+    lv_obj_set_style_bg_opa(voiceBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(voiceBtn, lv_color_hex(Theme::HUDDim), 0);
+    lv_obj_set_style_border_width(voiceBtn, 1, 0);
+    lv_obj_set_style_shadow_width(voiceBtn, 24, 0);
+    lv_obj_set_style_shadow_opa(voiceBtn, (lv_opa_t)120, 0);
+    lv_obj_set_style_shadow_color(voiceBtn, lv_color_hex(0x000000), 0);
+    voiceBtnLabel = lv_label_create(voiceBtn);
+    lv_label_set_text(voiceBtnLabel, "말하기");
+    lv_obj_set_style_text_font(voiceBtnLabel, &font_kr_20, 0);
+    lv_obj_center(voiceBtnLabel);
+    // PRESSED/RELEASED, not CLICKED: this is hold-to-talk, and RELEASED still
+    // fires when the finger slides off, which is the behaviour we want — a
+    // half-committed gesture should close the utterance, not strand it open.
+    lv_obj_add_event_cb(voiceBtn, voicePressCb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(voiceBtn, voiceReleaseCb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(voiceBtn, voiceReleaseCb, LV_EVENT_PRESS_LOST, NULL);
+}
+#endif  // BOARD_IPS10 && BOARD_HAS_VOICE_CAPTURE
+
 void init(lv_obj_t* parent) {
 #if defined(BOARD_IPS10)
     // === IPS10 tablet layout: terrarium on the left, treemap pane fills the rest ===
@@ -1242,6 +1377,10 @@ void init(lv_obj_t* parent) {
     panelRight = nullptr;
     lblTankHeader = nullptr;
 
+#if defined(BOARD_HAS_VOICE_CAPTURE)
+    voiceCreate(panelLeft);
+#endif
+
 #elif IS_ROUND
     // === Round AMOLED layout: top status bar + bottom gauges ===
 
@@ -1543,6 +1682,9 @@ static void setTopbarGauge(lv_obj_t* fill, lv_obj_t* pct, float v,
 #endif
 
 void update() {
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+    voiceTick();
+#endif
     if (!panelLeft) return;
 
     lockState();
@@ -2335,6 +2477,36 @@ void update() {
         }
     }
 }
+
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+void setListening(const char* target) {
+    char line[128];
+    snprintf(line, sizeof(line), "듣는 중 · %s", (target && target[0]) ? target : "(세션 없음)");
+    voiceBannerShow(line, Theme::StatusAmber);
+    voiceNoticeUntilMs = 0;   // a live hold outranks any transient notice
+}
+
+void clearListening() {
+    if (voiceNoticeUntilMs == 0) voiceBannerHide();
+}
+
+void setSpeaking(const char* text) {
+    char line[160];
+    snprintf(line, sizeof(line), "답변 · %s", (text && text[0]) ? text : "(재생 중)");
+    voiceBannerShow(line, Theme::StatusGreen);
+    voiceNoticeUntilMs = 0;
+}
+
+void clearSpeaking() {
+    if (voiceNoticeUntilMs == 0) voiceBannerHide();
+}
+
+void notify(const char* text) {
+    snprintf(voiceNotice, sizeof(voiceNotice), "%s", text ? text : "");
+    voiceNoticeUntilMs = millis() + 6000;
+    voiceBannerShow(voiceNotice, Theme::HUDText);
+}
+#endif
 
 void setVisible(bool v) {
     visible = v;

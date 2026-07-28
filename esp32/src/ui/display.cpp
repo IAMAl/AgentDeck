@@ -624,6 +624,7 @@ static bool touch_read_cst816s(uint16_t* x, uint16_t* y) {
 #include <driver/gpio.h>           // gpio_get_level() — read pad state without reconfiguring it
 #include <esp_log.h>               // silence the i2c.master NACK warnings during a sweep
 #include "../audio/speaker_playback.h"   // claim I2S DMA before the LVGL buffer
+#include "../audio/mic_capture.h"
 #include "driver/ppa.h"            // ESP32-P4 2D Pixel-Processing Accelerator (HW rotate)
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"      // esp_ptr_internal() — verify LVGL buffer is internal SRAM
@@ -1310,6 +1311,9 @@ void displayInit() {
     // of internal RAM just below. Late allocation loses that race once WiFi is
     // also up — see speaker_playback.cpp.
     Audio::playbackInit();
+    // Capture shares that channel, so this only flips the ready flag — but it
+    // has to happen after playbackInit(), never before.
+    Audio::micInit();
 
     g_screenW = BOARD_NATIVE_H;
     g_screenH = BOARD_NATIVE_W;

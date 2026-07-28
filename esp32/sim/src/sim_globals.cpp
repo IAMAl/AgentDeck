@@ -78,6 +78,18 @@ const char* wifiLocalIP() { return "192.168.1.42"; }
 void queueOutbound(const char*) {}
 }  // namespace Net
 
+// ── Audio shims (defined in audio/mic_capture.cpp on-device) ────────────────
+// Mic-ready but never capturing: the PTT control renders in its resting state.
+namespace Audio {
+bool micInit() { return true; }
+bool micReady() { return true; }
+bool micCapturing() { return false; }
+uint32_t micElapsedMs(uint32_t) { return 0; }
+void micStart(const char*) {}
+void micPump() {}
+void micStop(bool) {}
+}  // namespace Audio
+
 // ── Display accessors (defined in display.cpp on-device) ─────────────────────
 // The HUD queries orientation; the sim has no runtime rotation, so derive it
 // from the compile-time screen dimensions.

@@ -43,6 +43,10 @@
 #include "../audio/speaker_playback.h"
 #include "../audio/es8311_codec.h"
 #endif
+#if defined(BOARD_HAS_VOICE_CAPTURE) && !defined(BOARD_T_EMBED)
+#include "../audio/mic_capture.h"
+#include "../ui/widgets/hud_bar.h"
+#endif
 
 // Reusable JSON document — sized for typical bridge messages
 static JsonDocument doc;
@@ -1018,6 +1022,7 @@ static void sendDeviceInfo() {
         // `audio_out` gate keeps voice replies on the socket that can.
         JsonArray caps = resp["capabilities"].to<JsonArray>();
         if (Audio::playbackReady()) caps.add("audio_out");
+        if (Audio::micReady()) caps.add("audio");
     }
 #endif
 #if defined(BOARD_T_DISPLAY_PRO)
@@ -1268,10 +1273,15 @@ void parseMessage(const char* json, size_t length) {
 #endif
 #if defined(BOARD_HAS_SPEAKER) && !defined(BOARD_T_EMBED)
     } else if (strcmp(type, "audio_play_begin") == 0) {
-        // Spoken reply from the host. The T-Embed arm above additionally drives
-        // its knob UI ("speaking" state); this board has no such surface yet, so
-        // it is playback only.
+        // Spoken reply from the host. Mirrors the T-Embed arm, including the
+        // banner: a board playing a reply must not read as a dead one, and the
+        // text keeps the reply legible with the volume down.
         Audio::playbackBegin(obj["sampleRate"] | 16000);
+        {
+            char said[128];
+            snprintf(said, sizeof(said), "%s", obj["text"] | "");
+            HUD::setSpeaking(said);
+        }
     } else if (strcmp(type, "audio_play_chunk") == 0) {
         // Serial-transport counterpart of the binary WS frame. Present for
         // symmetry, but see the device_info note: this board's 115200 link
@@ -1288,6 +1298,22 @@ void parseMessage(const char* json, size_t length) {
         }
     } else if (strcmp(type, "audio_play_end") == 0) {
         Audio::playbackEnd();
+        HUD::clearSpeaking();
+    } else if (strcmp(type, "voice_result") == 0) {
+        // What the host heard, and whether it landed. Silence here was the worst
+        // part of the knob's early voice UX: a failed delivery looked identical
+        // to a successful one.
+        const char* text = obj["text"] | "";
+        bool delivered = obj["delivered"] | false;
+        const char* err = obj["error"] | "";
+        char note[160];
+        if (err[0])           snprintf(note, sizeof(note), "음성 오류: %s", err);
+        else if (!text[0])    snprintf(note, sizeof(note), "아무것도 못 들었습니다");
+        else if (!delivered)  snprintf(note, sizeof(note), "전달 실패: \"%s\"", text);
+        else                  snprintf(note, sizeof(note), "\"%s\"", text);
+        HUD::notify(note);
+    } else if (strcmp(type, "voice_reply_skipped") == 0) {
+        HUD::notify("읽어줄 내용이 없습니다");
 #endif
 #if defined(BOARD_PIN_MIC_DIN)
     } else if (strcmp(type, "mic_test") == 0) {

@@ -1,11 +1,30 @@
-#if defined(BOARD_T_EMBED)
+// board_config.h before the guard: BOARD_HAS_VOICE_CAPTURE is a board-header
+// macro, not a -D flag.
+#include "../../boards/board_config.h"
+
+#if defined(BOARD_HAS_VOICE_CAPTURE)
 
 #include "mic_capture.h"
-#include "../../boards/board_config.h"
 #include "../net/ws_client.h"
 
 #include <Arduino.h>
+#if defined(BOARD_PIN_MIC_DATA)
 #include <ESP_I2S.h>
+#else
+// Codec boards capture through the same full-duplex I2S the speaker owns.
+#include "speaker_playback.h"
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
+// The daemon keys the utterance by board, so this must match device_info.
+#if defined(BOARD_T_EMBED)
+#define MIC_BOARD_NAME "t_embed"
+#elif defined(BOARD_IPS10)
+#define MIC_BOARD_NAME "ips_10"
+#else
+#error "BOARD_HAS_VOICE_CAPTURE set but no board name for voice_begin"
+#endif
 
 static constexpr uint32_t SAMPLE_RATE = 16000;   // what Apple's recognizer wants
 static constexpr size_t READ_SAMPLES = 512;      // 1 KB per frame, ~32 ms
@@ -19,7 +38,9 @@ static constexpr uint32_t TAIL_DRAIN_MS = 300;
 // utterance late is better than never closing it.
 static constexpr uint32_t END_FLUSH_TIMEOUT_MS = 3000;
 
+#if defined(BOARD_PIN_MIC_DATA)
 static I2SClass s_i2s;
+#endif
 static bool s_ready = false;
 static bool s_capturing = false;
 static uint32_t s_startedMs = 0;
@@ -30,9 +51,36 @@ static bool s_closingCancel = false;
 static uint32_t s_closingSinceMs = 0;
 static uint32_t s_closingDurationMs = 0;
 
+// The only board-dependent part of capture. Everything below — tail drain,
+// backlog ordering, runaway guard — is shared, and deliberately so: those rules
+// were each paid for by a bug.
+static size_t micReadFrame() {
+#if defined(BOARD_PIN_MIC_DATA)
+    return s_i2s.readBytes((char*)s_buf, sizeof(s_buf));
+#else
+    return Audio::captureRead((uint8_t*)s_buf, sizeof(s_buf));
+#endif
+}
+
+#if !defined(BOARD_PIN_MIC_DATA)
+// Codec boards pump from their own task. micReadFrame() blocks ~32 ms per
+// frame, and on ips10 the only other candidate thread drives LVGL with a 24 ms
+// input timer — pumping there would visibly stall touch for the whole hold.
+static TaskHandle_t s_pumpTask = nullptr;
+static void micPumpTask(void*) {
+    while (Audio::micCapturing()) {
+        Audio::micPump();
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    s_pumpTask = nullptr;
+    vTaskDelete(nullptr);
+}
+#endif
+
 namespace Audio {
 
 bool micInit() {
+#if defined(BOARD_PIN_MIC_DATA)
     // PDM RX shares no pins with the speaker's STD TX, but both grab an I2S
     // peripheral — the S3 has two, so capture and the chime can coexist.
     s_i2s.setPinsPdmRx(BOARD_PIN_MIC_CLK, BOARD_PIN_MIC_DATA);
@@ -40,6 +88,14 @@ bool micInit() {
                           I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
     if (!s_ready) Serial.println("[Mic] PDM RX init failed — push-to-talk disabled");
     else Serial.println("[Mic] PDM RX ready (16 kHz mono)");
+#else
+    // Nothing to open: the RX half came up with the speaker's channel, early in
+    // boot, which is the only moment this board has the internal DMA memory for
+    // it. If that failed, capture is simply unavailable.
+    s_ready = playbackInit() && captureReady();
+    Serial.println(s_ready ? "[Mic] codec ADC ready (16 kHz mono, shared I2S)"
+                           : "[Mic] shared I2S unavailable — push-to-talk disabled");
+#endif
     return s_ready;
 }
 
@@ -57,11 +113,16 @@ void micStart(const char* sessionId) {
     s_startedMs = millis();
     char frame[160];
     snprintf(frame, sizeof(frame),
-             "{\"type\":\"voice_begin\",\"board\":\"t_embed\",\"format\":\"pcm16\","
+             "{\"type\":\"voice_begin\",\"board\":\"" MIC_BOARD_NAME "\",\"format\":\"pcm16\","
              "\"sampleRate\":%lu,\"sessionId\":\"%s\"}",
              (unsigned long)SAMPLE_RATE, sessionId ? sessionId : "");
     Net::queueOutbound(frame);
     Serial.println("[Mic] capture start");
+#if !defined(BOARD_PIN_MIC_DATA)
+    if (!s_pumpTask) {
+        xTaskCreate(micPumpTask, "mic_pump", 4096, nullptr, 3, &s_pumpTask);
+    }
+#endif
 }
 
 void micPump() {
@@ -69,7 +130,7 @@ void micPump() {
         uint32_t since = millis() - s_closingSinceMs;
         // Phase 1: keep draining the mic so the tail of the last word is kept.
         if (since < TAIL_DRAIN_MS) {
-            size_t got = s_i2s.readBytes((char*)s_buf, sizeof(s_buf));
+            size_t got = micReadFrame();
             if (got > 0) Net::queueAudioChunk((const uint8_t*)s_buf, got);
             return;
         }
@@ -95,7 +156,7 @@ void micPump() {
         micStop(false);
         return;
     }
-    size_t got = s_i2s.readBytes((char*)s_buf, sizeof(s_buf));
+    size_t got = micReadFrame();
     if (got == 0) return;
     // A full ring means the link cannot keep up; drop this frame rather than
     // block — late audio is worthless and stalling here would also stall the UI.
@@ -115,4 +176,4 @@ void micStop(bool cancel) {
 
 }  // namespace Audio
 
-#endif  // BOARD_T_EMBED
+#endif  // BOARD_HAS_VOICE_CAPTURE

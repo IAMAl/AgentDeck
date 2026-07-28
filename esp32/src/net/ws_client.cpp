@@ -52,7 +52,7 @@ static SemaphoreHandle_t outboxMutex = nullptr;
 // board with a microphone can ever fill this ring, so only such a board pays
 // for it. Nothing gates ESP32 builds in CI, which is why the break stayed
 // invisible until a full-fleet compile.
-#if defined(BOARD_T_EMBED)
+#if defined(BOARD_HAS_VOICE_CAPTURE)
 static constexpr int AUDIO_SLOTS = 6;
 static constexpr size_t AUDIO_SLOT_BYTES = 2048;
 static uint8_t audioRing[AUDIO_SLOTS][AUDIO_SLOT_BYTES];
@@ -167,7 +167,7 @@ namespace Net {
 
 void wsInit() {
     if (!outboxMutex) outboxMutex = xSemaphoreCreateMutex();
-#if defined(BOARD_T_EMBED)
+#if defined(BOARD_HAS_VOICE_CAPTURE)
     if (!audioMutex) audioMutex = xSemaphoreCreateMutex();
 #endif
 #if defined(BOARD_HAS_DVP_CAMERA)
@@ -445,7 +445,7 @@ static void pumpPhoto() {
 }
 #endif  // BOARD_HAS_DVP_CAMERA
 
-#if !defined(BOARD_T_EMBED)
+#if !defined(BOARD_HAS_VOICE_CAPTURE)
 // Boards without a microphone keep the API but never carry the buffer.
 bool queueAudioChunk(const uint8_t*, size_t) { return false; }
 bool audioBacklogged() { return false; }
@@ -472,7 +472,7 @@ bool audioBacklogged() {
     xSemaphoreGive(audioMutex);
     return any;
 }
-#endif  // BOARD_T_EMBED
+#endif  // BOARD_HAS_VOICE_CAPTURE
 
 // Enqueue an outbound JSON command from any task (typically CORE_UI). Dropped if
 // the small queue is full — interactive commands are user-paced, not bursty.
@@ -505,7 +505,7 @@ void pumpOutbound() {
         else Net::serialWriteJsonLine(line);  // serial bridge consumes line-delimited JSON
     }
 
-#if defined(BOARD_T_EMBED)
+#if defined(BOARD_HAS_VOICE_CAPTURE)
     // Binary audio frames — WS only. Dropped (not buffered) when the socket is
     // down: a voice utterance is worthless late, and holding it would stall
     // the capture task behind a dead link.
@@ -522,7 +522,7 @@ void pumpOutbound() {
         if (len == 0) continue;
         if (connected) {
             ws.sendBIN(frame, len);
-#if defined(BOARD_T_EMBED)
+#if defined(BOARD_HAS_VOICE_CAPTURE)
         } else if (Net::serialConnected()) {
             // USB-attached: the board's WiFi WS is parked, but the mic must not
             // go dead just because the user plugged in to charge. Serial is
@@ -545,10 +545,10 @@ void pumpOutbound() {
                 line[pfx + wrote + 2] = '\0';
                 Net::serialWriteJsonLine(line);
             }
-#endif  // BOARD_T_EMBED
+#endif  // BOARD_HAS_VOICE_CAPTURE
         }
     }
-#endif  // BOARD_T_EMBED
+#endif  // BOARD_HAS_VOICE_CAPTURE
 
 #if defined(BOARD_HAS_DVP_CAMERA)
     pumpPhotoHttp();

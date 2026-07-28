@@ -50,6 +50,7 @@
 #define BOARD_PIN_IR_RX      1
 
 // PDM microphone (vendor: BOARD_MIC_DATA / BOARD_MIC_CLK)
+#define BOARD_HAS_VOICE_CAPTURE 1
 #define BOARD_PIN_MIC_DATA   42
 #define BOARD_PIN_MIC_CLK    39
 
