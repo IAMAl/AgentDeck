@@ -47,6 +47,13 @@ void setVolume(int percent);
 /** The level begin() will apply, without touching the codec now. */
 int volume();
 
+/**
+ * Microphone PGA, as the codec's gain step 0..7 (== 0/6/12/18/24/30/36/42 dB).
+ * Stored and re-applied by begin() for the same reason as the volume.
+ */
+void setMicGain(int step);
+int micGain();
+
 }  // namespace Es8311
 
 #endif  // BOARD_SPK_CODEC_ES8311

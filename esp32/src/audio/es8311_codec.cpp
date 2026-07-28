@@ -56,6 +56,13 @@ bool s_ready = false;
 // were reported painfully loud twice, while -18 dB was still clearly audible
 // as the quietest of three verified steps.
 int  s_volume = 70;
+// REG16 takes a gain *enum*, 0..7 == 0/6/12/18/24/30/36/42 dB (upstream
+// es8311_set_mic_gain writes the enum straight into the register). Note the
+// open sequence above writes 0x24 into the same register — that is a clock/ramp
+// value from upstream's open path, not a gain, and it must be overwritten after
+// init or the PGA sits at an out-of-range word. Stored for the same reason as
+// s_volume: begin() re-runs per utterance and would revert a late write.
+int  s_micGain = 6;   // +36 dB — electret into an ES8311 needs most of the PGA
 
 bool wr(uint8_t reg, uint8_t val) { return UI::hwI2cWriteReg8(ADDR, reg, val); }
 bool rd(uint8_t reg, uint8_t* val) { return UI::hwI2cReadReg8(ADDR, reg, val); }
@@ -240,6 +247,7 @@ bool begin(uint32_t sampleRate) {
     if (!wr(REG31_DAC, v)) return false;
 
     setVolume(s_volume);
+    setMicGain(s_micGain);
     paEnable(true);
 
     s_ready = true;
@@ -267,6 +275,15 @@ void setVolume(int percent) {
 }
 
 int volume() { return s_volume; }
+
+void setMicGain(int step) {
+    if (step < 0) step = 0;
+    if (step > 7) step = 7;
+    s_micGain = step;
+    wr(REG16_ADC, (uint8_t)step);
+}
+
+int micGain() { return s_micGain; }
 
 void stop() {
     paEnable(false);

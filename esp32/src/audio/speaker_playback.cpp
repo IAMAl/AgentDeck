@@ -85,8 +85,18 @@ static bool ensureI2sOpen(uint32_t rate) {
     }
 #if defined(BOARD_PIN_SPK_MCLK)
     // Codec boards need a master clock; a bare I2S amplifier does not.
+    // When the codec also feeds a microphone back, name its data-in pin here:
+    // one i2s_new_channel() then yields tx+rx on the same controller, sharing
+    // BCLK/WS. That matters more than it looks — it means the capture DMA is
+    // claimed at this same early, pre-LVGL, pre-WiFi moment rather than in a
+    // late allocation that would repeat the ESP_ERR_NO_MEM failure.
+#if defined(BOARD_PIN_MIC_DIN)
+    s_i2s.setPins(BOARD_PIN_SPK_BCLK, BOARD_PIN_SPK_LRCLK, BOARD_PIN_SPK_DIN,
+                  BOARD_PIN_MIC_DIN, BOARD_PIN_SPK_MCLK);
+#else
     s_i2s.setPins(BOARD_PIN_SPK_BCLK, BOARD_PIN_SPK_LRCLK, BOARD_PIN_SPK_DIN, -1,
                   BOARD_PIN_SPK_MCLK);
+#endif
 #else
     s_i2s.setPins(BOARD_PIN_SPK_BCLK, BOARD_PIN_SPK_LRCLK, BOARD_PIN_SPK_DIN, -1, -1);
 #endif
@@ -261,6 +271,17 @@ void playbackEnd() {
 }
 
 bool playbackActive() { return s_playing || s_streaming; }
+
+#if defined(BOARD_PIN_MIC_DIN)
+bool captureReady() { return s_i2sOpen; }
+
+size_t captureRead(uint8_t* out, size_t len) {
+    if (!s_i2sOpen || !out || len == 0) return 0;
+    // Blocks until `len` bytes arrive (~32 ms per 1024) and returns 0 on error,
+    // so never call this from the LVGL task — its input device polls at 24 ms.
+    return s_i2s.readBytes((char*)out, len);
+}
+#endif
 
 void playbackStop() {
     s_abort = true;

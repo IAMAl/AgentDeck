@@ -1289,6 +1289,54 @@ void parseMessage(const char* json, size_t length) {
     } else if (strcmp(type, "audio_play_end") == 0) {
         Audio::playbackEnd();
 #endif
+#if defined(BOARD_PIN_MIC_DIN)
+    } else if (strcmp(type, "mic_test") == 0) {
+        // Capture probe, same firmware-local rationale as i2c_diag. The mic pin
+        // is the one part of this board's audio map that has never been proven:
+        // the BSP names GPIO 11, but only the TX direction was confirmed by ear.
+        // Reports level rather than audio, because level is what distinguishes
+        // "wrong pin" (flat) from "right pin, quiet" (floor moves with speech).
+        {
+            int gain = obj["gain"].is<int>() ? obj["gain"].as<int>() : -1;
+            int ms   = obj["ms"].is<int>() ? obj["ms"].as<int>() : 1500;
+            if (ms < 200) ms = 200;
+            if (ms > 5000) ms = 5000;
+            if (gain >= 0) Es8311::setMicGain(gain);
+
+            // The codec ADC only runs once begin() has programmed it, and
+            // begin() needs the I2S clock already up.
+            if (!Audio::captureReady()) Audio::playbackInit();
+            if (!Es8311::ready()) Es8311::begin(16000);
+
+            Serial.printf("[MicTest] %d ms at gain step %d (%d dB) — make some noise\n",
+                          ms, Es8311::micGain(), Es8311::micGain() * 6);
+            static int16_t mic[512];
+            const int frames = (16000 * ms / 1000) / 512;
+            int32_t peak = 0; int64_t sumSq = 0; int32_t samples = 0; int zeroFrames = 0;
+            for (int f = 0; f < frames; f++) {
+                size_t got = Audio::captureRead((uint8_t*)mic, sizeof(mic));
+                if (got == 0) { zeroFrames++; continue; }
+                const int n = (int)(got / 2);
+                for (int i = 0; i < n; i++) {
+                    int32_t v = mic[i];
+                    if (v < 0) v = -v;
+                    if (v > peak) peak = v;
+                    sumSq += (int64_t)mic[i] * mic[i];
+                }
+                samples += n;
+            }
+            if (samples == 0) {
+                Serial.printf("[MicTest] no samples (%d empty reads) — RX channel not delivering\n",
+                              zeroFrames);
+            } else {
+                const double rms = sqrt((double)sumSq / (double)samples);
+                Serial.printf("[MicTest] %ld samples, peak %ld (%.1f%% FS), rms %.0f (%.2f%% FS)%s\n",
+                              (long)samples, (long)peak, peak * 100.0 / 32768.0,
+                              rms, rms * 100.0 / 32768.0,
+                              peak < 16 ? "  <- flat: wrong pin, or ADC muted" : "");
+            }
+        }
+#endif
     } else if (strcmp(type, "audio_test") == 0) {
         // Firmware-local, same rationale as i2c_diag above. Plays a 1 s 440 Hz
         // tone so the ES8311 pin-map hypothesis can be judged by ear — that is
