@@ -512,22 +512,21 @@ static esp_err_t esp_lcd_touch_gsl3680_init(esp_lcd_touch_handle_t tp)
     // expects 5a5a5a5a -- and upstream never called it, so a bad load was
     // indistinguishable from a good one. Load, verify, and retry the whole
     // sequence before giving up.
-    esp_err_t verified = ESP_FAIL;
-    for (int attempt = 1; attempt <= 3 && verified != ESP_OK; attempt++) {
-        esp_lcd_touch_gsl3680_clear_reg(tp);
-        touch_gsl3680_reset(tp);
-        esp_lcd_touch_gsl3680_load_fw(tp);
-        esp_lcd_touch_gsl3680_startup_chip(tp);
-        touch_gsl3680_reset(tp);
-        esp_lcd_touch_gsl3680_startup_chip(tp);
-        verified = esp_lcd_touch_gsl3680_read_ram_fw(tp);
-        ESP_LOGE(TAG,"init attempt %d: firmware %s", attempt,
-                 verified == ESP_OK ? "VERIFIED" : "NOT verified");
-    }
-    if (verified != ESP_OK) {
-        ESP_LOGE(TAG,"gsl3680 firmware never verified -- touch will report nothing");
-    }
-    return verified;
+    // Sequence is the vendor's for this panel, unchanged.
+    //
+    // read_ram_fw() -- the 0xb0 == 5a5a5a5a check -- is NOT a usable verifier
+    // here and is deliberately not called: this firmware table contains no
+    // write to 0xb0, so the marker reads 0 on a healthy load, before or after
+    // the reset. It cost a full debugging cycle to learn that; leaving it wired
+    // up would keep asserting a failure that says nothing about the chip.
+    esp_lcd_touch_gsl3680_clear_reg(tp);
+    touch_gsl3680_reset(tp);
+    esp_lcd_touch_gsl3680_load_fw(tp);
+    esp_lcd_touch_gsl3680_startup_chip(tp);
+    touch_gsl3680_reset(tp);
+    esp_lcd_touch_gsl3680_startup_chip(tp);
+
+    return ESP_OK;
 }
 
 
@@ -542,10 +541,7 @@ static esp_err_t touch_gsl3680_reset(esp_lcd_touch_handle_t tp)
     ESP_RETURN_ON_ERROR(gpio_set_level(tp->config.rst_gpio_num, 1), TAG, "GPIO set level error!");
     vTaskDelay(pdMS_TO_TICKS(20));
 
-    addr = 0xe0;
-    write_buf[0] = 0x88;
-    touch_gsl3680_i2c_write(tp,addr,write_buf,1);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // 0xe0 = 0x88 (DSP halt) intentionally omitted -- see clear_reg above.
     addr = 0xe4;
     write_buf[0]=0x04;
     touch_gsl3680_i2c_write(tp,addr,write_buf,1);
@@ -639,7 +635,7 @@ static esp_err_t esp_lcd_touch_gsl3680_read_ram_fw(esp_lcd_touch_handle_t tp)
     ESP_LOGI(TAG,"enter read_ram_fw");
     vTaskDelay(pdMS_TO_TICKS(30));
     ESP_RETURN_ON_ERROR(touch_gsl3680_i2c_read(tp, addr, (uint8_t *)&read_buf, 4), TAG, "gsl3680 read error!");
-    ESP_LOGE(TAG,"gsl3680 fw check 0xb0 = %x,%x,%x,%x (want 5a,5a,5a,5a)",read_buf[3],read_buf[2],read_buf[1],read_buf[0]);
+    ESP_LOGI(TAG,"gsl3680 fw check 0xb0 = %x,%x,%x,%x (want 5a,5a,5a,5a)",read_buf[3],read_buf[2],read_buf[1],read_buf[0]);
     if(read_buf[3] != 0x5a || read_buf[2] != 0x5a || read_buf[1] != 0x5a || read_buf[0] != 0x5a)
     {
 
@@ -701,10 +697,10 @@ static esp_err_t esp_lcd_touch_gsl3680_load_fw(esp_lcd_touch_handle_t tp)
         if (err != ESP_OK) failures++;
     }
     if (failures || retried) {
-        ESP_LOGE(TAG,"load fw: %d write(s) retried, %d still failed (of %u)",
+        ESP_LOGW(TAG,"load fw: %d write(s) retried, %d still failed (of %u)",
                  retried, failures, (unsigned)source_len);
     } else {
-        ESP_LOGE(TAG,"load fw success (%u writes, no retries)", (unsigned)source_len);
+        ESP_LOGI(TAG,"load fw success (%u writes, no retries)", (unsigned)source_len);
     }
     return failures ? ESP_FAIL : ESP_OK;
 }
@@ -715,9 +711,14 @@ static esp_err_t esp_lcd_touch_gsl3680_clear_reg(esp_lcd_touch_handle_t tp)
     uint8_t wrbuf[4];
 
     ESP_LOGI(TAG,"clear reg");
-    addr = 0xe0;
-    wrbuf[0] = 0x88;
-    gsl3680_write_retry(tp,addr,wrbuf,1);
+    // Hardware reset first, exactly as the vendor's own driver for this panel
+    // does. Our copy had this replaced by an I2C write of 0xe0 = 0x88 -- which
+    // halts the GSLX680 DSP -- so the chip was told to stop right before being
+    // asked to run its firmware. The vendor comments that write out in both
+    // places; so do we.
+    ESP_RETURN_ON_ERROR(gpio_set_level(tp->config.rst_gpio_num, 0), TAG, "GPIO set level error!");
+    vTaskDelay(pdMS_TO_TICKS(20));
+    ESP_RETURN_ON_ERROR(gpio_set_level(tp->config.rst_gpio_num, 1), TAG, "GPIO set level error!");
     vTaskDelay(pdMS_TO_TICKS(20));
     addr = 0x88;
     wrbuf[0] = 0x01;
