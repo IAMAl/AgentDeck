@@ -51,6 +51,9 @@ void hwI2cProbe(int sdaOverride = -1, int sclOverride = -1);
 /** Dump registers 0x00–0x4A plus the ID/version trio of a confirmed device. */
 void hwI2cDumpDevice(uint8_t addr);
 
+/** Log raw + mapped touch points, to tell a dead controller from a bad map. */
+void setTouchTrace(bool on);
+
 /**
  * Single-register access on the panel's I2C bus, for peripherals that share it
  * with touch (the ES8311 codec at 0x18). Routed through here rather than

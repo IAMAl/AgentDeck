@@ -973,6 +973,7 @@ static bool voiceResolveTarget(char* idOut, size_t idCap, char* labelOut, size_t
 
 static void voicePressCb(lv_event_t* e) {
     (void)e;
+    Serial.println("[Voice] button PRESSED");
     if (!Audio::micReady()) {
         HUD::notify("Mic unavailable");
         return;
@@ -992,6 +993,7 @@ static void voicePressCb(lv_event_t* e) {
 
 static void voiceReleaseCb(lv_event_t* e) {
     (void)e;
+    Serial.println("[Voice] button RELEASED");
     if (!Audio::micCapturing()) return;
     Audio::micStop(false);
     HUD::clearListening();

@@ -1250,6 +1250,43 @@ void parseMessage(const char* json, size_t length) {
 #else
         Serial.println("[TouchDiag] Not supported on this board");
 #endif
+    } else if (strcmp(type, "touch_trace") == 0) {
+#if defined(BOARD_IPS10)
+        UI::setTouchTrace(obj["on"] | true);
+#else
+        Serial.println("[TouchTrace] Not supported on this board");
+#endif
+    } else if (strcmp(type, "touch_probe") == 0) {
+#if defined(BOARD_IPS10)
+        // Read the controller's own finger-count byte (GSL3680 reg 0x80), below
+        // the esp_lcd_touch driver entirely. If this moves when the panel is
+        // touched, the chip works and the fault is above it; if it never moves,
+        // the controller is not reporting and no amount of mapping will help.
+        {
+            int ms = obj["ms"].is<int>() ? obj["ms"].as<int>() : 12000;
+            Serial.printf("[TouchProbe] polling GSL3680 0x%02X for %d ms — touch the panel\n",
+                          BOARD_TOUCH_ADDR, ms);
+            uint32_t end = millis() + (uint32_t)ms;
+            uint8_t last = 0xFF; int reads = 0, fails = 0, nonzero = 0;
+            while ((int32_t)(millis() - end) < 0) {
+                uint8_t n = 0;
+                if (UI::hwI2cReadReg8(BOARD_TOUCH_ADDR, 0x80, &n)) {
+                    reads++;
+                    if (n) nonzero++;
+                    if (n != last) {
+                        Serial.printf("[TouchProbe] fingers=%u\n", n);
+                        last = n;
+                    }
+                } else {
+                    fails++;
+                }
+                delay(40);
+            }
+            Serial.printf("[TouchProbe] %d reads, %d i2c failures, %d non-zero%s\n",
+                          reads, fails, nonzero,
+                          nonzero == 0 ? "  <- controller never reported a touch" : "");
+        }
+#endif
     } else if (strcmp(type, "i2c_diag") == 0) {
         // Audio-codec hardware probe. Deliberately firmware-local: the daemon
         // never originates it (daemon-server.ts's esp32WifiEvents allowlist

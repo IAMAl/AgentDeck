@@ -508,14 +508,26 @@ static esp_err_t esp_lcd_touch_gsl3680_del(esp_lcd_touch_handle_t tp)
 static esp_err_t esp_lcd_touch_gsl3680_init(esp_lcd_touch_handle_t tp)
 {
     ESP_LOGI(TAG,"start init");
-    esp_lcd_touch_gsl3680_clear_reg(tp);
-    touch_gsl3680_reset(tp);
-    esp_lcd_touch_gsl3680_load_fw(tp);
-    esp_lcd_touch_gsl3680_startup_chip(tp);
-    touch_gsl3680_reset(tp);
-    esp_lcd_touch_gsl3680_startup_chip(tp);
-
-    return ESP_OK;
+    // read_ram_fw() is the vendor's own verification -- it reads 0xb0 and
+    // expects 5a5a5a5a -- and upstream never called it, so a bad load was
+    // indistinguishable from a good one. Load, verify, and retry the whole
+    // sequence before giving up.
+    esp_err_t verified = ESP_FAIL;
+    for (int attempt = 1; attempt <= 3 && verified != ESP_OK; attempt++) {
+        esp_lcd_touch_gsl3680_clear_reg(tp);
+        touch_gsl3680_reset(tp);
+        esp_lcd_touch_gsl3680_load_fw(tp);
+        esp_lcd_touch_gsl3680_startup_chip(tp);
+        touch_gsl3680_reset(tp);
+        esp_lcd_touch_gsl3680_startup_chip(tp);
+        verified = esp_lcd_touch_gsl3680_read_ram_fw(tp);
+        ESP_LOGE(TAG,"init attempt %d: firmware %s", attempt,
+                 verified == ESP_OK ? "VERIFIED" : "NOT verified");
+    }
+    if (verified != ESP_OK) {
+        ESP_LOGE(TAG,"gsl3680 firmware never verified -- touch will report nothing");
+    }
+    return verified;
 }
 
 
@@ -585,14 +597,35 @@ static esp_err_t touch_gsl3680_read_cfg(esp_lcd_touch_handle_t tp)
     return ret;
 }
 
+/* Control-register writes are single bytes at bus-contention-prone moments
+ * (right after a 4356-write burst, while the LVGL indev polls the same bus).
+ * One dropped write here is not cosmetic: losing the 0xe0 start command leaves
+ * the firmware loaded but never executing, which reads downstream as "the
+ * controller reports no touches" with nothing else amiss. Retry them. */
+static esp_err_t gsl3680_write_retry(esp_lcd_touch_handle_t tp, uint8_t reg,
+                                     uint8_t *data, uint8_t len)
+{
+    esp_err_t err = touch_gsl3680_i2c_write(tp, reg, data, len);
+    for (int attempt = 0; err != ESP_OK && attempt < 5; attempt++) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+        err = touch_gsl3680_i2c_write(tp, reg, data, len);
+    }
+    return err;
+}
+
 static esp_err_t esp_lcd_touch_gsl3680_startup_chip(esp_lcd_touch_handle_t tp)
 {
     esp_err_t ret = ESP_OK;
     uint8_t write_buf[4];
     uint8_t addr = 0xe0;
     write_buf[0] = 0x00;
-    ESP_LOGI(TAG,"enter");
-    ESP_RETURN_ON_ERROR(touch_gsl3680_i2c_write(tp,addr,write_buf,1),TAG,"gsl3680 read error");
+    // Let the bus settle after the firmware burst before the start command.
+    vTaskDelay(pdMS_TO_TICKS(10));
+    esp_err_t started = gsl3680_write_retry(tp, addr, write_buf, 1);
+    if (started != ESP_OK) {
+        ESP_LOGE(TAG,"gsl3680 start command (0xe0) failed -- firmware will not run");
+        return started;
+    }
     vTaskDelay(pdMS_TO_TICKS(10));
 
     gsl_DataInit(gsl_config_data_id);
@@ -606,7 +639,7 @@ static esp_err_t esp_lcd_touch_gsl3680_read_ram_fw(esp_lcd_touch_handle_t tp)
     ESP_LOGI(TAG,"enter read_ram_fw");
     vTaskDelay(pdMS_TO_TICKS(30));
     ESP_RETURN_ON_ERROR(touch_gsl3680_i2c_read(tp, addr, (uint8_t *)&read_buf, 4), TAG, "gsl3680 read error!");
-    ESP_LOGI(TAG,"gsl3680 startup_chip failed read 0xb0 = %x,%x,%x,%x ",read_buf[3],read_buf[2],read_buf[1],read_buf[0]);
+    ESP_LOGE(TAG,"gsl3680 fw check 0xb0 = %x,%x,%x,%x (want 5a,5a,5a,5a)",read_buf[3],read_buf[2],read_buf[1],read_buf[0]);
     if(read_buf[3] != 0x5a || read_buf[2] != 0x5a || read_buf[1] != 0x5a || read_buf[0] != 0x5a)
     {
 
@@ -643,6 +676,13 @@ static esp_err_t esp_lcd_touch_gsl3680_load_fw(esp_lcd_touch_handle_t tp)
     unsigned char wrbuf[4];
     uint16_t source_line = 0;
     uint16_t source_len = sizeof(GSLX680_FW) / sizeof(struct fw_data);
+    // The upstream vendor loop discarded every write result and then logged
+    // "load fw success" unconditionally. On this panel two writes out of several
+    // thousand fail on each boot, and a Silead controller with a partially
+    // written blob comes up, answers I2C, and simply never reports a touch --
+    // which is exactly the symptom that made this look like a mapping bug.
+    // Retry each failing write, and report what actually happened.
+    int failures = 0, retried = 0;
 
     for(source_line=0;source_line<source_len;source_line++)
     {
@@ -651,14 +691,22 @@ static esp_err_t esp_lcd_touch_gsl3680_load_fw(esp_lcd_touch_handle_t tp)
         wrbuf[1] = (uint8_t)((GSLX680_FW[source_line].val & 0x0000ff00) >> 8);
         wrbuf[2] = (uint8_t)((GSLX680_FW[source_line].val & 0x00ff0000) >> 16);
         wrbuf[3] = (uint8_t)((GSLX680_FW[source_line].val & 0xff000000) >> 24);
-        if(addr == 0xf0)
-            touch_gsl3680_i2c_write(tp,addr,wrbuf,1);
-        else
-            touch_gsl3680_i2c_write(tp,addr,wrbuf,4);
-
+        const uint8_t len = (addr == 0xf0) ? 1 : 4;
+        esp_err_t err = touch_gsl3680_i2c_write(tp,addr,wrbuf,len);
+        for (int attempt = 0; err != ESP_OK && attempt < 3; attempt++) {
+            retried++;
+            vTaskDelay(pdMS_TO_TICKS(2));
+            err = touch_gsl3680_i2c_write(tp,addr,wrbuf,len);
+        }
+        if (err != ESP_OK) failures++;
     }
-    ESP_LOGI(TAG,"load fw success");
-    return ESP_OK;
+    if (failures || retried) {
+        ESP_LOGE(TAG,"load fw: %d write(s) retried, %d still failed (of %u)",
+                 retried, failures, (unsigned)source_len);
+    } else {
+        ESP_LOGE(TAG,"load fw success (%u writes, no retries)", (unsigned)source_len);
+    }
+    return failures ? ESP_FAIL : ESP_OK;
 }
 
 static esp_err_t esp_lcd_touch_gsl3680_clear_reg(esp_lcd_touch_handle_t tp)
@@ -669,19 +717,19 @@ static esp_err_t esp_lcd_touch_gsl3680_clear_reg(esp_lcd_touch_handle_t tp)
     ESP_LOGI(TAG,"clear reg");
     addr = 0xe0;
     wrbuf[0] = 0x88;
-    touch_gsl3680_i2c_write(tp,addr,wrbuf,1);
+    gsl3680_write_retry(tp,addr,wrbuf,1);
     vTaskDelay(pdMS_TO_TICKS(20));
     addr = 0x88;
     wrbuf[0] = 0x01;
-    touch_gsl3680_i2c_write(tp,addr,wrbuf,1);
+    gsl3680_write_retry(tp,addr,wrbuf,1);
     vTaskDelay(pdMS_TO_TICKS(5));
     addr = 0xe4;
     wrbuf[0] = 0x04;
-    touch_gsl3680_i2c_write(tp,addr,wrbuf,1);
+    gsl3680_write_retry(tp,addr,wrbuf,1);
     vTaskDelay(pdMS_TO_TICKS(5));
     addr = 0xe0;
     wrbuf[0] = 0x00;
-    touch_gsl3680_i2c_write(tp,addr,wrbuf,1);
+    gsl3680_write_retry(tp,addr,wrbuf,1);
     vTaskDelay(pdMS_TO_TICKS(20));
 
     return ESP_OK;

@@ -954,6 +954,11 @@ static void disp_flush(lv_display_t* display, const lv_area_t* area, uint8_t* px
     lv_display_flush_ready(display);
 }
 
+#if defined(BOARD_IPS10)
+// Opt-in so a normally silent board does not spam the console on every drag.
+static bool s_touchTrace = false;
+#endif
+
 // LVGL touch read callback
 static void touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
     uint16_t x, y;
@@ -979,6 +984,19 @@ static void touch_read(lv_indev_t* indev, lv_indev_data_t* data) {
         uint16_t temp_y = y;
         x = BOARD_NATIVE_H - 1 - temp_y;
         y = temp_x;
+        // Touch trace: this board's mapping has never been verified against a
+        // deliberate tap, so print raw and mapped together — a controller that
+        // reports nothing, a mapping that lands in the wrong quadrant, and a
+        // widget that simply is not hit all look identical from the outside.
+        if (s_touchTrace) {
+            static uint32_t lastTraceMs = 0;
+            uint32_t now = millis();
+            if (now - lastTraceMs > 150) {
+                lastTraceMs = now;
+                Serial.printf("[TouchTrace] raw(%u,%u) -> logical(%u,%u)  screen %dx%d\n",
+                              temp_x, temp_y, x, y, (int)g_screenW, (int)g_screenH);
+            }
+        }
 #else
     if (tft.getTouch(&x, &y)) {
 #endif
@@ -1003,6 +1021,11 @@ void requestPortrait() { s_stripPortrait = true; }
 #endif
 
 #if defined(BOARD_IPS10)
+void setTouchTrace(bool on) {
+    s_touchTrace = on;
+    Serial.printf("[TouchTrace] %s\n", on ? "on — tap the panel" : "off");
+}
+
 bool hwI2cReadReg8(uint8_t addr, uint8_t reg, uint8_t* out) {
     if (!i2c_handle || !out) return false;
     return i2cReadReg(i2c_handle, addr, reg, out);
