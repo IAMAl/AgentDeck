@@ -19,6 +19,16 @@ import {
   endWindowsTask,
   deleteWindowsTask,
 } from './windows-service.js';
+import {
+  SERVICE_NAME,
+  hasSystemctl,
+  unitExists,
+  installUnit,
+  startUnit,
+  disableUnit,
+  getUnitPath,
+  getDataDir,
+} from './linux-service.js';
 
 const require = createRequire(import.meta.url);
 const packageJson = require('../package.json') as { version: string };
@@ -602,7 +612,7 @@ daemon
 
 daemon
   .command('install')
-  .description('Install daemon auto-start (LaunchAgent on macOS, Scheduled Task on Windows)')
+  .description('Install daemon auto-start (LaunchAgent on macOS, Scheduled Task on Windows, systemd --user unit on Linux)')
   .action(async () => {
     if (process.platform === 'win32') {
       try {
@@ -648,6 +658,53 @@ daemon
       } catch { /* hooks package not built yet — task install still succeeds */ }
       process.exit(0);
     }
+    if (process.platform === 'linux') {
+      if (!hasSystemctl()) {
+        log('systemd --user is not available on this host.');
+        log('Run the daemon manually with: agentdeck daemon start');
+        log('(or add your own autostart entry).');
+      } else {
+        try {
+          installUnit();
+          startUnit();
+          log(`systemd user unit '${SERVICE_NAME}' installed and started.`);
+          log(`Unit file: ${getUnitPath()}`);
+          if (process.env.AGENTDECK_DATA_DIR) {
+            log(`Data dir: ${getDataDir()} (AGENTDECK_DATA_DIR persisted into the unit — re-run 'agentdeck daemon install' to change it)`);
+          } else {
+            log(`Data dir: ${getDataDir()}`);
+          }
+          log('For boot-without-login on a headless host, run once: loginctl enable-linger $USER');
+        } catch (e) {
+          const detail = (e as { stderr?: Buffer }).stderr?.toString().trim() || (e as Error).message;
+          log('Failed to install the systemd user unit.');
+          if (detail) log(detail);
+          log('You can still run the daemon manually with: agentdeck daemon start');
+          process.exit(1);
+        }
+      }
+      // Install Codex + OpenCode hooks for parity with the macOS/Windows paths.
+      try {
+        const { installCodexHooksIfNeeded } = await import('@agentdeck/hooks');
+        const result = installCodexHooksIfNeeded();
+        if (result.installed) {
+          log('Codex lifecycle hooks installed in ~/.codex/config.toml');
+          if (result.warning) log(`Codex hooks degraded: ${result.warning}`);
+        } else if (result.reason) {
+          log(`Codex hooks skipped: ${result.reason}`);
+        }
+      } catch { /* hooks package not built yet — install still succeeds */ }
+      try {
+        const { installOpenCodeHooksIfNeeded, opencodePluginPath } = await import('@agentdeck/hooks');
+        const result = installOpenCodeHooksIfNeeded();
+        if (result.installed) {
+          log(`OpenCode observer plugin installed at ${opencodePluginPath()}`);
+        } else if (result.reason) {
+          log(`OpenCode observer plugin skipped: ${result.reason}`);
+        }
+      } catch { /* hooks package not built yet — install still succeeds */ }
+      process.exit(0);
+    }
     if (process.platform !== 'darwin') {
       log('LaunchAgent is macOS-only');
       process.exit(1);
@@ -684,7 +741,7 @@ daemon
 
 daemon
   .command('uninstall')
-  .description('Remove daemon auto-start (LaunchAgent on macOS, Scheduled Task on Windows)')
+  .description('Remove daemon auto-start (LaunchAgent on macOS, Scheduled Task on Windows, systemd --user unit on Linux)')
   .action(async () => {
     if (process.platform === 'win32') {
       if (!taskExists()) {
@@ -703,6 +760,17 @@ daemon
         if (detail) log(detail);
         process.exit(1);
       }
+      process.exit(0);
+    }
+    if (process.platform === 'linux') {
+      if (!unitExists()) {
+        log(`systemd user unit '${SERVICE_NAME}' is not installed.`);
+        process.exit(0);
+      }
+      // Graceful daemon shutdown first, then disable + remove the unit.
+      await stopDaemon(BRIDGE_WS_PORT);
+      disableUnit();
+      log(`systemd user unit '${SERVICE_NAME}' removed.`);
       process.exit(0);
     }
     if (!existsSync(PLIST_PATH)) {
