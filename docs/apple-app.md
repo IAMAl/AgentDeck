@@ -53,7 +53,7 @@ The upgrade story lives here and in [appstore-feature-matrix.md](appstore-featur
 
 ## App Store Distribution
 
-[AgentDeck Dashboard 1.0.0 is live on the Mac App Store](https://apps.apple.com/app/id6784822497) as of 2026-07-21; the iPhone/iPad companion remains in review. The repository has since advanced to the unified `1.0.1` maintenance train, so source version and currently public store version may differ between channel releases.
+[AgentDeck Dashboard is live on the Mac App Store](https://apps.apple.com/app/id6784822497) — first published `1.0.0` on 2026-07-21, updated to `1.0.2` on 2026-07-24. The iPhone/iPad companion's own first release (also `1.0.2`) is still queued for review, so the two platforms' public state differs. The repository may also advance past the store version between channel releases.
 
 The macOS build ships as a **self-contained Swift daemon** gated by the `AGENTDECK_APP_STORE` compile flag — no bundled Node.js, no bundled `adb`, no subprocess spawn, no AppleScript. User data lives in the app sandbox container (`~/Library/Containers/bound.serendipity.agent.deck/Data/Library/Application Support/AgentDeck/`, not `~/.agentdeck/`) per Apple Review Guideline 2.5.2. D200H is reached only through the Ulanzi Studio WebSocket plugin, so AgentDeck requests no USB HID entitlement. The first-launch onboarding asks for Claude Code hook access via explicit NSOpenPanel consent. OpenClaw integration uses the Gateway-native WebSocket path (see §OpenClaw Gateway below), not a file-based identity. The app uses bundle ID `bound.serendipity.agent.deck`; see [RELEASING.md](../RELEASING.md) for independent channel delivery and build numbering.
 

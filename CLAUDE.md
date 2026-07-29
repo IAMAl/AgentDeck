@@ -60,7 +60,7 @@ git tag apple-v1.0.1 && git push origin apple-v1.0.1  # CI → TestFlight
 ```
 
 - **Apple Bundle ID**: `bound.serendipity.agent.deck` (App Store Connect 앱명: "AgentDeck Dashboard")
-- **App Store**: macOS `1.0.0`은 2026-07-21 공개 출시됨 — https://apps.apple.com/app/id6784822497 (iPhone/iPad companion은 심사 중)
+- **App Store**: macOS는 2026-07-21 `1.0.0`으로 첫 출시, 2026-07-24 `1.0.2`(빌드 3901) 승인·라이브 — https://apps.apple.com/app/id6784822497 (iPhone/iPad companion `1.0.2`는 여전히 심사 대기 — Apple Developer Support 2026-07-30 확인)
 - **Team**: 조직 `QF36NDHYHD` (Serendipity Bound) — 2026-07-10 개인 팀(R22679GY5Z)에서 이관. 서명은 **cloud signing** (`CODE_SIGN_STYLE=Automatic` + ASC API key `-allowProvisioningUpdates`); 수동 p12/프로파일 시크릿 불필요
 - **CI**: `.github/workflows/apple-release.yml` — `apple-v*` 태그 → macOS-15 runner → archive → TestFlight 업로드
 - **Secrets**: `ASC_API_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY_BASE64` (조직 팀 App Manager+ 역할 키)

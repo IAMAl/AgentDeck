@@ -9,7 +9,7 @@ AgentDeck is actively working on the next Apple companion release and on persona
 
 ## 1. App Store Distribution (iOS / iPadOS)
 
-[AgentDeck Dashboard 1.0.0 is live on the Mac App Store](https://apps.apple.com/app/id6784822497). The iPhone/iPad companion is still in review. The macOS app ships a standalone in-process Swift daemon — mDNS discovery, native device modules, OpenClaw Gateway WebSocket client, hook ingestion, and HTTP + WebSocket server. App Store compliance is gated by the `AGENTDECK_APP_STORE` compile flag: no bundled Node.js / `adb` / D200H helper, no subprocess spawn, no AppleScript (per Apple Review Guideline 2.5.2). User data lives in `~/Library/Containers/bound.serendipity.agent.deck/Data/Library/Application Support/AgentDeck/` (routed through `AgentDeckPaths.swift`; never hand-write the path). AgentDeck requests no USB HID entitlement — the D200H is driven solely by the Ulanzi Studio plugin. OpenClaw integration uses Gateway-native pairing (self-generated Ed25519 identity in Keychain + Gateway-issued device token) — no file read of `~/.openclaw/identity/`. `apple/scripts/verify-appstore-archive.sh` is wired into CI and asserts these invariants on every archive.
+[AgentDeck Dashboard 1.0.2 is live on the Mac App Store](https://apps.apple.com/app/id6784822497). The iPhone/iPad companion is still in review. The macOS app ships a standalone in-process Swift daemon — mDNS discovery, native device modules, OpenClaw Gateway WebSocket client, hook ingestion, and HTTP + WebSocket server. App Store compliance is gated by the `AGENTDECK_APP_STORE` compile flag: no bundled Node.js / `adb` / D200H helper, no subprocess spawn, no AppleScript (per Apple Review Guideline 2.5.2). User data lives in `~/Library/Containers/bound.serendipity.agent.deck/Data/Library/Application Support/AgentDeck/` (routed through `AgentDeckPaths.swift`; never hand-write the path). AgentDeck requests no USB HID entitlement — the D200H is driven solely by the Ulanzi Studio plugin. OpenClaw integration uses Gateway-native pairing (self-generated Ed25519 identity in Keychain + Gateway-issued device token) — no file read of `~/.openclaw/identity/`. `apple/scripts/verify-appstore-archive.sh` is wired into CI and asserts these invariants on every archive.
 
 ## 2. Personalized Agent Evaluation System (APME)
 
@@ -34,7 +34,7 @@ Eval results broadcast to every device simultaneously (Stream Deck/Apple/Android
 - [x] Apple iOS/iPad/macOS dashboard (SwiftUI multiplatform)
 - [x] macOS in-process Swift daemon (Node.js-free macOS install)
 - [x] Apple TestFlight CI pipeline
-- [x] Mac App Store distribution — AgentDeck Dashboard 1.0.0 (2026-07-21)
+- [x] Mac App Store distribution — AgentDeck Dashboard 1.0.0 (2026-07-21), updated to 1.0.2 (2026-07-24)
 - [x] ESP32 compact displays (Round AMOLED 1.8", IPS LCD 3.5", B86 Box 4", TTGO T-Display 1.14", IPS 10.1", Ulanzi TC001)
 - [x] InkDeck e-ink panel (Seeed TRMNL 7.5" OG DIY Kit, custom ESP32 firmware, WiFi/WS partial refresh, WiFi OTA updates)
 - [x] Ulanzi D200H Deck Dock (14-key HID + 960×540 LCD via official Ulanzi Studio plugin; direct-HID fallback retired)

@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: required
 owner: Release maintainers
-reviewed: 2026-07-22
-revision: 2026-07-22
+reviewed: 2026-07-30
+revision: 2026-07-30
 source_of_truth: RELEASING.md
 validators: [node scripts/build-design-system-viewer.mjs --check, pnpm verify-version]
 ---
@@ -17,7 +17,7 @@ validators: [node scripts/build-design-system-viewer.mjs --check, pnpm verify-ve
 
 AgentDeck uses one `major.minor` compatibility line across every maintained surface. Two numeric `X.Y.Z` product versions are mutually compatible if and only if their first two components match. Patch values are ignored in both directions: for example, `1.0.1` and `1.0.9` are compatible regardless of which side is newer.
 
-Root [`VERSION`](VERSION) is the repository baseline and compatibility-line anchor, not a patch ceiling and not a runtime negotiation value. It currently reads **1.0.2**, so every maintained target must remain on compatibility line **1.0**. npm/CLI is at `1.0.4`; Stream Deck is at `1.0.3`; Apple and Android are at `1.0.2`; ESP32 and Ulanzi remain at their independently delivered `1.0.1` patches. A target may also advance beyond root's patch without forcing unrelated targets or root to ship. The first public Mac App Store release remains `1.0.0` until the Apple 1.0.2 update completes review.
+Root [`VERSION`](VERSION) is the repository baseline and compatibility-line anchor, not a patch ceiling and not a runtime negotiation value. It currently reads **1.0.2**, so every maintained target must remain on compatibility line **1.0**. npm/CLI is at `1.0.4`; Stream Deck and Android are at `1.0.3`; Apple is at `1.0.2`; ESP32 and Ulanzi remain at their independently delivered `1.0.1` patches. A target may also advance beyond root's patch without forcing unrelated targets or root to ship. The public Mac App Store release is `1.0.2` (live since 2026-07-24); the iPhone/iPad companion's own first release, also `1.0.2`, is still in the review queue.
 
 Run `pnpm verify-version` before every build or release. CI rejects a `major.minor` compatibility split or a target-internal mismatch. Release CI additionally requires a channel tag's full `X.Y.Z` to equal that target's own declared version; it does not compare the tag's patch with root `VERSION`.
 
@@ -26,7 +26,7 @@ Run `pnpm verify-version` before every build or release. CI rejects a `major.min
 | Surface | Target version | Independent monotonic value | Tag / delivery |
 |---|---|---|---|
 | **Apple** (iOS+macOS) | `apple/project.yml` `MARKETING_VERSION` | `CURRENT_PROJECT_VERSION` (CI-owned) | `apple-v*` → TestFlight / App Store |
-| **Android** | `android/app/build.gradle.kts` `versionName` | `versionCode` (currently 4) | `android-v*` → APK Release / optional Play |
+| **Android** | `android/app/build.gradle.kts` `versionName` | `versionCode` (currently 5) | `android-v*` → APK Release / optional Play |
 | **npm** (`@agentdeck/hooks`, `shared`, `bridge`, `setup`) | public `package.json` files | npm registry version floor | `npm-v*` → manual publish |
 | **ESP32** | `esp32/src/config.h` `FIRMWARE_VERSION` | build hash / epoch in firmware metadata | `esp32-v*` → firmware Release |
 | **Stream Deck** | plugin manifest `Version` as `X.Y.Z.0` | fourth component if a same-product-version plugin rebuild is ever required | `streamdeck-v*` → Elgato Maker portal |
@@ -78,7 +78,9 @@ Tag prefixes remain because channels ship independently and may point to differe
 
 ### Apple (TestFlight / App Store)
 
-macOS `1.0.0` has been publicly available since 2026-07-21 at [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497). The iPhone/iPad companion remains in review. A successful CI upload reaches App Store Connect/TestFlight; public App Store release remains a separate App Store Connect action.
+macOS has been publicly available since 2026-07-21 at [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497), first as `1.0.0` and — since the 2026-07-24 approval of build 3901 — as `1.0.2`. The iPhone/iPad companion's first release (also `1.0.2`, build 3901) is still queued for review. A successful CI upload reaches App Store Connect/TestFlight; public App Store release remains a separate App Store Connect action.
+
+While a version sits in **Waiting for Review**, do not upload a replacement build for it: attaching one requires a developer reject, which loses the queue position without helping. Land further work on the next patch instead.
 
 1. Confirm Apple `MARKETING_VERSION` matches between `apple/project.yml` and the Xcode project mirror (`pnpm verify-version` checks this).
 2. Run the Release build and App Store archive verifier described in `CLAUDE.md`.

@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: stable
 owner: Device maintainers
-reviewed: 2026-07-22
-revision: 2026-07-22
+reviewed: 2026-07-30
+revision: 2026-07-30
 source_of_truth: docs/devices.md
 validators: [pnpm design-system:check]
 ---
@@ -133,7 +133,7 @@ WebSocket and SSE forward all 13 `BridgeEvent` types without filtering.
   - iPhone (compact): Vertical stack HUD, pull-up Engine sheet
   - iPad (regular): Same as Android tablet — terrarium background + 4-corner HUD overlay
   - macOS: Separate WindowGroup, external monitor fullscreen, LSUIElement menu bar mode
-- **Distribution**: [Mac App Store](https://apps.apple.com/app/id6784822497) (`bound.serendipity.agent.deck`, macOS 1.0.0 live); iPhone/iPad companion in review / TestFlight
+- **Distribution**: [Mac App Store](https://apps.apple.com/app/id6784822497) (`bound.serendipity.agent.deck`, macOS 1.0.2 live); iPhone/iPad companion in review / TestFlight
 - **Source**: `apple/` (pnpm workspace 외부, `android/`와 동일 레벨)
 - **Status**: macOS production release; iPhone/iPad companion in review
 
