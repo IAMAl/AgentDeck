@@ -31,6 +31,15 @@ target-internal version consistency. See [RELEASING.md](RELEASING.md).
 - Use a process-scoped service host that remains stable across sleep/wake and
   network recovery re-publication without mutating the system LocalHostName
 
+### Android dashboard
+
+- Preserve observed AskUserQuestion activity so attention prompts remain visible
+  instead of being folded into low-signal tool noise
+- Show Claude and Codex subagent work as decorative orbiting activity around the
+  parent creature without creating extra sessions or control targets
+- Pair subagent start/completion rows per parent session and expire orphaned
+  activity so stale satellites do not remain on the dashboard
+
 ## 1.0.2
 
 ### Daemon and timeline
