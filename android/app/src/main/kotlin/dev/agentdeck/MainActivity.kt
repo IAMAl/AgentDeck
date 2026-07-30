@@ -23,7 +23,10 @@ import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.ui.monitor.MonitorScreen
 import dev.agentdeck.ui.screen.EinkMonitorScreen
 import dev.agentdeck.ui.theme.AgentDeckTheme
-import dev.agentdeck.util.EinkDetector
+import dev.agentdeck.ui.screen.UnsupportedDeviceScreen
+import dev.agentdeck.util.DeviceProfile
+import dev.agentdeck.util.DeviceProfileHolder
+import dev.agentdeck.util.PanelOverride
 import android.content.Intent
 import android.provider.Settings
 import android.util.Log
@@ -44,7 +47,16 @@ import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
-    private var isEinkDevice = false
+    private lateinit var deviceProfile: DeviceProfile
+
+    /**
+     * The device-class preferences this instance was built for. The collector
+     * below compares against them so a change recreates the activity exactly
+     * once — they decide the whole UI tree plus pre-first-frame window flags,
+     * none of which can be swapped in place.
+     */
+    private var appliedPanelOverride: PanelOverride = PanelOverride.Auto
+    private var appliedAllowUnsupported: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,12 +72,24 @@ class MainActivity : ComponentActivity() {
         setShowWhenLocked(true)
         setTurnScreenOn(true)
 
-        isEinkDevice = EinkDetector.isEinkDevice()
+        // Device class first: it decides the UI tree, the theme, and window
+        // flags that RK3566 readers only honour before the first frame. The
+        // override has to be read synchronously for the same reason — see
+        // `readStartupOverridesBlocking`.
+        val startup = DisplayPreferences(this).readStartupOverridesBlocking()
+        appliedPanelOverride = startup.panelOverride
+        appliedAllowUnsupported = startup.allowUnsupportedDevice
+        deviceProfile = DeviceProfile.detect(this, startup.panelOverride)
+        DeviceProfileHolder.install(deviceProfile)
+
+        // Unsupported devices get guidance instead of a broken layout, unless
+        // the user has explicitly overruled that.
+        val showDashboard = deviceProfile.isRenderable || startup.allowUnsupportedDevice
 
         // E-ink: set landscape IMMEDIATELY — before any async/layout.
         // Pantone 6 (RK3566) ignores late requestedOrientation changes,
         // so this must happen before the first frame renders.
-        if (isEinkDevice) {
+        if (deviceProfile.isEink && showDashboard) {
             applyOrientationPreference(DashboardOrientation.defaultFor(isEink = true))
 
             @Suppress("DEPRECATION")
@@ -75,7 +99,7 @@ class MainActivity : ComponentActivity() {
 
         val stateHolder = AgentStateHolder.instance
         val connection = BridgeConnection.instance
-        val displayPrefs = DisplayPreferences(this, isEink = isEinkDevice)
+        val displayPrefs = DisplayPreferences(this, isEink = deviceProfile.isEink)
 
         // Apply saved orientation preference (async — for user changes via Settings)
         lifecycleScope.launch {
@@ -94,7 +118,7 @@ class MainActivity : ComponentActivity() {
                 stateHolder.state,
             ) { keepAwake, displaySyncEnabled, state ->
                 shouldKeepDashboardScreenOn(
-                    isEink = isEinkDevice,
+                    isEink = deviceProfile.isEink,
                     keepAwake = keepAwake,
                     displaySyncEnabled = displaySyncEnabled,
                     hostDisplayOn = state.hostDisplayOn,
@@ -125,12 +149,50 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Both device-class preferences are whole-tree changes; recreate rather
+        // than trying to swap the dashboard under a live composition.
+        //
+        // Watching `allowUnsupportedDevice` here is also the recovery path for a
+        // startup read that expired: `onCreate` then built this instance from
+        // defaults, and `false` is not neutral — it re-blocks a user who had
+        // already chosen to show the dashboard anyway. Nothing else would notice,
+        // because a stored panel override of `Auto` matches the default too.
+        lifecycleScope.launch {
+            combine(
+                displayPrefs.panelOverrideFlow,
+                displayPrefs.allowUnsupportedDeviceFlow,
+            ) { override, allowUnsupported -> override to allowUnsupported }
+                .collect { (override, allowUnsupported) ->
+                    if (shouldRecreateForDeviceOverrides(
+                            appliedPanelOverride = appliedPanelOverride,
+                            appliedAllowUnsupported = appliedAllowUnsupported,
+                            storedPanelOverride = override,
+                            storedAllowUnsupported = allowUnsupported,
+                        )
+                    ) {
+                        appliedPanelOverride = override
+                        appliedAllowUnsupported = allowUnsupported
+                        recreate()
+                    }
+                }
+        }
+
         setContent {
-            AgentDeckTheme(isEink = isEinkDevice) {
-                if (isEinkDevice) {
-                    EinkMonitorScreen(stateHolder, connection, displayPrefs)
-                } else {
-                    TabletDashboard(stateHolder, connection, displayPrefs)
+            AgentDeckTheme(profile = deviceProfile) {
+                when {
+                    !showDashboard -> UnsupportedDeviceScreen(
+                        profile = deviceProfile,
+                        // Persist only — the collector above observes the change
+                        // and recreates, so this and the timeout-recovery path
+                        // share one mechanism instead of racing two.
+                        onShowAnyway = {
+                            lifecycleScope.launch {
+                                displayPrefs.setAllowUnsupportedDevice(true)
+                            }
+                        },
+                    )
+                    deviceProfile.isEink -> EinkMonitorScreen(stateHolder, connection, displayPrefs)
+                    else -> TabletDashboard(stateHolder, connection, displayPrefs)
                 }
             }
         }
@@ -140,7 +202,7 @@ class MainActivity : ComponentActivity() {
         super.onWindowFocusChanged(hasFocus)
         // Re-hide system bars after Dialog dismissal (Dialog creates a new window
         // which resets immersive mode flags on the main window)
-        if (hasFocus && isEinkDevice) {
+        if (hasFocus && deviceProfile.isEink) {
             hideSystemBars()
         }
     }
@@ -152,7 +214,7 @@ class MainActivity : ComponentActivity() {
     private fun applyOrientationPreference(orientation: Int) {
         requestedOrientation = DashboardOrientation.requestedActivityOrientation(orientation)
 
-        if (!isEinkDevice) return
+        if (!deviceProfile.isEink) return
 
         when {
             orientation == DashboardOrientation.Landscape -> applySystemFixedRotation(Surface.ROTATION_90)
@@ -208,6 +270,28 @@ class MainActivity : ComponentActivity() {
 
 private const val TAG = "MainActivity"
 private const val VERBOSE_MAIN_LOGS = false
+
+/**
+ * Whether the stored device-class preferences differ from the ones this activity
+ * instance was built from, and therefore need a recreate.
+ *
+ * Extracted so the recovery case has a test: when the bounded startup read
+ * expires, the instance is built from defaults, and `allowUnsupportedDevice`
+ * defaulting to `false` silently re-blocks a user who had already chosen to show
+ * the dashboard anyway. Comparing only the panel override misses that entirely,
+ * because a stored `Auto` equals the default it was built with.
+ *
+ * Convergence: the recreate re-reads a DataStore that this process has already
+ * collected once, so the second read is served warm and the applied pair then
+ * matches storage. It is a one-shot correction, not a loop.
+ */
+internal fun shouldRecreateForDeviceOverrides(
+    appliedPanelOverride: PanelOverride,
+    appliedAllowUnsupported: Boolean,
+    storedPanelOverride: PanelOverride,
+    storedAllowUnsupported: Boolean,
+): Boolean = storedPanelOverride != appliedPanelOverride ||
+    storedAllowUnsupported != appliedAllowUnsupported
 
 internal fun shouldKeepDashboardScreenOn(
     isEink: Boolean,
