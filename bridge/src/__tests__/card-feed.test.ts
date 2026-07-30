@@ -292,6 +292,38 @@ describe('conditional pull (deckSig)', () => {
     expect(again.nextPullSec).toBe(CARD_FEED_IDLE_PULL_SEC);
   });
 
+  it('a ticking elapsedSec does not defeat the signature', () => {
+    // Measured on a live daemon (2026-07-31): elapsedSec advances once a
+    // second, so before it was excluded the signature changed every second and
+    // the conditional pull could never match — the feature was inert.
+    const a = buildCardFeed([session({ id: 'a', elapsedSec: 100 })], NOW, []);
+    const b = buildCardFeed([session({ id: 'a', elapsedSec: 163 })], NOW + 63_000, [], { echoSig: a.deckSig });
+    expect(b.unchanged).toBe(true);
+  });
+
+  it('an idle roster stays signature-stable across a long clock advance (the idle-night case)', () => {
+    // The conditional pull exists for the overnight case: an idle desk must
+    // produce the SAME signature hours later, or a battery client re-downloads
+    // the full feed on every wake. Idle sessions render from currentTask, which
+    // does not move with the clock — unlike a `processing` thread, whose minute
+    // counter is genuine content (it really has been working longer).
+    const idle = [
+      session({ id: 'a', state: 'idle', currentTask: 'Reviewing the OTA path', elapsedSec: 4000 }),
+      session({ id: 'b', state: 'idle', currentTask: 'Waiting for input', elapsedSec: 900 }),
+    ];
+    const first = buildCardFeed(idle, NOW);
+    const laterRoster = idle.map((s) => ({ ...s, elapsedSec: (s.elapsedSec ?? 0) + 8 * 3600 }));
+    const later = buildCardFeed(laterRoster, NOW + 8 * 3600_000, undefined, { echoSig: first.deckSig });
+    expect(later.unchanged).toBe(true);
+  });
+
+  it('a real content change still breaks the match even when elapsedSec moves', () => {
+    const a = buildCardFeed([session({ id: 'a', elapsedSec: 100, activity: 'building' })], NOW, []);
+    const b = buildCardFeed([session({ id: 'a', elapsedSec: 163, activity: 'running tests' })], NOW + 63_000, [],
+      { echoSig: a.deckSig });
+    expect(b.unchanged).toBeUndefined();
+  });
+
   it('expiresAt churn does not defeat the signature (live cards re-stamp every build)', () => {
     const roster = [session({ id: 'a', state: 'awaiting_option', question: 'Pick' })];
     const a = buildCardFeed(roster, NOW, []);

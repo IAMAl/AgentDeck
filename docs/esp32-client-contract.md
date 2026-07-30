@@ -161,8 +161,18 @@ and pull while on battery.
   echoed `question` matches the current one (an hour-old index must never press
   a newer prompt).
 - **Conditional pull (`deckSig`, 2026-07-31)**: every full response carries
-  `deckSig` — a signature over `cards` + `glance` with volatile fields excluded
-  (`expiresAt` re-stamps every build and is not covered). A client persists the
+  `deckSig` — a signature over `cards` + `glance` with **clock-derived fields
+  excluded**: `FeedCard.expiresAt` (re-stamped every build) and
+  `SessionInfo.elapsedSec` (ticks once a second). That exclusion is the whole
+  feature: measured against a live daemon, a single ticking field regenerated
+  the signature every second, so the short-circuit could never fire and the
+  conditional pull silently did nothing. Any new field that is a function of
+  the current clock rather than of content must join
+  `VOLATILE_SESSION_FIELDS` in `bridge/src/card-feed.ts`. A *thread* that is
+  mid-turn still moves its minute counter (`THREAD` renders "working 12m") —
+  that is genuine content, and an actively-working desk correctly gets a full
+  feed; the idle-night case, which is what the cadence exists for, stays
+  stable. A client persists the
   sig with its deck cache and echoes it on the next pull as `GET /feed?sig=…`;
   on a match the daemon answers `{unchanged: true, cards: [], deckSig, serverTime,
   serverHm, nextPullSec}` — no glance, nothing to parse or persist, re-sleep

@@ -163,13 +163,36 @@ export function buildGlance(input: {
 
 // ===== Conditional pull — the content signature =====
 
+/** Fields excluded from the deck signature because they are derived from the
+ *  CURRENT CLOCK rather than from content. Any such field makes the signature
+ *  change on every build, so the conditional pull can never match and the whole
+ *  feature silently does nothing:
+ *
+ *  - `FeedCard.expiresAt` — re-stamped `now + TTL` on every build.
+ *  - `SessionInfo.elapsedSec` — ticks once a second (measured: an otherwise
+ *    idle roster produced a fresh signature every second, 2026-07-31).
+ *
+ *  A device that short-circuits therefore keeps a slightly stale elapsed time
+ *  in its cached deck. That is the correct trade: the cache is explicitly a
+ *  snapshot and renders its own sync age, whereas a signature that never
+ *  stabilizes costs a full feed on every wake forever.
+ *
+ *  When adding a field to `SessionInfo`, ask whether it is a function of the
+ *  clock; if it is, it belongs here. */
+const VOLATILE_SESSION_FIELDS = ['elapsedSec'] as const;
+
 /** FNV-1a 32-bit over the canonical feed content: cards with volatile fields
- *  stripped (`expiresAt` is re-stamped `now + TTL` on every build and would
- *  defeat the match) plus the glance verbatim. Matching sigs mean the device's
- *  cached deck is still exactly what the daemon would send. */
+ *  stripped (see `VOLATILE_SESSION_FIELDS`) plus the glance verbatim. Matching
+ *  sigs mean the device's cached deck is still exactly what the daemon would
+ *  send. */
 export function computeDeckSig(cards: FeedCard[], glance?: CardFeedGlance): string {
   const canonical = JSON.stringify({
-    cards: cards.map(({ expiresAt: _volatile, ...rest }) => rest),
+    cards: cards.map(({ expiresAt: _volatile, session, ...rest }) => {
+      if (!session) return rest;
+      const stable = { ...session } as Record<string, unknown>;
+      for (const f of VOLATILE_SESSION_FIELDS) delete stable[f];
+      return { ...rest, session: stable };
+    }),
     glance: glance ?? null,
   });
   let h = 0x811c9dc5;
