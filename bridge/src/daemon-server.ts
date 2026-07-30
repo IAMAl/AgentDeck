@@ -125,8 +125,11 @@ import { loadTimeboxDevices } from './timebox/timebox-settings.js';
 import { getLanIp, stripUnsafeText, cleanRawText, prepareMarkdownDetail, normalizeCommandPrompt, formatDurationSec, type TimelineEntry, PluginCommand } from '@agentdeck/shared';
 import { injectOpenClawSession } from './openclaw-session.js';
 import {
-  buildCardFeed, applyOutboxDecisions, FeedPullTracker, formatFeedPull, normalizeClientIp,
+  buildCardFeed, buildGlance, applyOutboxDecisions, FeedPullTracker, formatFeedPull,
+  normalizeClientIp, parsePullTelemetry,
 } from './card-feed.js';
+import { WeatherProvider, parseWeatherSettings } from './weather.js';
+import type { UsageEvent } from './types.js';
 import { CARD_FEED_PATH, CARD_OUTBOX_PATH, type SessionInfo, type OutboxPushRequest } from '@agentdeck/shared';
 import { readFileSync, statSync } from 'fs';
 import { readFile, rm } from 'fs/promises';
@@ -225,6 +228,11 @@ function listWifiEsp32Devices(): Array<WifiEsp32Device & { stale: boolean; seria
  *  other observable — a battery client with an empty outbox never identifies
  *  itself and never opens a socket. */
 const feedPulls = new FeedPullTracker();
+
+/** Glance weather for the card-feed sleep dashboard. Config is read from
+ *  settings.json per pull (cheap; honors edits without a restart); the
+ *  provider caches the upstream fetch itself. */
+const glanceWeather = new WeatherProvider();
 
 /** Name a pulling client from the WiFi WS roster. A board that has been
  *  deep-sleeping may have aged out of that roster, which is why the tracker
@@ -1238,7 +1246,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       (async () => {
         if (req.method === 'GET') {
           const sessions = await core.buildSessionsSnapshot();
-          const feed = buildCardFeed(sessions as unknown as SessionInfo[]);
+          // Sleep-dashboard glance: provider quota + work wrap-up + weather.
+          // Weather resolves from cache almost always (30 min window) and is
+          // bounded by its own fetch timeout, so the pull stays fast.
+          const glance = buildGlance({
+            sessions: sessions as unknown as SessionInfo[],
+            usage: core.buildUsage() as UsageEvent,
+            weather: await glanceWeather.get(parseWeatherSettings(loadDaemonSettings())),
+          });
+          const feed = buildCardFeed(sessions as unknown as SessionInfo[], Date.now(), undefined, {
+            glance,
+            echoSig: parsedUrl.searchParams.get('sig') ?? undefined,
+          });
           // A sleeping client's whole visit is this one request: no body, no
           // board id, nothing pushed. Record it, because the gap between two
           // pulls is the only evidence that the timer wake fired at all.
@@ -1246,6 +1265,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           log(`[agentdeck] ${formatFeedPull(feedPulls.record(ip, {
             cards: feed.cards.length,
             nextPullSec: feed.nextPullSec,
+            unchanged: feed.unchanged === true,
+            telemetry: parsePullTelemetry(parsedUrl.searchParams),
           }))}`);
           return feed;
         }

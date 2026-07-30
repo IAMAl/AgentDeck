@@ -13,6 +13,9 @@ import type {
   SessionInfo,
   FeedCard,
   CardFeedResponse,
+  CardFeedGlance,
+  GlanceUsageRow,
+  GlanceWeather,
   OutboxDecision,
   OutboxDecisionResult,
   OutboxPushRequest,
@@ -21,7 +24,11 @@ import type {
 import {
   CARD_FEED_IDLE_PULL_SEC,
   CARD_FEED_ACTIVE_PULL_SEC,
+  GLANCE_MAX_WRAPUP_LINES,
+  GLANCE_MAX_USAGE_ROWS,
+  GLANCE_LINE_MAX_BYTES,
 } from '@agentdeck/shared';
+import type { UsageEvent } from './types.js';
 import {
   buildModuleCards,
   applyModuleChoice,
@@ -51,10 +58,141 @@ export function classifySessionCard(
   return { actionClass: 'info' };
 }
 
+// ===== Glance (sleep dashboard) builders =====
+
+/** UTF-8 byte-budget trim on a rune boundary — the device caps are bytes,
+ *  never code points (CJK is 3 bytes/char). */
+export function trimUtf8Bytes(s: string, maxBytes: number): string {
+  if (Buffer.byteLength(s, 'utf8') <= maxBytes) return s;
+  let out = '';
+  let bytes = 0;
+  for (const ch of s) {
+    const b = Buffer.byteLength(ch, 'utf8');
+    if (bytes + b > maxBytes - 1) break; // reserve one byte for the ellipsis dot
+    out += ch;
+    bytes += b;
+  }
+  return `${out.trimEnd()}.`;
+}
+
+const hmFromIso = (iso?: string): string | undefined => {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+const pct = (n?: number): number | undefined =>
+  typeof n === 'number' && Number.isFinite(n) ? Math.min(100, Math.max(0, Math.round(n))) : undefined;
+
+/** Provider quota rows from the daemon's aggregate usage event. Claude first
+ *  (the primary subscription on this product), then Codex. A provider with no
+ *  numbers at all gets no row — the glance never renders an empty gauge. */
+export function buildGlanceUsage(usage: UsageEvent | undefined): GlanceUsageRow[] {
+  if (!usage) return [];
+  const rows: GlanceUsageRow[] = [];
+  const claude5h = pct(usage.fiveHourPercent);
+  const claude7d = pct(usage.sevenDayPercent);
+  if (claude5h !== undefined || claude7d !== undefined) {
+    rows.push({
+      provider: 'claude',
+      label: 'Claude',
+      ...(claude5h !== undefined ? { primaryPercent: claude5h } : {}),
+      ...(hmFromIso(usage.fiveHourResetsAt) ? { primaryResetHm: hmFromIso(usage.fiveHourResetsAt) } : {}),
+      ...(claude7d !== undefined ? { secondaryPercent: claude7d } : {}),
+      stale: usage.usageStale === true,
+    });
+  }
+  const rl = usage.codexRateLimits;
+  const codex5h = pct(rl?.primary?.usedPercent);
+  const codex7d = pct(rl?.secondary?.usedPercent);
+  if (codex5h !== undefined || codex7d !== undefined) {
+    rows.push({
+      provider: 'codex',
+      label: 'Codex',
+      ...(codex5h !== undefined ? { primaryPercent: codex5h } : {}),
+      ...(hmFromIso(rl?.primary?.resetsAt) ? { primaryResetHm: hmFromIso(rl?.primary?.resetsAt) } : {}),
+      ...(codex7d !== undefined ? { secondaryPercent: codex7d } : {}),
+      stale: rl?.primary?.stale === true && (codex7d === undefined || rl?.secondary?.stale === true),
+    });
+  }
+  return rows.slice(0, GLANCE_MAX_USAGE_ROWS);
+}
+
+const wrapupStateWord = (s: SessionInfo): string => {
+  if (s.requestId) return 'needs approval';
+  if (isAwaitingState(s)) return 'needs you';
+  if (s.state === 'processing') return 'working';
+  if (s.state === 'error') return 'error';
+  return 'idle';
+};
+
+/** Work wrap-up lines — "what was being worked on", one line per session,
+ *  attention first. Pre-trimmed to the device byte budget; the renderer only
+ *  draws. */
+export function buildGlanceWrapup(sessions: SessionInfo[]): string[] {
+  const rank = (s: SessionInfo): number =>
+    s.requestId ? 0 : isAwaitingState(s) ? 1 : s.state === 'processing' ? 2 : 3;
+  const ordered = [...sessions].sort((a, b) => rank(a) - rank(b));
+  const lines: string[] = [];
+  const overflow = ordered.length - GLANCE_MAX_WRAPUP_LINES;
+  const take = overflow > 0 ? GLANCE_MAX_WRAPUP_LINES - 1 : ordered.length;
+  for (const s of ordered.slice(0, take)) {
+    const what = (typeof s.activity === 'string' && s.activity.trim())
+      || (typeof s.currentTask === 'string' && s.currentTask.trim())
+      || wrapupStateWord(s);
+    lines.push(trimUtf8Bytes(`${s.projectName} · ${what}`, GLANCE_LINE_MAX_BYTES));
+  }
+  if (overflow > 0) lines.push(`+${ordered.length - take} more sessions`);
+  return lines;
+}
+
+export function buildGlance(input: {
+  sessions: SessionInfo[];
+  usage?: UsageEvent;
+  weather?: GlanceWeather;
+}): CardFeedGlance | undefined {
+  const glance: CardFeedGlance = {};
+  if (input.weather) glance.weather = input.weather;
+  const usage = buildGlanceUsage(input.usage);
+  if (usage.length > 0) glance.usage = usage;
+  const wrapup = buildGlanceWrapup(input.sessions);
+  if (wrapup.length > 0) glance.wrapup = wrapup;
+  return Object.keys(glance).length > 0 ? glance : undefined;
+}
+
+// ===== Conditional pull — the content signature =====
+
+/** FNV-1a 32-bit over the canonical feed content: cards with volatile fields
+ *  stripped (`expiresAt` is re-stamped `now + TTL` on every build and would
+ *  defeat the match) plus the glance verbatim. Matching sigs mean the device's
+ *  cached deck is still exactly what the daemon would send. */
+export function computeDeckSig(cards: FeedCard[], glance?: CardFeedGlance): string {
+  const canonical = JSON.stringify({
+    cards: cards.map(({ expiresAt: _volatile, ...rest }) => rest),
+    glance: glance ?? null,
+  });
+  let h = 0x811c9dc5;
+  for (let i = 0; i < canonical.length; i++) {
+    h ^= canonical.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+export interface BuildCardFeedOpts {
+  /** Sleep-dashboard summary to embed (and cover with the signature). */
+  glance?: CardFeedGlance;
+  /** `?sig=` echo from the device — when it matches the current signature the
+   *  response short-circuits to `unchanged: true` with empty cards. */
+  echoSig?: string;
+}
+
 export function buildCardFeed(
   sessions: SessionInfo[],
   now: number = Date.now(),
   modules: CardModule[] = DEFAULT_CARD_MODULES,
+  opts: BuildCardFeedOpts = {},
 ): CardFeedResponse {
   const cards: FeedCard[] = sessions.map((s) => ({
     cardId: `session:${s.id}`,
@@ -68,14 +206,23 @@ export function buildCardFeed(
   const active = sessions.some((s) => s.state === 'processing' || isAwaitingState(s));
   const d = new Date(now);
   const serverHm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return {
-    type: 'card_feed',
-    rev: 1,
+  const deckSig = computeDeckSig(cards, opts.glance);
+  const base = {
+    type: 'card_feed' as const,
+    rev: 1 as const,
     serverTime: now,
     serverHm,
     nextPullSec: active ? CARD_FEED_ACTIVE_PULL_SEC : CARD_FEED_IDLE_PULL_SEC,
-    cards,
+    deckSig,
   };
+  if (opts.echoSig && opts.echoSig === deckSig) {
+    // Conditional-pull short-circuit: the device keeps its cached deck, skips
+    // parse/persist, and re-sleeps immediately. serverTime/nextPullSec still
+    // ride along — the clock re-anchor and the cadence are per-pull, not
+    // per-content.
+    return { ...base, unchanged: true, cards: [] };
+  }
+  return { ...base, ...(opts.glance ? { glance: opts.glance } : {}), cards };
 }
 
 export interface OutboxApplyDeps {
@@ -199,6 +346,13 @@ export interface FeedPullEvent {
   driftPct?: number;
   /** Gap within `PULL_CADENCE_TOLERANCE` of the advertised cadence. */
   cadenceHonoured?: boolean;
+  /** Conditional pull answered `unchanged` — the deck signature matched. */
+  unchanged?: boolean;
+  /** Device telemetry from the `GET /feed` query string (`batt`/`mv`/`rssi`) —
+   *  the only battery/link observability a wake-sync-sleep device has. */
+  battPct?: number;
+  battMv?: number;
+  rssiDbm?: number;
 }
 
 export interface FeedPullClient {
@@ -214,6 +368,12 @@ export interface FeedPullClient {
   medianIntervalSec?: number;
   /** Intervals that landed inside the tolerance band, out of `pulls - 1`. */
   cadenceHonouredCount: number;
+  /** Latest reported telemetry (absent until the device sends it). */
+  lastBattPct?: number;
+  lastBattMv?: number;
+  lastRssiDbm?: number;
+  /** Pulls answered `unchanged` — how often the conditional pull saved work. */
+  unchangedCount: number;
 }
 
 /** `::ffff:192.168.68.77` and `::1` are the same peers as their v4 forms. */
@@ -233,6 +393,30 @@ interface PullState {
   lastIntervalSec?: number;
   intervals: number[];
   cadenceHonouredCount: number;
+  lastBattPct?: number;
+  lastBattMv?: number;
+  lastRssiDbm?: number;
+  unchangedCount: number;
+}
+
+/** Telemetry that rides the `GET /feed` query string. */
+export interface PullTelemetry {
+  battPct?: number;
+  battMv?: number;
+  rssiDbm?: number;
+}
+
+/** Parse `batt`/`mv`/`rssi` query params, dropping anything non-numeric or
+ *  out of physical range — telemetry is advisory, never trusted blindly. */
+export function parsePullTelemetry(params: URLSearchParams): PullTelemetry {
+  const out: PullTelemetry = {};
+  const batt = Number(params.get('batt'));
+  if (Number.isFinite(batt) && batt >= 0 && batt <= 100) out.battPct = Math.round(batt);
+  const mv = Number(params.get('mv'));
+  if (Number.isFinite(mv) && mv > 0 && mv < 10000) out.battMv = Math.round(mv);
+  const rssi = Number(params.get('rssi'));
+  if (Number.isFinite(rssi) && rssi >= -120 && rssi < 0) out.rssiDbm = Math.round(rssi);
+  return out;
 }
 
 /** In-memory (daemon-lifetime) record of card-feed pulls, keyed by client IP.
@@ -259,7 +443,10 @@ export class FeedPullTracker {
     if (st) st.board = board;
   }
 
-  record(client: string, info: { cards: number; nextPullSec: number; now?: number }): FeedPullEvent {
+  record(
+    client: string,
+    info: { cards: number; nextPullSec: number; now?: number; unchanged?: boolean; telemetry?: PullTelemetry },
+  ): FeedPullEvent {
     const ip = normalizeClientIp(client);
     const at = info.now ?? Date.now();
     const prev = this.states.get(ip);
@@ -267,6 +454,11 @@ export class FeedPullTracker {
 
     const event: FeedPullEvent = { client: ip, at, cards: info.cards, nextPullSec: info.nextPullSec };
     if (board) event.board = board;
+    if (info.unchanged) event.unchanged = true;
+    const tel = info.telemetry;
+    if (tel?.battPct !== undefined) event.battPct = tel.battPct;
+    if (tel?.battMv !== undefined) event.battMv = tel.battMv;
+    if (tel?.rssiDbm !== undefined) event.rssiDbm = tel.rssiDbm;
 
     if (prev) {
       const sinceLastSec = Math.round((at - prev.lastPullAt) / 1000);
@@ -285,6 +477,10 @@ export class FeedPullTracker {
       if (prev.intervals.length > this.intervalWindow) prev.intervals.shift();
       if (event.cadenceHonoured) prev.cadenceHonouredCount += 1;
       if (board) prev.board = board;
+      if (info.unchanged) prev.unchangedCount += 1;
+      if (tel?.battPct !== undefined) prev.lastBattPct = tel.battPct;
+      if (tel?.battMv !== undefined) prev.lastBattMv = tel.battMv;
+      if (tel?.rssiDbm !== undefined) prev.lastRssiDbm = tel.rssiDbm;
     } else {
       this.states.set(ip, {
         board,
@@ -294,6 +490,10 @@ export class FeedPullTracker {
         lastNextPullSec: info.nextPullSec,
         intervals: [],
         cadenceHonouredCount: 0,
+        unchangedCount: info.unchanged ? 1 : 0,
+        ...(tel?.battPct !== undefined ? { lastBattPct: tel.battPct } : {}),
+        ...(tel?.battMv !== undefined ? { lastBattMv: tel.battMv } : {}),
+        ...(tel?.rssiDbm !== undefined ? { lastRssiDbm: tel.rssiDbm } : {}),
       });
     }
 
@@ -326,6 +526,10 @@ export class FeedPullTracker {
         ...(st.lastIntervalSec !== undefined ? { lastIntervalSec: st.lastIntervalSec } : {}),
         ...(median !== undefined ? { medianIntervalSec: median } : {}),
         cadenceHonouredCount: st.cadenceHonouredCount,
+        ...(st.lastBattPct !== undefined ? { lastBattPct: st.lastBattPct } : {}),
+        ...(st.lastBattMv !== undefined ? { lastBattMv: st.lastBattMv } : {}),
+        ...(st.lastRssiDbm !== undefined ? { lastRssiDbm: st.lastRssiDbm } : {}),
+        unchangedCount: st.unchangedCount,
       });
     }
     return out.sort((a, b) => b.lastPullAt - a.lastPullAt);
@@ -336,7 +540,13 @@ export class FeedPullTracker {
  *  cadence the daemon advertised — the M6 power-ladder verification signal. */
 export function formatFeedPull(ev: FeedPullEvent): string {
   const who = ev.board ? `${ev.board} (${ev.client})` : ev.client;
-  const head = `card feed pull from ${who}: ${ev.cards} card${ev.cards === 1 ? '' : 's'}, next ${ev.nextPullSec}s`;
+  const what = ev.unchanged ? 'unchanged' : `${ev.cards} card${ev.cards === 1 ? '' : 's'}`;
+  const tel = [
+    ev.battPct !== undefined ? `batt ${ev.battPct}%` : undefined,
+    ev.battMv !== undefined ? `${ev.battMv}mV` : undefined,
+    ev.rssiDbm !== undefined ? `rssi ${ev.rssiDbm}` : undefined,
+  ].filter(Boolean).join(' ');
+  const head = `card feed pull from ${who}: ${what}, next ${ev.nextPullSec}s${tel ? ` [${tel}]` : ''}`;
   if (ev.sinceLastSec === undefined) return `${head} — first pull`;
   if (ev.expectedSec === undefined) return `${head} — ${ev.sinceLastSec}s since last pull`;
   const pct = `${ev.driftPct !== undefined && ev.driftPct >= 0 ? '+' : ''}${((ev.driftPct ?? 0) * 100).toFixed(1)}%`;

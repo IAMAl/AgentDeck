@@ -614,6 +614,20 @@ export interface AudioChunkMessage {
 }
 
 /**
+ * The board buffered a whole utterance and failed to deliver it over
+ * `POST /esp32/voice` (the HTTP path some boards prefer because their
+ * live-streaming transports lose audio). Diagnostic only: without it the
+ * failure reason exists solely on the board's serial console.
+ */
+export interface VoiceAbortMessage {
+  type: 'voice_abort';
+  /** e.g. "http_-1", "http_500". */
+  reason?: string;
+  /** PCM bytes the board tried to send. */
+  total?: number;
+}
+
+/**
  * Device-sourced photo capture (T-Display-S3-Pro rear camera "show-and-tell").
  * Same transport split as voice: over WebSocket the JPEG travels as binary
  * frames between `photo_begin` and `photo_end`; over serial the same bytes
@@ -810,6 +824,92 @@ export interface FeedCard {
   module?: ModuleCard;
 }
 
+// ===== Glance (sleep dashboard) — the away-from-desk feed content =====
+//
+// A battery client that wakes, syncs, and sleeps is not a live monitor: what
+// its held frame should answer is "anything need me?", "how much AI budget is
+// left?", "what was being worked on?", and "do I need an umbrella?". The
+// glance block carries that daemon-authored summary alongside the cards. All
+// strings are pre-trimmed by the daemon to the device byte caps (UTF-8 bytes,
+// never code points) so the renderer only draws.
+//
+// Times inside the glance are ABSOLUTE ("HH:MM"), never relative ages — the
+// frame persists on an unpowered panel, and only absolute times stay true
+// without a repaint.
+
+/** Today's next rain window, from hourly precipitation probability. Absent
+ *  when no rain ≥ `GLANCE_RAIN_PROBABILITY_MIN` remains today. */
+export interface GlanceRainWindow {
+  /** Local "HH:MM" the window opens (first qualifying hour). */
+  startHm: string;
+  /** Local "HH:MM" the window closes. Absent = rest of the day. */
+  endHm?: string;
+  /** Peak probability inside the window, 0–100. */
+  probability: number;
+}
+
+/** One-day outlook (used for tomorrow). */
+export interface GlanceDayWeather {
+  /** WMO weather interpretation code (Open-Meteo native). */
+  code?: number;
+  /** Short pre-rendered summary word ("Clear", "Rain", …). */
+  summary: string;
+  minC?: number;
+  maxC?: number;
+  /** Max precipitation probability for the day, 0–100. */
+  rainProbability?: number;
+}
+
+export interface GlanceWeather {
+  /** Configured place label, verbatim (settings `weather.place`). */
+  place?: string;
+  /** Current temperature, °C (rounded by the daemon). */
+  tempC?: number;
+  /** WMO code for the current conditions. */
+  code?: number;
+  /** Short summary word for current conditions. */
+  summary?: string;
+  todayMinC?: number;
+  todayMaxC?: number;
+  /** Today's next rain window; absent = no rain expected today. */
+  rain?: GlanceRainWindow;
+  tomorrow?: GlanceDayWeather;
+}
+
+/** One provider quota row for the glance. Mirrors the wire-boolean rule:
+ *  `stale` is emitted in both polarities by the daemon. */
+export interface GlanceUsageRow {
+  /** Stable provider key ("claude" | "codex" | …). */
+  provider: string;
+  /** Display label ("Claude", "Codex"). */
+  label: string;
+  /** Short-window (5h) used percent, 0–100 integer. */
+  primaryPercent?: number;
+  /** Local "HH:MM" the short window resets. */
+  primaryResetHm?: string;
+  /** Long-window (7d) used percent, 0–100 integer. */
+  secondaryPercent?: number;
+  /** Quota numbers are known-stale (token expired, fetch failing). */
+  stale: boolean;
+}
+
+export interface CardFeedGlance {
+  weather?: GlanceWeather;
+  /** Provider quota rows, at most `GLANCE_MAX_USAGE_ROWS`. */
+  usage?: GlanceUsageRow[];
+  /** Work wrap-up lines ("AgentDeck · fixing OTA flash OOM · 14:02"), newest
+   *  first, at most `GLANCE_MAX_WRAPUP_LINES`, each ≤ `GLANCE_LINE_MAX_BYTES`
+   *  UTF-8 bytes. Pre-rendered by the daemon; devices draw them verbatim. */
+  wrapup?: string[];
+}
+
+export const GLANCE_MAX_WRAPUP_LINES = 4;
+export const GLANCE_MAX_USAGE_ROWS = 3;
+/** Per-line UTF-8 byte budget (fits a 528px 1-bit panel row in KR16). */
+export const GLANCE_LINE_MAX_BYTES = 64;
+/** Hourly rain probability at or above this counts as a rain window. */
+export const GLANCE_RAIN_PROBABILITY_MIN = 40;
+
 export interface CardFeedResponse {
   type: 'card_feed';
   /** Contract revision — bump on breaking shape changes. */
@@ -824,8 +924,28 @@ export interface CardFeedResponse {
    *  ladder. Devices may clamp but should not poll faster than this while on
    *  battery. */
   nextPullSec: number;
+  /** Content signature over `cards` + `glance` with volatile fields excluded
+   *  (`expiresAt` churns every build). A device echoes this back as
+   *  `GET /feed?sig=<deckSig>` on its next pull; when the daemon's current
+   *  signature matches it answers `unchanged: true` with empty `cards` and no
+   *  `glance` — the device keeps its cached deck, skips parse/persist, and
+   *  re-sleeps immediately. Conditional pull is why an idle night costs a
+   *  device almost nothing. */
+  deckSig?: string;
+  /** Present (true) only on the conditional-pull short-circuit response. */
+  unchanged?: boolean;
+  /** Sleep-dashboard summary. Omitted when `unchanged`. */
+  glance?: CardFeedGlance;
   cards: FeedCard[];
 }
+
+// `GET /feed` query parameters (a sleeping client's whole visit is this one
+// bodyless request, so telemetry rides the query string):
+//   sig  — deckSig echo for the conditional pull above.
+//   batt — battery percent 0–100.   mv — battery millivolts.
+//   rssi — WiFi RSSI dBm (negative).
+// All optional; the daemon records them per-client (FeedPullTracker) as the
+// only battery/link observability a wake-sync-sleep device has.
 
 /** One decision recorded on-device, replayed via `POST /outbox`. The fields
  *  mirror the equivalent WS command so the daemon can route through the same
@@ -900,6 +1020,7 @@ export type ESP32ToHostMessage =
   | VoiceBeginMessage
   | VoiceEndMessage
   | AudioChunkMessage
+  | VoiceAbortMessage
   | PhotoBeginMessage
   | PhotoEndMessage
   | PhotoChunkMessage;

@@ -8,6 +8,11 @@ import {
   normalizeClientIp,
   PERMISSION_GATE_TTL_MS,
   AWAITING_PROMPT_TTL_MS,
+  trimUtf8Bytes,
+  buildGlanceUsage,
+  buildGlanceWrapup,
+  buildGlance,
+  parsePullTelemetry,
   type OutboxApplyDeps,
 } from '../card-feed.js';
 import type { SessionInfo, OutboxDecision } from '@agentdeck/shared';
@@ -267,5 +272,127 @@ describe('FeedPullTracker', () => {
     expect(formatFeedPull(t.record(IP, { cards: 1, nextPullSec: 3600, now: NOW + 3708_000 })))
       .toBe('card feed pull from xteink_x4 (192.168.68.77): 1 card, next 3600s'
         + ' — 3708s since last pull (expected 3600s, +3.0%, cadence ok)');
+  });
+});
+
+describe('conditional pull (deckSig)', () => {
+  it('stamps a deckSig and short-circuits to unchanged on a matching echo', () => {
+    const roster = [session({ id: 'a' }), session({ id: 'b' })];
+    const full = buildCardFeed(roster, NOW, []);
+    expect(full.deckSig).toMatch(/^[0-9a-f]{8}$/);
+    expect(full.unchanged).toBeUndefined();
+
+    const again = buildCardFeed(roster, NOW + 60_000, [], { echoSig: full.deckSig });
+    expect(again.unchanged).toBe(true);
+    expect(again.cards).toEqual([]);
+    expect(again.glance).toBeUndefined();
+    expect(again.deckSig).toBe(full.deckSig);
+    // Clock re-anchor and cadence still ride the short-circuit response.
+    expect(again.serverTime).toBe(NOW + 60_000);
+    expect(again.nextPullSec).toBe(CARD_FEED_IDLE_PULL_SEC);
+  });
+
+  it('expiresAt churn does not defeat the signature (live cards re-stamp every build)', () => {
+    const roster = [session({ id: 'a', state: 'awaiting_option', question: 'Pick' })];
+    const a = buildCardFeed(roster, NOW, []);
+    const b = buildCardFeed(roster, NOW + 5_000, [], { echoSig: a.deckSig });
+    expect(b.unchanged).toBe(true);
+  });
+
+  it('content change breaks the match', () => {
+    const a = buildCardFeed([session({ id: 'a', state: 'idle' })], NOW, []);
+    const b = buildCardFeed([session({ id: 'a', state: 'processing' })], NOW, [], { echoSig: a.deckSig });
+    expect(b.unchanged).toBeUndefined();
+    expect(b.cards).toHaveLength(1);
+    expect(b.deckSig).not.toBe(a.deckSig);
+  });
+
+  it('glance is covered by the signature', () => {
+    const roster = [session({ id: 'a' })];
+    const a = buildCardFeed(roster, NOW, [], { glance: { wrapup: ['AgentDeck · idle'] } });
+    const b = buildCardFeed(roster, NOW, [], { glance: { wrapup: ['AgentDeck · working'] }, echoSig: a.deckSig });
+    expect(b.unchanged).toBeUndefined();
+    const c = buildCardFeed(roster, NOW, [], { glance: { wrapup: ['AgentDeck · idle'] }, echoSig: a.deckSig });
+    expect(c.unchanged).toBe(true);
+  });
+});
+
+describe('glance builders', () => {
+  it('trimUtf8Bytes trims on rune boundaries by byte budget', () => {
+    expect(trimUtf8Bytes('short', 64)).toBe('short');
+    const cjk = '한국어라벨'.repeat(10); // 3 bytes per char
+    const trimmed = trimUtf8Bytes(cjk, 32);
+    expect(new TextEncoder().encode(trimmed).length).toBeLessThanOrEqual(32);
+    expect(trimmed.endsWith('.')).toBe(true);
+  });
+
+  it('buildGlanceUsage derives Claude and Codex rows with integer percents', () => {
+    const rows = buildGlanceUsage({
+      type: 'usage_update',
+      fiveHourPercent: 42.6,
+      sevenDayPercent: 17.2,
+      fiveHourResetsAt: new Date(NOW + 3600_000).toISOString(),
+      usageStale: false,
+      codexRateLimits: {
+        primary: { usedPercent: 88.4, windowMinutes: 300, resetsAt: new Date(NOW + 1800_000).toISOString() },
+        secondary: { usedPercent: 12, windowMinutes: 10080 },
+      },
+    } as never);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ provider: 'claude', label: 'Claude', primaryPercent: 43, secondaryPercent: 17, stale: false });
+    expect(rows[0]!.primaryResetHm).toMatch(/^\d{2}:\d{2}$/);
+    expect(rows[1]).toMatchObject({ provider: 'codex', primaryPercent: 88, secondaryPercent: 12 });
+  });
+
+  it('buildGlanceUsage emits no row for a provider with no numbers', () => {
+    expect(buildGlanceUsage({ type: 'usage_update', usageStale: true } as never)).toEqual([]);
+  });
+
+  it('buildGlanceWrapup ranks attention first and folds overflow', () => {
+    const roster = [
+      session({ id: 'i1', projectName: 'idle-1', state: 'idle' }),
+      session({ id: 'p', projectName: 'busy', state: 'processing', activity: 'fixing OTA flash OOM' }),
+      session({ id: 'g', projectName: 'gated', state: 'awaiting_permission', requestId: 'r1' }),
+      session({ id: 'i2', projectName: 'idle-2', state: 'idle' }),
+      session({ id: 'i3', projectName: 'idle-3', state: 'idle' }),
+    ];
+    const lines = buildGlanceWrapup(roster);
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe('gated · needs approval');
+    expect(lines[1]).toBe('busy · fixing OTA flash OOM');
+    expect(lines[3]).toBe('+2 more sessions');
+  });
+
+  it('buildGlance returns undefined when there is nothing to say', () => {
+    expect(buildGlance({ sessions: [] })).toBeUndefined();
+  });
+});
+
+describe('pull telemetry', () => {
+  it('parsePullTelemetry keeps in-range values and drops garbage', () => {
+    const p = new URLSearchParams('batt=87&mv=4012&rssi=-71');
+    expect(parsePullTelemetry(p)).toEqual({ battPct: 87, battMv: 4012, rssiDbm: -71 });
+    expect(parsePullTelemetry(new URLSearchParams('batt=180&mv=-5&rssi=12'))).toEqual({});
+    expect(parsePullTelemetry(new URLSearchParams('batt=abc'))).toEqual({});
+  });
+
+  it('tracker records telemetry and unchanged counts per client', () => {
+    const t = new FeedPullTracker();
+    t.record('192.168.68.90', { cards: 2, nextPullSec: 3600, now: NOW, telemetry: { battPct: 80, rssiDbm: -66 } });
+    t.record('192.168.68.90', { cards: 0, nextPullSec: 3600, now: NOW + 3600_000, unchanged: true, telemetry: { battPct: 79 } });
+    const c = t.clients()[0]!;
+    expect(c.lastBattPct).toBe(79);
+    expect(c.lastRssiDbm).toBe(-66);
+    expect(c.unchangedCount).toBe(1);
+  });
+
+  it('formats unchanged pulls and telemetry into the log line', () => {
+    const t = new FeedPullTracker();
+    const line = formatFeedPull(t.record('10.0.0.5', {
+      cards: 0, nextPullSec: 3600, now: NOW, unchanged: true, telemetry: { battPct: 55, rssiDbm: -80 },
+    }));
+    expect(line).toContain('unchanged');
+    expect(line).toContain('batt 55%');
+    expect(line).toContain('rssi -80');
   });
 });

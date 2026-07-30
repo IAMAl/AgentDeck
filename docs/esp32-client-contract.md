@@ -160,6 +160,34 @@ and pull while on battery.
   option decision applies only while the session is still awaiting **and** the
   echoed `question` matches the current one (an hour-old index must never press
   a newer prompt).
+- **Conditional pull (`deckSig`, 2026-07-31)**: every full response carries
+  `deckSig` — a signature over `cards` + `glance` with volatile fields excluded
+  (`expiresAt` re-stamps every build and is not covered). A client persists the
+  sig with its deck cache and echoes it on the next pull as `GET /feed?sig=…`;
+  on a match the daemon answers `{unchanged: true, cards: [], deckSig, serverTime,
+  serverHm, nextPullSec}` — no glance, nothing to parse or persist, re-sleep
+  immediately. Clients that never send `sig` always get the full feed. The
+  clock re-anchor and the cadence hint remain per-pull, so an unchanged night
+  still keeps the device clock honest.
+- **Glance (sleep dashboard, 2026-07-31)**: full responses may carry
+  `glance` — the daemon-authored summary a sleeping panel should hold:
+  `weather` (current temp + WMO code/summary, today min/max, today's next rain
+  window as absolute `HH:MM`, tomorrow outlook; produced only when the host's
+  settings.json configures `weather: {lat, lon, place?}`), `usage` (provider
+  quota rows — Claude/Codex 5h/7d used-percent integers, reset `HH:MM`,
+  explicit `stale` boolean), and `wrapup` (≤4 pre-rendered work-summary lines,
+  attention first, each ≤64 UTF-8 bytes). All strings arrive pre-trimmed;
+  devices draw them verbatim. Times inside the glance are **absolute**
+  (`HH:MM`), never relative ages — the frame persists on an unpowered panel and
+  only absolute times stay true without a repaint. Types:
+  `shared/src/protocol.ts` § Glance; producers: `buildGlance` in
+  `bridge/src/card-feed.ts` + `bridge/src/weather.ts` (Open-Meteo, 30 min
+  cache, bounded fetch, stale-serve up to 3 h).
+- **Pull telemetry (2026-07-31)**: a `GET /feed` may append `batt` (percent
+  0–100), `mv` (battery millivolts), and `rssi` (WiFi dBm, negative) to the
+  query string — the only battery/link observability a wake-sync-sleep device
+  has. Out-of-range values are dropped server-side. Reported per-client in the
+  pull log line and `agentdeck devices` › `Card feed`.
 - **Auth**: same as `/apme` — local connections free, LAN needs the pairing
   token as `?token=` (devices hold it from provisioning; `/health` exposes it).
 - **The daemon logs every pull**, because a sleeping client with an empty outbox
