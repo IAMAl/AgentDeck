@@ -43,6 +43,317 @@ tesserae(AGPL, 개념만 참조)의 서버 주도 슬립·조건부 요청·서�
 
 ---
 
+## 2026-07-31 (6) — 긴 응답의 첫 소리 지연: 전송이 병목이었다
+
+"문장이 길면 너무 오래 걸린다 — 문장 단위 큐잉/스트리밍을 해야 하지
+않나"는 피드백에 계측으로 답했다: Apple TTS 합성은 453자→2MB WAV가
+1초 미만이라 합성은 병목이 아니고, **133KB/s 송신 페이싱**(PSRAM
+mempool 수정 이전의 보수적 값)이 2MB 응답의 첫 소리를 15초+ 미루고
+있었다. 수정 둘: ① 데몬 풀 응답 페이싱 8KB/10ms(~800KB/s — mempool이
+PSRAM으로 간 뒤라 안전) ② 펌웨어가 다운로드 중 1초 분량(32KB) 도착
+시점에 **재생을 즉시 시작**하고 나머지는 다운로드와 병행 피드
+(replyFedOffset 이어받아 feed 태스크가 마무리, 실패 시 playbackStop).
+결과: 응답 길이와 무관하게 턴 종료 → 첫 소리 ~2초. 문장 큐잉은 합성이
+느린 엔진의 기법이라 불필요 복잡도로 배제.
+
+---
+
+## 2026-07-31 (5) — 실사용 피드백 반영: 재생 누락 2건 수정 + 반응성 UX
+
+PSRAM-mempool 코어에서 실사용이 시작되자("내일 날씨 어때" → OpenClaw
+응답) 재생 누락 2건이 로그로 드러났다: ① 576자 응답의 TTS가
+**2.65MB**로 펌웨어 수신 버퍼(2MB)를 초과해 조용히 거부됨 → 4MB로 확대
+(700자 캡 기준 여유). ② 직전 응답이 아직 재생 중이면 새 응답이
+busy-skip됨 → 새 응답이 기존 재생을 **선점**(playbackStop 후 다운로드).
+
+반응성 UX 3종: ① press/release 효과음 — `Audio::playTone`(생성 사인파,
+자산 없음)으로 누름 틱(1.2kHz/25ms)과 전송 블립(880Hz/45ms). 코덱
+워밍업을 겸하며, micStart의 코덱 보장 **후에** 재생해 I2C 레이스를
+회피. ② 배너 유휴 시 최근 Q&A 트랜스크립트 표시(voice_result 질문 +
+audio_reply_ready 답변, mux 보호 링). ③ 볼륨 스테퍼 2버튼(−/+ 10%,
+Es8311::setVolume + 토스트 + 확인음).
+
+---
+
+## 2026-07-31 (4) — hosted assert 근본 수정: mempool을 PSRAM으로
+
+간헐 리부팅(Task #4)의 마지막 원인 규명과 수정. 계측이 결정적이었다:
+device_info에 추가한 `largestFreeBlockKb`가 **총 여유 74KB에서 최대
+연속 블록 31KB**를 보여줬다. 프리빌트 코어의
+`SDIO_OPTIMIZATION_RX_STREAMING_MODE`는 수신 버스트를 하나의 큰 연속
+할당으로 받는데, 단편화된 내부 힙이 그걸 못 주면 ESP-Hosted가 assert로
+보드를 죽인다. 야간(작은 버스트) 무사 / 주간(멀티캐스트 소음, 큰 버스트)
+크래시 패턴이 이걸로 설명된다.
+
+수정 경로는 pioarduino의 `custom_sdkconfig`(Kconfig 델타로 Arduino
+코어를 소스 재빌드). 시행착오 셋을 치렀다: ① choice 그룹은 `=n`으로
+격퇴해야 한다("# ... is not set"은 ini 파서가 주석으로 삼킴) ② 플래시
+지오메트리는 `board_upload.flash_size`가 SSOT(없으면 4MB로 리셋되어
+16MB OTA 파티션 거부) + `f_flash`는 `L` 접미사 필수(없으면
+"40000000m"라는 무효 주파수 생성) ③ 생성물 `sdkconfig.defaults`/
+`sdkconfig.ips10`은 빌드 아티팩트 — 델타 변경 시 삭제해야 반영.
+첫 시도 `RX_NONE`(패킷당 소형 할당)은 역효과: mempool이 해제 버퍼를
+반환하지 않아 내부 힙이 82→10KB로 붕괴했다.
+
+정답은 한 플래그였다: **`CONFIG_ESP_HOSTED_MEMPOOL_PREFER_SPIRAM=y`** —
+assert를 내던 바로 그 할당자가 80KB 내부 힙 대신 32MB PSRAM에서 뽑는다.
+RX는 stock STREAMING 유지. 결과(epoch 1785505562): 내부 힙 free 95KB
+(+13), largest 48KB(31→48), WiFi/WS/HTTP 음성 경로 정상. 풀 고갈이
+구조적으로 불가능해졌으므로 장기 관찰로 최종 확인한다.
+
+---
+
+## 2026-07-31 (3) — 끊기는 스피커 응답: WS 푸시를 버리고 HTTP 풀로
+
+라이브 왕복이 뚫린 직후 두 증상이 남았다: 응답이 끊겨 들리고, 재생
+도중 보드가 리부팅했다(`pkt_rxbuff` assert, 12:06에는 첫 풀 다운로드
+1초 만에 `sdio_rx_get_buffer`). 둘 다 같은 뿌리 — hosted-C6 링크의 RX
+경로는 무페이싱 수신 버스트를 못 견디고, ESP-Hosted는 버퍼 고갈 시 에러
+대신 assert로 보드를 죽인다.
+
+응답 전달을 재설계했다. `audio_http_pull` 케이퍼빌리티(양 전송로
+광고 — 알림 프레임은 시리얼이 나를 수 있는 작은 JSON)를 가진 보드는 WS
+바이너리 스트림 대신: 데몬이 합성 PCM을 board 키로 staging하고
+`audio_reply_ready`(bytes/rate/text)만 보낸다 → 보드가
+`GET /esp32/voice-reply`로 2MB PSRAM 버퍼에 받아 **로컬 재생**한다
+(reply_feed 태스크가 링에 공급; 네트워크와 무관하니 지터=0).
+`audio_out`은 WS 전용 광고를 유지하고 arm 게이트는 두 케이퍼빌리티를
+모두 인정한다(t_embed의 WS 스트리밍 경로는 그대로).
+
+핵심 교훈은 **TCP 흐름제어가 hosted 버퍼 풀을 보호하지 않는다**는 것.
+첫 구현은 `res.end(pcm)`으로 응답했고, 커널이 TCP 초기 윈도우만큼
+세그먼트를 버스트해 lwIP 아래의 C6→P4 핸드오프 큐를 1초 만에
+고갈시켰다. 수정: 데몬이 2KB/15ms(~133KB/s)로 **송신측 페이싱** — 재생
+속도의 4배라 충분하고, in-flight 세그먼트는 상시 1-2개다. 검증: 191KB
+응답 staging→다운로드→재생 후 보드 무크래시 연속 가동(uptime 227s+),
+힙 81/73KB 안정. vitest 1497 green, ips10/t_embed 빌드 green, epoch
+`1785499260` USB 플래시.
+
+---
+
+## 2026-07-31 (2) — "재생이 안 된다": openclaw-gateway는 브리지가 없는 세션이었다
+
+밤새 작업의 마지막 조각. 실사용 PTT가 전사→전달까지 표시되는데 스피커
+응답이 나오지 않았다. 로그 추적으로 두 겹의 단절을 찾았다.
+
+**전달이 사실은 안 되고 있었다.** `finishVoiceCapture`의 managed 분기는
+`session_command`→`focusRelay`로 보내는데, `openclaw-gateway` 세션은
+브리지 포트가 없어 릴레이가 연결할 곳이 없고 명령은 조용히 사라진다 —
+그런데 코드는 무조건 `delivered=true`를 보고했다. wake-word 경로가
+이미 아는 답(`gatewayAdapter.handleCommand({type:'send_prompt'})`)으로
+음성 전달과 `session_command` 일반 경로 양쪽에 gateway 특례를 추가하고,
+delivered를 실제 결과로 보고하게 했다.
+
+**응답 트리거가 매칭될 수 없었다.** 스피커 응답은
+`bridgeTimeline.onEntry`의 `chat_response`가 트리거인데, Gateway
+어댑터의 타임라인 행은 sessionId 없이 나와 arming
+키('openclaw-gateway')와 영원히 못 만난다(timeline.json에 openclaw 행
+0개가 증거). `enrichGatewayTimelineEntry`가 `sessionId ??
+'openclaw-gateway'`를 스탬프하도록 했다.
+
+검증: 실캡처 PCM을 `sessionId=openclaw-gateway`로 재주입 → OpenClaw
+실응답 → `reply ready for openclaw-gateway -> 1 board(s)` → `spoke
+reply (157838B, 30 chars)` — 캡처→업로드→전사→게이트웨이 전달→응답
+합성→WS 스트리밍→스피커 재생, 전 구간 최초 완주. vitest 1497 green.
+
+---
+
+## 2026-07-31 — IPS10 음성 왕복: WS 스트리밍도 잃는다 → HTTP 업로드 + 타깃 선택 UX
+
+전날 serial→WS 전환 후에도 실사용 PTT가 `Voice error`로 끝났다. 데몬
+info 로그가 두 실패 모드를 특정했다: `audio_transport_overflow: 89
+frame(s) dropped (104448/195584)` — hosted-C6 WS 업링크가 32KB/s 캡처를
+못 버티고 6KB DRAM 링이 상시 넘침 — 그리고 콜드부트 직후의 `No speech
+detected` — ES8311 레지스터는 `playbackTask`(첫 재생)와 `mic_test`만
+프로그램했고 push-to-talk 경로는 코덱을 켜지 않아 ADC가 꺼진 채 무음을
+캡처했다(마이크 "검증"이 통과한 것은 mic_test가 스스로 `Es8311::begin()`을
+불렀기 때문 — 검증한 코드와 실행되는 코드가 달랐다).
+
+수정은 사진이 이미 지나간 길이다(c7ee9ee9): 전사는 발화가 끝나야
+시작하므로 라이브 스트리밍은 이득이 없다. `BOARD_VOICE_HTTP_UPLOAD`
+(ips10 전용)에서 발화 전체를 960KB PSRAM 버퍼에 담아 릴리스 시
+`POST /esp32/voice`(raw PCM16LE body) 한 번으로 보낸다. 데몬은
+`deviceVoice.saveDirect` + 기존 `finishVoiceCapture`를 공유하고, 결과는
+`boardResultSinkFor`(serial 우선)로 돌려준다. 단 spoken-reply **arm은
+`audioArmSinkFor`로 분리** — ips10은 `audio_out`을 WiFi device_info에만
+광고하므로 serial sink를 arm하면 응답이 조용히 스킵된다(케이퍼빌리티는
+소켓별 자기 보고를 읽는다는 기존 교훈의 재적용). `micStart`는 코덱
+미초기화 시 `Es8311::begin()`을 보장한다.
+
+UX도 요구대로 재구성: 카드 셀 short-tap = 보드 로컬 음성 타깃
+토글(시안 아웃라인, daemon focus를 훔치지 않음), long-press = 기존
+detail 오버레이. Hold-to-talk 버튼에 서브라벨("auto: proj" / 선택명)로
+다음 발화의 수신 세션을 상시 표시하고, 릴리스 후 `Sending...` WAITING
+배너(25s 데드라인 → "No response - check daemon")가 voice_result/재생
+시작으로 해소된다. 데몬 에러는 짧은 코드(no_speech/audio_lost/
+audio_incomplete/empty_capture)로 내려 보드가 "Heard nothing - try
+again"류의 사람 문장으로 렌더한다. 빈 발화도 이제 항상 응답된다
+(WS/serial `voice_end` empty → `empty_capture`, HTTP 모드는 로컬 배너).
+
+검증: vitest 2046 전부 green, `pio run -e ips10/t_embed/t_display_pro`
+성공(ttgo는 HEAD에서도 DRAM 760B 오버플로우 — 상속된 red, 이 변경과
+무관). USB 플래시 epoch `1785436485` 후 보드가 serial+WiFi WS 양쪽
+등록, `audio_out` 광고 확인. 합성 한국어 WAV(100,950B)를
+`/esp32/voice`로 POST → 200 + 전사 실패 로그 없음(실패는 반드시 info
+로그를 남기므로 무로그=전사 성공). 부수 발견: 데몬 재시작 시 WiFi
+보드들의 half-open WS가 수 분간 재접속하지 않는 현상(보드 리부트로
+해소)은 별도 조사 대상.
+
+**첫 실기 발화가 보드를 리부팅시켰다 — HTTPClient의 단발 대량 write가
+원인.** `assert failed: transport_drv_sta_tx transport_drv.c:290
+(copy_buff)`: ESP-Hosted 글루는 TX 버퍼 확보 실패 시 에러 리턴 대신
+assert로 보드를 죽인다(과거 I2S 늦은 할당·터치 I2C 실험과 동일 계열).
+`HTTPClient::POST`는 본문 전체를 한 번의 `WiFiClient::write()`로 넘기고,
+그 세그먼트 버스트가 hosted TX 풀을 고갈시켰다. `pumpVoiceHttp`를 수동
+소켓으로 재작성: 1KB/write + 4ms yield 페이싱(~250KB/s), 시작 전 내부
+힙 60KB 미만이면 업로드 거부(리부트보다 한 발화 포기가 낫다). 이 수정이
+epoch `1785452738`이며 WiFi OTA(4.0MB/4102청크)로 배포 — 보드측 RX
+경로는 이 버스트 문제와 무관함도 함께 확인된 셈.
+
+**"Heard nothing"의 진범은 스테레오 인터리브였다.** 페이싱 배포 후에도
+인식이 전부 `No speech detected`로 끝나 데몬이 지우기 전의 WAV를 tmp에서
+가로채 분석했다. 두 겹의 원인: (1) 82개의 100바이트 전부-0 발화 — 짧은
+탭이 ADC 램프업 전의 무음만 담은 것. (2) 실발화 13초 캡처의 **홀수
+샘플이 전부 0** — full-duplex I2S RX가 L(마이크)/R(무음) 스테레오
+프레임을 내보내는데 펌웨어가 16kHz 모노로 라벨링해, 실제 6.5초 음성이
+"0이 끼워진 절반 속도 13초"로 도착하고 있었다(7.9kHz 미러 스펙트럼이
+zero-stuffing의 지문). mic_test는 자체 RMS 계산이라 이걸 못 본다 —
+레벨은 움직였으니까. 추가로 실음성 피크가 7.9% FS로 인식기 기준 너무
+작았다. 데몬에 `dropSilentInterleave`(위상 무관: 디지털 무음인 슬롯
+제거, PDM 진짜 모노는 통과) + `normalizePcm`(피크 26000 타깃, x16 캡)을
+전사 전에 넣어 해결. 사용자의 실캡처 PCM을 `/esp32/voice`로 재주입해
+전사 성공을 확인했다(실패는 반드시 info 로그를 남기는데 무로그).
+후속: 펌웨어측 디인터리브(업로드 절반화), PGA step 7(+42dB) 검토.
+
+**첫 라이브 왕복 성공, 그리고 caps 전송로 분리.** 00:21 실사용 press가
+전사("안녕하세요 안녕하세요") → openclaw-gateway 전달(auto 타깃 동작
+확인)까지 완주했는데, spoken reply가 **serial sink에 armed**됐다 —
+"serial은 audio_out을 광고하지 않는다"는 설계가 실제로는 깨져 있었다.
+`sendDeviceInfo`가 한 프레임을 serial+WS 양쪽에 직렬화하므로 caps가
+serial로도 새고 있었던 것. wsConnected() 게이트로는 못 막는다(같은
+버퍼). 수정: serial 복사본을 caps 없이 먼저 직렬화하고 WS 복사본에만
+audio caps 추가. 데몬도 3중 방어(audioArmSinkFor / resolveLive
+audio_out 우선 / stream() 시점 승격). 부수 교훈: 플래시 5연속 실패의
+범인은 launchd가 재스폰하는 macOS AgentDeck.app 2개 인스턴스의 시리얼
+포트 점유였다 — 플래시 전 `lsof`로 앱까지 확인할 것. 디인터리브 판정도
+peak→근접-0 비율(≥95%)로 교체(무음 슬롯의 0.2% 풀스케일 글리치가 peak
+판정과 정규화 기준을 동시에 오염시켰다). 계측: device_info에
+freeHeapKb/minFreeHeapKb 추가 — 상시 내부힙 여유 ~80KB, 최저 49KB가
+hosted assert의 배경.
+
+**미해결 — hosted RX assert 리부팅.** 23:41 `sdio_push_data_to_queue
+(pkt_rxbuff)` 크래시는 음성 활동이 전혀 없는 상태에서 났다(데몬 재시작
+3분 후). 데몬의 상시 WS 브로드캐스트만으로 hosted-C6 RX 풀이 고갈되면
+드라이버가 assert로 보드를 죽인다 — dual-home 이후 노출된 기존
+취약점으로, OTA(WS chunk/ack 페이싱 4MB)는 생존하므로 무페이싱 수신이
+문제다. Arduino 프레임워크라 hosted 풀 sdkconfig 조정 불가. 후보:
+데몬→보드 트래픽 페이싱/절감, custom IDF 빌드, 또는 이 보드의 WS 자체
+제거(업로드=HTTP·결과=serial·응답=HTTP 다운로드화). 별도 과제로 기록.
+
+**auto 타깃은 범용 에이전트 우선(사용자 요청).** 래더가 탭 선택 → 범용
+어시스턴트 세션(agentType `openclaw`, 또는 projectName "hermes" 접두
+매칭 — `isGeneralAssistantSession`, agent_state.h) → daemon focus → 첫
+세션으로 바뀌었다. 코딩 세션은 음성 질문을 그 레포의 작업 지시로
+받아버리므로, 명시 선택이 없는 발화는 대화형 에이전트로 보낸다. T-Embed
+knob도 동일: 인코더 회전/daemon focus 전까지 캐러셀 기본 위치가 범용
+에이전트 세션(`s_userNavigated` 가드). t_embed 빌드는 완료됐으나 기기가
+미접속이라 플래시는 보류.
+
+---
+
+## 2026-07-30 — IPS10 Voice error: 115200bps에 43KB/s 오디오를 실었다
+
+cross-core LVGL 재부팅을 제거한 뒤 실제 PTT는 재부팅하지 않았지만
+`Voice error`를 표시했다. macOS 26.5.2에서 데몬과 동일한 bundled Swift
+helper가 한국어 합성 WAV를 즉시 재인식했으므로 Speech 권한·온디바이스
+모델·helper 자체는 정상이었다.
+
+실패는 전송 설계에 있었다. IPS10은 USB serial이 잡히면 hosted C6 STA를
+park했고, 마이크 PCM을 CH340로 보냈다. 그러나 16 kHz mono PCM16은
+32 KB/s raw, JSON/base64 포함 약 43 KB/s인 반면 이 보드의 115200bps
+직렬은 payload 약 11 KB/s가 한계다. 6×2KB 오디오 링이 지속적으로 넘쳐
+잘린 WAV가 Apple Speech에 도착하고 있었다.
+
+해결은 utterance 크기의 새 PSRAM 버퍼가 아니다. voice-capable IPS10만
+dual-home 예외로 두어 serial을 deduplicated state path로 유지하고, 기존
+hosted-C6 WebSocket이 마이크/스피커 오디오를 맡는다. 이 분기는
+`BOARD_IPS10 && BOARD_HAS_VOICE_CAPTURE`에만 적용되어 다른 ESP32와
+macOS/iOS/Android 전송 정책은 변하지 않는다. 캡처에는
+`capturedBytes`/`queuedBytes`/`droppedFrames` 계측을 추가했고, 데몬은
+프레임 유실을 전사 전에 `audio_transport_overflow` 또는
+`audio_transport_incomplete`로 거부하며 모든 음성 실패를 info 로그에
+남긴다.
+
+`device-voice.test.ts` 8/8, bridge TypeScript build, `pio run -e ips10`
+성공(RAM 29.2%, Flash 65.6%). build epoch `1785337220`을 확인된 실기
+`/dev/cu.wchusbserial31150`에 플래시하고 hash verification을 마쳤다.
+재시작한 데몬은 같은 `ips_10`을 USB serial과 WiFi `192.168.68.62`
+양쪽에서 동시에 확인했고 `serialActive:true`, `wifiRadioParked:false`를
+보고했다.
+
+---
+
+## 2026-07-29 — IPS10 hold-to-talk 결과 표시의 cross-core LVGL crash 제거
+
+터치 복구 펌웨어에서 처음 성공한 hold-to-talk가 끝난 직후 재부팅된 현상을
+실기 crash dump와 같은 빌드의 ELF로 역추적했다. 2026-07-29 07:18 KST의
+스택은 `Protocol::parseMessage()` → `HUD::notify()` →
+`HUD::voiceBannerShow()` → `lv_label_set_text()` → `lv_obj_invalidate()`로
+이어졌다. 즉 마이크 I2S/DMA나 heap 고갈이 아니라, `CORE_NETWORK`에서 받은
+`voice_result`가 LVGL을 직접 호출한 cross-core 위반이었다.
+
+voice UI 진입점은 이제 LVGL을 만지지 않고 고정 크기 128바이트 latest-state
+슬롯에 명령을 게시한다. `HUD::update()`의 `voiceTick()`만 이 상태를 소비해
+`CORE_UI`에서 배너를 갱신한다. device-lifetime 경로에 queue나 동적 할당을
+추가하지 않았고, 짧은 `portMUX` 임계 구역으로 슬롯만 교체한다.
+
+`/opt/homebrew/bin/pio run -e ips10` 성공(RAM 29.2%, Flash 65.6%) 후
+build epoch `1785279533` 펌웨어를 `/dev/cu.wchusbserial31150`에 USB
+플래시하고 hash verification을 마쳤다. 직전 crash와 같은 error
+`voice_result`를 실기에 재주입했을 때 `[VoiceUI] apply op=3 on core 1`을
+확인했으며, 118초 뒤에도 `resetReason=poweron`인 채 재부팅 없이 응답했다.
+사용자가 실기 터치 동작도 확인했다. 수정 후 음성을 포함한 전체 PTT 왕복은
+운영 사용에서 한 번 더 확인하면 된다.
+
+---
+
+## 2026-07-29 — IPS10 GSL3680 scan core 기동 복구 및 실기 배포
+
+`ips10` 터치가 AgentDeck 펌웨어에서 한 번도 동작하지 않았던 원인을 연결
+실기(`/dev/cu.wchusbserial31150`, ESP32-P4 rev 1.3)에서 끝까지 좁혔다.
+I2C 0x40은 정상 ACK했고, 번들 GSL3680 RAM 펌웨어도 읽을 수 있었지만
+`0xB0` 실행 마커와 0x80 원시 터치 패킷은 계속 0이었다.
+
+결정적 결함은 벤더에서 가져온 `clear_reg()`의 **`0x88 = 0x01`** 이었다.
+공식 Linux Silead 초기화와 대조하면 터치 수 레지스터는 `0x80`이고, 이
+보드는 여기에 `MAX_FINGER_NUM`(3)을 써야 scan core가 열린다. 한 바이트
+주소를 고친 뒤 실기 `0xB0`이 처음으로 **`5a5a5a5a`** 를 반환했다.
+
+주변의 거짓 양성도 함께 제거했다.
+
+- LCD panel-IO 래퍼 대신 ESP-IDF I2C master를 400 kHz로 직접 사용하고,
+  각 쓰기를 재시도한다. 1바이트 페이지 선택이 이 리비전에서 RAM을
+  갱신하지 않으면 4바이트 little-endian 페이지 선택으로 재업로드한다.
+- 132개 펌웨어 페이지를 4바이트 워드로 전부 읽어 원본과 대조했다:
+  **132 pages / 0 mismatches / ESP_OK**. 128바이트 연속 읽기는 컨트롤러가
+  거부하므로 사용하지 않는다.
+- 초기화 실패 시 해제된 touch handle을 전역/호출자에게 남기던
+  use-after-free 경로를 제거했고, 좌표 수를 드라이버 배열과 LVGL
+  `max_point_num`에 맞게 clamp했다.
+- 400 kHz + WiFi 동시 부팅 때 ESP-Hosted SDIO RX 버퍼가 고갈되지 않도록
+  IPS10의 PPA/LVGL 슬라이스를 24→16라인으로 줄였다. 내부 draw buffer는
+  40,960B, 스피커 I2S 준비 후 내부 heap은 약 246–253KB를 유지했고,
+  수정 펌웨어는 실기에서 126초 이상 재부팅 없이 동작했다.
+- 제조사 최소 예제도 두 초기화 변형 모두 `0xB0=0`을 재현해 golden
+  reference로 쓸 수 없음을 확인했다. Linux Silead의 레지스터 정의와
+  실기 실행 마커가 수정의 기준이다.
+
+`/opt/homebrew/bin/pio run -e ips10` 성공(RAM 29.2%, Flash 65.6%) 후 USB
+플래시 및 hash verification 완료. scan core와 raw trace 경로는 살아났고,
+사용자가 실제 패널에서 터치와 landscape 상호작용 동작을 확인했다.
+
+---
+
 ## 2026-07-30 — Elgato Marketplace Windows 설치 회귀: 선언 복원에 그치지 않고 dead dial 제거
 
 Doug의 #88 보고로 공개된 Stream Deck 1.0.2가 `OS.mac`만 선언해 Windows
@@ -179,6 +490,64 @@ INT 21, 레벨 포함), I2C 읽기 경로 정상(레지스터 덤프가 다양�
 두 I2C 주소 선택 로직(우리 사본은 주석 처리됨).
 
 **터치와 무관하게 음성 파이프라인(스피커·마이크·캡처·재생)은 완성돼 있다.**
+
+---
+
+## 2026-07-28 — Codex user hook을 config.toml 단일 표현으로 병합
+
+Codex 0.141은 같은 config layer에 `hooks.json`과 inline `[hooks]`가 함께 있으면
+둘을 병합하면서 시작 경고를 낸다. 로컬 구성은 workmux가
+`~/.codex/hooks.json`, AgentDeck이 `~/.codex/config.toml`을 사용해 이 조건에
+해당했다. workmux의 5개 lifecycle hook을 공식 `[[hooks.<Event>]]` 배열로
+`config.toml`에 옮기고, 원본 JSON은
+`hooks.json.pre-toml-consolidation-20260728`로 보존했다. `codex doctor`에서
+`config.toml parse ok`와 중복 source 경고 제거를 확인했다.
+
+재설치 내구성을 위해 Node/Swift `MiniToml`에 hook 충돌 판별을 분리했다.
+공식 lifecycle array와 `[hooks.state]`는 보존·병합하고, 충돌 가능한 일반
+`[hooks]`/`[hooks.*]` table만 계속 거부한다. 따라서 AgentDeck daemon이 managed
+fence를 갱신해도 같은 TOML에 둔 workmux hook이 사라지지 않는다.
+
+검증: hooks Vitest 41/41, hooks TypeScript compile, macOS 대상 XCTest
+(`MiniTomlTests` + `CodexConfigInstallerTests`) 26/26, `git diff --check` 통과.
+
+---
+
+## 2026-07-28 — 서브에이전트는 세션이 아니라 부모 Timeline의 두 줄이다
+
+Claude Code/Codex의 공식 `SubagentStart`/`SubagentStop`과 Claude 팀의
+`TaskCompleted`/`TeammateIdle` lifecycle hook을 수집하되, 제품 표면은 의도적으로
+확장하지 않았다. 하위 에이전트를 `SessionInfo`로 만들지 않고 부모 세션 Timeline에
+기존 `tool_exec` 시작 행과 `tool_resolved` 완료 행만 남긴다. 완료 문구는
+`last_assistant_message`/task subject의 첫 유효 문장을 96자 이하로 축약하며,
+하위 도구 호출은 행을 만들지 않는다.
+
+제어 경계도 함께 고정했다. `agent_id`가 있는 child `PreToolUse` 및 lifecycle
+이벤트는 Node/Swift 양쪽에서 부모 state/APME/STOP/승인 경로 전에 소비한다.
+AgentDeck은 서브에이전트에게 메시지·승인을 보내지 않고 팀 설정을 읽거나 수정하지
+않는다. 사용자가 Claude/Codex에서 구성한 팀을 그대로 관측할 뿐이다.
+
+호환성 때문에 새 WS 이벤트, Timeline 타입, 필수 필드, 세션 계층 필드를 만들지
+않았다. 기존 `timeline_event` + `tool_exec`/`tool_resolved`만 사용하므로
+1.0.x macOS/iOS/Android/Node/ESP32/pixel 소비자는 그대로 디코드한다. 따라서
+1.1.0 호환성 라인 변경은 불필요하며 루트 버전은 1.0.2로 유지했다. Codex의
+기존 tool-firehose 필터에는 `Subagent …`로 시작하는 집계 시작 행만 예외 처리했다.
+
+그래픽도 같은 두 행에서만 파생한다. macOS/iOS/Android의 Terrarium은 부모
+크리처 주위에 기울어진 점선 고리와 와이어, 최대 3개의 시안 위성을 애니메이션하고
+완료 직후 짧은 펄스를 준다. Pixoo/Timebox는 해상도별 고정 픽셀 위성으로,
+ESP32 컬러 LCD는 같은 궤도로, InkDeck은 갱신 폭증이 없는 정적 미니 궤도로,
+8×32 LED는 부모 glyph 주변 픽셀로 단계적으로 축약한다. 장식 레이어는 hit-test와
+분리되어 자식 선택·메시지·승인 기능으로 이어지지 않는다.
+
+메모리 제한 보드는 고정 배열/스택 연산만 쓰고 렌더 루프에 heap 할당을 추가하지
+않았다. `box_86`, `inkdeck`, `led8x32`, `esp32_c6_147` 펌웨어 빌드가 통과했다.
+`ttgo`는 최신 기준 `dram0_0_seg` 760B 초과가 재현됐으며, 바로 아래 기존 조사에서
+기능 추가 전부터 728–736B 초과였음이 이미 확인된 별도 기지 문제다.
+
+검증: 관련 Vitest 33/33, 전체 Vitest 2042/2042, 전체 TypeScript typecheck,
+macOS 대상 XCTest 48/48, macOS `AgentDeck_macOS` 및 iOS `AgentDeck_iOS`
+Debug build, Android `TimelineStoreTest`/`TerrariumStateTest` 모두 통과.
 
 ---
 
