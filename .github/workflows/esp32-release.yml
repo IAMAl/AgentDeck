@@ -11,27 +11,35 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     strategy:
       fail-fast: true
       max-parallel: 1  # sequential — one board at a time to avoid resource conflicts
       matrix:
+        # One entry per board this repository builds firmware for, i.e. every
+        # row marked Shipping in the ESP32 board table of
+        # docs/hardware-compatibility.md. A Shipping board missing here has no
+        # downloadable firmware at all, which is how t_embed, t_display_pro and
+        # esp32_c6_147 were absent from the 1.0.1 release set.
+        #
+        # `board` is the canonical device id — the string the firmware reports
+        # as `device_info.board` and the one `agentdeck esp32-ota <target>`
+        # resolves to (SSOT: ESP32_OTA_BOARDS in bridge/src/cli.ts). `env` is
+        # the PlatformIO environment. They are deliberately different
+        # namespaces, so assets are named by the canonical id: the file you
+        # download is then literally the target you pass to the OTA command.
         board:
-          - env: box_86
-            name: "86 Box 4\" 480x480"
-          - env: ips35
-            name: "IPS 3.5\" 480x320"
-          - env: amoled
-            name: "Round AMOLED 1.8\" 360x360"
-          - env: ips10
-            name: "IPS 10.1\" 1280x800"
-          - env: inkdeck
-            name: "InkDeck 7.5\" e-ink 800x480"
-          - env: ttgo
-            name: "TTGO T-Display 240x135"
-          - env: led8x32
-            name: "Ulanzi TC001 32x8 LED matrix"
+          - { env: box_86, board: 86box, name: '86 Box', display: '4" 480x480 ST7701', ota: 'yes' }
+          - { env: ips35, board: ips_35, name: 'IPS 3.5"', display: '3.5" 480x320 AXS15231B', ota: 'yes' }
+          - { env: amoled, board: round_amoled, name: 'Round AMOLED', display: '1.8" 360x360 ST77916', ota: 'yes' }
+          - { env: ips10, board: ips_10, name: 'IPS 10.1"', display: '10.1" 800x1280 JD9365', ota: 'yes' }
+          - { env: inkdeck, board: inkdeck, name: 'InkDeck', display: '7.5" 800x480 e-ink UC8179', ota: 'yes' }
+          - { env: ttgo, board: ttgo_t_display, name: 'TTGO T-Display', display: '1.14" 240x135 ST7789', ota: 'yes' }
+          - { env: led8x32, board: ulanzi_tc001, name: 'Ulanzi TC001', display: '32x8 WS2812B matrix', ota: 'yes' }
+          - { env: t_embed, board: t_embed, name: 'T-Embed CC1101', display: '1.9" 320x170 ST7789', ota: 'yes' }
+          - { env: t_display_pro, board: t_display_pro, name: 'T-Display-S3-Pro', display: '2.33" 480x222 ST7796U', ota: 'yes' }
+          - { env: esp32_c6_147, board: esp32_c6_147, name: 'Waveshare C6-LCD-1.47', display: '1.47" 172x320 ST7789', ota: 'no' }
 
     steps:
       - uses: actions/checkout@v4
@@ -57,14 +65,22 @@ jobs:
 
       - name: Collect firmware
         run: |
-          mkdir -p dist
-          ENV=${{ matrix.board.env }}
-          cp esp32/.pio/build/$ENV/firmware.bin dist/agentdeck-$ENV.bin
-          cp esp32/.pio/build/$ENV/partitions.bin dist/agentdeck-$ENV-partitions.bin
+          set -euo pipefail
+          mkdir -p dist/meta
+          ENV='${{ matrix.board.env }}'
+          BOARD='${{ matrix.board.board }}'
+          cp "esp32/.pio/build/$ENV/firmware.bin" "dist/agentdeck-$BOARD.bin"
+          cp "esp32/.pio/build/$ENV/partitions.bin" "dist/agentdeck-$BOARD-partitions.bin"
           # Bootloader may be in different locations
-          if [ -f esp32/.pio/build/$ENV/bootloader.bin ]; then
-            cp esp32/.pio/build/$ENV/bootloader.bin dist/agentdeck-$ENV-bootloader.bin
+          if [ -f "esp32/.pio/build/$ENV/bootloader.bin" ]; then
+            cp "esp32/.pio/build/$ENV/bootloader.bin" "dist/agentdeck-$BOARD-bootloader.bin"
           fi
+          # The release notes are rendered from these rows rather than from a
+          # second hand-written table, so a board that built can never be left
+          # out of the table it is listed in (TC001 was, in 1.0.1).
+          printf '%s\t%s\t%s\t%s\t%s\n' \
+            '${{ matrix.board.name }}' "$BOARD" '${{ matrix.board.display }}' "$ENV" '${{ matrix.board.ota }}' \
+            > "dist/meta/$BOARD.tsv"
           ls -la dist/
 
       - name: Upload artifact
@@ -74,7 +90,7 @@ jobs:
           path: dist/
 
   release:
-    needs: build
+    needs: build   # fail-fast + needs: no partial firmware set can ever publish
     runs-on: ubuntu-latest
 
     steps:
@@ -89,32 +105,63 @@ jobs:
           merge-multiple: true
 
       - name: List firmware files
-        run: ls -la firmware/
+        run: ls -la firmware/ firmware/meta/
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd firmware
+          sha256sum agentdeck-*.bin > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Render release notes
+        run: |
+          set -euo pipefail
+          VERSION='${{ steps.version.outputs.VERSION }}'
+          {
+            echo "## AgentDeck ESP32 v$VERSION"
+            echo
+            echo "Firmware for every board this repository builds. Each asset is named by"
+            echo "the board's **canonical id** — the same string the firmware reports as"
+            echo '`device_info.board` and the one `agentdeck esp32-ota <target>` takes, so'
+            echo "the file you download is the target you pass."
+            echo
+            echo "| Board | Asset | Display | PlatformIO env | Wi-Fi OTA |"
+            echo "|---|---|---|---|---|"
+            cat firmware/meta/*.tsv | sort | while IFS=$'\t' read -r name board display env ota; do
+              echo "| $name | \`agentdeck-$board.bin\` | $display | \`$env\` | $ota |"
+            done
+            echo
+            echo "Each board also ships \`-partitions.bin\` and \`-bootloader.bin\` for a full"
+            echo "USB flash. \`SHA256SUMS.txt\` covers every attached binary."
+            echo
+            echo "### Update over Wi-Fi"
+            echo
+            echo '```bash'
+            echo "agentdeck esp32-ota <board> --firmware agentdeck-<board>.bin"
+            echo '```'
+            echo
+            echo "The board must already be provisioned and connected to the daemon over"
+            echo "Wi-Fi. \`86box\` and \`ips_10\` units flashed before 2026-07-05 may still carry"
+            echo "a factory/NO_OTA layout and need one USB full flash first."
+            echo
+            echo "### Flash over USB"
+            echo
+            echo '```bash'
+            echo "# from a checkout — PlatformIO knows each chip's bootloader offset"
+            echo "cd esp32 && pio run -e <env> -t upload"
+            echo
+            echo "# or the application image alone; app0 starts at 0x10000 on every board here"
+            echo "esptool.py --port PORT write_flash 0x10000 agentdeck-<board>.bin"
+            echo '```'
+          } > notes.md
+          cat notes.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "AgentDeck ESP32 v${{ steps.version.outputs.VERSION }}"
-          body: |
-            ## AgentDeck ESP32 v${{ steps.version.outputs.VERSION }}
-
-            Firmware binaries for all supported boards.
-
-            ### Boards
-            | Board | File | Display |
-            |-------|------|---------|
-            | 86 Box | `agentdeck-box_86.bin` | 4" 480×480 ST7701 |
-            | IPS 3.5" | `agentdeck-ips35.bin` | 3.5" 480×320 AXS15231B |
-            | Round AMOLED | `agentdeck-amoled.bin` | 1.8" 360×360 ST77916 |
-            | IPS 10.1" | `agentdeck-ips10.bin` | 10.1" 1280×800 JC8012P4A1C |
-            | InkDeck | `agentdeck-inkdeck.bin` | 7.5" 800×480 e-ink UC8179 |
-            | TTGO T-Display | `agentdeck-ttgo.bin` | 1.14" 240×135 ST7789 |
-
-            ### Flash
-            ```bash
-            # USB flash (replace PORT and BOARD)
-            cd esp32 && pio run -e BOARD -t upload
-            # Or use esptool directly
-            esptool.py --port PORT write_flash 0x10000 agentdeck-BOARD.bin
-            ```
-          files: firmware/*
+          body_path: notes.md
+          files: |
+            firmware/agentdeck-*.bin
+            firmware/SHA256SUMS.txt

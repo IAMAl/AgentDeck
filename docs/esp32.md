@@ -102,6 +102,14 @@ agentdeck esp32-ota inkdeck --build       # 해당 env 빌드 후 OTA 전송
 agentdeck esp32-ota ips_10 --firmware esp32/.pio/build/ips10/firmware.bin
 ```
 
+체크아웃 없이 업데이트하려면 `esp32-v*` GitHub Release 자산을 그대로 쓴다. 자산 이름은 **canonical board id** 기준(`agentdeck-<board>.bin`)이라 다운로드한 파일명이 곧 OTA target 이다:
+
+```bash
+agentdeck esp32-ota ips_10 --firmware agentdeck-ips_10.bin
+```
+
+릴리스는 `docs/hardware-compatibility.md`에서 Shipping 인 보드 전체를 빌드하며(현재 10종), 보드별로 `-partitions.bin`/`-bootloader.bin`과 `SHA256SUMS.txt`를 함께 첨부한다. 릴리스 노트의 보드 표는 빌드 산출물에서 렌더링되므로 손으로 관리하는 두 번째 목록이 아니다. **Shipping 보드를 추가하면 `.github/workflows/esp32-release.yml`의 matrix 행도 같이 추가해야 한다** — 빠뜨려도 실패 없이 그 보드 펌웨어만 조용히 누락된다.
+
 Daemon API는 `POST /esp32/ota` 이며 CLI는 이 엔드포인트를 호출한다. OTA 프로토콜은 daemon→firmware `esp32_ota_begin`, `esp32_ota_chunk`, `esp32_ota_end`, `esp32_ota_abort`, firmware→daemon `esp32_ota_ack`, `esp32_ota_error` 로 구성된다. Firmware는 `device_info`에 OTA capability(지원 여부, OTA 슬롯 수, 최소 슬롯 크기, free sketch space, 미지원 사유)를 실어 serial/WebSocket 양쪽에 보고한다. 전송은 WiFi WS socket에서 1KB base64 chunk 단위로 진행하고, `Update` + MD5 검증 성공 후 재부팅한다.
 
 OTA 대상 SSOT. **`agentdeck esp32-ota <target>`의 `<target>`은 로컬 PlatformIO env뿐 아니라 daemon이 연결된 기기를 매칭하는 키(firmware의 `device_info.board` 문자열)로도 그대로 쓰인다 — 아래 굵게 표시한 별칭만 둘 다 만족한다.** 다른 별칭은 `--build`까지는 되어도 실제 보드가 그 이름으로 자신을 보고하지 않아 업로드 단계에서 `No online WiFi ESP32 target matches …`로 실패한다:
