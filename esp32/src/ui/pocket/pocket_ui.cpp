@@ -4,6 +4,7 @@
 #include "../../state/agent_state.h"
 #include "../../net/wifi_manager.h"
 #include "../../net/ws_client.h"
+#include "../../net/serial_client.h"
 #include "../../input/power_monitor.h"
 #include "../../camera/photo_capture.h"
 #include "../display.h"
@@ -38,6 +39,7 @@ static lv_obj_t* s_scr = nullptr;
 static lv_obj_t* s_status = nullptr;
 static lv_obj_t* s_statusText = nullptr;
 static lv_obj_t* s_statusLink = nullptr;
+static lv_obj_t* s_statusBatt = nullptr;
 static lv_obj_t* s_content = nullptr;
 static lv_obj_t* s_navBtns[TAB_COUNT] = {nullptr, nullptr, nullptr};
 static lv_obj_t* s_toast = nullptr;
@@ -51,7 +53,7 @@ static lv_obj_t* s_camTarget = nullptr;
 
 static char s_cardIds[10][32] = {};
 static uint8_t s_cardCount = 0;
-static char s_lastSig[360] = {0};
+static char s_lastSig[480] = {0};
 
 // ── small helpers (mirrors of the ticker's file-statics; the two UIs are
 // alternative render trees over the same state, never active together) ───────
@@ -61,6 +63,7 @@ static uint32_t agentColor(const char* agentType) {
     if (strncmp(agentType, "codex", 5) == 0) return Theme::CloudBody;
     if (strcmp(agentType, "openclaw") == 0) return Theme::CrayfishShell;
     if (strcmp(agentType, "opencode") == 0) return Theme::OpenCodeOuter;
+    if (strcmp(agentType, "antigravity") == 0) return Theme::AntigravityMark;
     return Theme::HUDDim;
 }
 
@@ -103,6 +106,30 @@ static void sendFocusSession(const char* sid) {
     char buf[80];
     snprintf(buf, sizeof(buf),
              "{\"type\":\"focus_session\",\"sessionId\":\"%s\"}", sid);
+    Net::queueOutbound(buf);
+}
+
+static void sendSelectOption(const char* sid, int index) {
+    char buf[96];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"select_option\",\"index\":%d,\"sessionId\":\"%s\"}",
+             index, sid);
+    Net::queueOutbound(buf);
+}
+
+static void sendPermissionDecision(const char* requestId, bool allow) {
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"permission_decision\",\"requestId\":\"%s\",\"decision\":\"%s\"}",
+             requestId, allow ? "allow" : "deny");
+    Net::queueOutbound(buf);
+}
+
+static void sendSessionEscape(const char* sid) {
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "{\"type\":\"session_command\",\"sessionId\":\"%s\",\"command\":{\"type\":\"escape\"}}",
+             sid);
     Net::queueOutbound(buf);
 }
 
@@ -177,6 +204,52 @@ static void onCardClicked(lv_event_t* e) {
     s_lastSig[0] = '\0';
 }
 
+// Answer a permission gate from an awaiting card. The requestId is re-read
+// from live state at press time — render-time copies go stale the moment the
+// desk answers first, and a stale id must degrade to "already answered",
+// never to a mis-aimed decision.
+static void answerCard(int idx, bool allow) {
+    if (idx < 0 || idx >= s_cardCount || !s_cardIds[idx][0]) return;
+    char sid[32];
+    strncpy(sid, s_cardIds[idx], sizeof(sid) - 1);
+    sid[sizeof(sid) - 1] = '\0';
+    char req[40] = {0};
+    bool awaiting = false;
+    lockState();
+    for (uint8_t i = 0; i < g_state.sessionCount; i++) {
+        if (sameSessionId(g_state.sessions[i].id, sid)) {
+            awaiting = strstr(g_state.sessions[i].state, "awaiting") != nullptr;
+            strncpy(req, g_state.sessions[i].requestId, sizeof(req) - 1);
+            break;
+        }
+    }
+    unlockState();
+    if (!awaiting) {
+        toast("already answered");
+        s_lastSig[0] = '\0';
+        return;
+    }
+    // Same fallback ladder as the landscape strip: observed gates carry a
+    // requestId; a managed PTY prompt answers via option 0 / escape.
+    if (allow) {
+        if (req[0]) sendPermissionDecision(req, true);
+        else sendSelectOption(sid, 0);
+        toast("sent: approve");
+    } else {
+        if (req[0]) sendPermissionDecision(req, false);
+        else sendSessionEscape(sid);
+        toast("sent: deny");
+    }
+}
+
+static void onApproveClicked(lv_event_t* e) {
+    answerCard((int)(intptr_t)lv_event_get_user_data(e), true);
+}
+
+static void onDenyClicked(lv_event_t* e) {
+    answerCard((int)(intptr_t)lv_event_get_user_data(e), false);
+}
+
 static void onNavClicked(lv_event_t* e) {
     int tab = (int)(intptr_t)lv_event_get_user_data(e);
     if (tab >= 0 && tab < TAB_COUNT) s_tab = (uint8_t)tab;
@@ -233,13 +306,36 @@ static void renderSessionsTab() {
     s_cardCount = 0;
     memset(s_cardIds, 0, sizeof(s_cardIds));
     lockState();
-    for (uint8_t i = 0; i < g_state.sessionCount && n < 10; i++) {
-        const SessionInfo& s = g_state.sessions[i];
+    // Same glance priority as the landscape strip: waits, explicit focus,
+    // live work, then the remaining roster — an awaiting card must never sit
+    // below the scroll fold.
+    uint8_t order[10];
+    uint8_t orderCount = 0;
+    auto addIndex = [&](uint8_t idx) {
+        for (uint8_t j = 0; j < orderCount; j++) if (order[j] == idx) return;
+        if (orderCount < 10) order[orderCount++] = idx;
+    };
+    for (uint8_t i = 0; i < g_state.sessionCount; i++)
+        if (strstr(g_state.sessions[i].state, "awaiting") != nullptr) addIndex(i);
+    for (uint8_t i = 0; i < g_state.sessionCount; i++)
+        if (sameSessionId(g_state.sessions[i].id, g_state.focusedSessionId)) addIndex(i);
+    for (uint8_t i = 0; i < g_state.sessionCount; i++)
+        if (strcmp(g_state.sessions[i].state, "processing") == 0) addIndex(i);
+    for (uint8_t i = 0; i < g_state.sessionCount; i++) addIndex(i);
+
+    for (uint8_t oi = 0; oi < orderCount && n < 10; oi++) {
+        const SessionInfo& s = g_state.sessions[order[oi]];
         strncpy(rows[n].agentType, s.agentType, sizeof(rows[n].agentType));
         strncpy(rows[n].projectName, s.projectName, sizeof(rows[n].projectName));
         strncpy(rows[n].state, s.state, sizeof(rows[n].state));
-        strncpy(rows[n].line, s.lastEventText[0] ? s.lastEventText : s.activity,
+        // An awaiting card carries the live question — that is what its two
+        // answer chips refer to; other cards keep the milestone line.
+        bool awaiting = strstr(s.state, "awaiting") != nullptr;
+        strncpy(rows[n].line,
+                (awaiting && s.question[0]) ? s.question
+                : (s.lastEventText[0] ? s.lastEventText : s.activity),
                 sizeof(rows[n].line));
+        rows[n].line[sizeof(rows[n].line) - 1] = '\0';
         rows[n].focused = sameSessionId(s.id, g_state.focusedSessionId);
         strncpy(s_cardIds[n], s.id, sizeof(s_cardIds[n]) - 1);
         n++;
@@ -258,10 +354,12 @@ static void renderSessionsTab() {
         Utf8::sanitizeLvglText(rows[i].projectName);
         Utf8::sanitizeLvglText(rows[i].line);
         bool awaiting = strstr(rows[i].state, "awaiting") != nullptr;
+        // Awaiting cards grow to hold the question and its answer chips.
+        int cardH = awaiting ? 138 : 66;
 
         lv_obj_t* card = lv_obj_create(s_content);
         lv_obj_remove_style_all(card);
-        lv_obj_set_size(card, POCKET_W - 12, 66);
+        lv_obj_set_size(card, POCKET_W - 12, cardH);
         lv_obj_set_style_bg_color(card, lv_color_hex(Theme::MidWater), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(card, 6, 0);
@@ -273,7 +371,7 @@ static void renderSessionsTab() {
         if (rows[i].focused || awaiting) {
             lv_obj_t* rail = lv_obj_create(card);
             lv_obj_remove_style_all(rail);
-            lv_obj_set_size(rail, 4, 58);
+            lv_obj_set_size(rail, 4, cardH - 8);
             lv_obj_set_style_bg_color(
                 rail, lv_color_hex(awaiting ? Theme::StatusAmber : Theme::StatusCyan), 0);
             lv_obj_set_style_bg_opa(rail, LV_OPA_COVER, 0);
@@ -307,10 +405,30 @@ static void renderSessionsTab() {
         lv_label_set_long_mode(proj, LV_LABEL_LONG_DOT);
         lv_obj_set_pos(proj, 12, 22);
 
-        lv_obj_t* line = makeLabel(card, &font_kr_12, Theme::HUDDim, rows[i].line);
-        lv_obj_set_width(line, POCKET_W - 40);
-        lv_label_set_long_mode(line, LV_LABEL_LONG_DOT);
-        lv_obj_set_pos(line, 12, 46);
+        if (awaiting) {
+            // The question, given room to wrap; the two explicit chips below
+            // are the only way to answer (Focus-strip rule: a stray tap on
+            // the card body still only focuses, never decides).
+            lv_obj_t* line = makeLabel(card, &font_kr_12, Theme::HUDText, rows[i].line);
+            lv_obj_set_width(line, POCKET_W - 40);
+            lv_label_set_long_mode(line, LV_LABEL_LONG_DOT);
+            lv_obj_set_height(line, 44);
+            lv_obj_set_pos(line, 12, 46);
+
+            lv_obj_t* deny = makeButton(card, 92, 32, Theme::StatusRed, "DENY",
+                                        &lv_font_montserrat_14, onDenyClicked,
+                                        (void*)(intptr_t)i);
+            lv_obj_set_pos(deny, 12, 98);
+            lv_obj_t* approve = makeButton(card, 92, 32, Theme::StatusGreen,
+                                           "APPROVE", &lv_font_montserrat_14,
+                                           onApproveClicked, (void*)(intptr_t)i);
+            lv_obj_set_pos(approve, 110, 98);
+        } else {
+            lv_obj_t* line = makeLabel(card, &font_kr_12, Theme::HUDDim, rows[i].line);
+            lv_obj_set_width(line, POCKET_W - 40);
+            lv_label_set_long_mode(line, LV_LABEL_LONG_DOT);
+            lv_obj_set_pos(line, 12, 46);
+        }
     }
 }
 
@@ -379,8 +497,10 @@ static void renderCamTab() {
         &lv_font_montserrat_14, onLampClicked, nullptr);
     lv_obj_set_pos(lamp, 6, 350);
 
+    // U+00B7 " · " is a tofu box on this font stack — LV_SYMBOL_BULLET is the
+    // covered separator (see Utf8::sanitizeLvglText).
     lv_obj_t* hint = makeLabel(s_content, &lv_font_montserrat_12, Theme::HUDFaint,
-                               "BOOT = shutter · tap bar = target");
+                               "BOOT = shutter " LV_SYMBOL_BULLET " tap bar = target");
     lv_obj_set_pos(hint, 6, 394);
 }
 
@@ -390,6 +510,7 @@ static void renderUsageTab() {
     struct GaugeData { const char* label; float pct; char reset[20]; };
     GaugeData rowsArr[4];
     uint8_t n = 0;
+    char subsLine[96] = {0};
     lockState();
     auto take = [&](const char* label, float pct, const char* reset) {
         if (pct < 0.0f) return;
@@ -403,9 +524,20 @@ static void renderUsageTab() {
     take("Claude 7d", g_state.sevenDayPercent, g_state.sevenDayReset);
     take("Codex 5h", g_state.codexPrimaryPercent, g_state.codexPrimaryReset);
     take("Codex 7d", g_state.codexSecondaryPercent, g_state.codexSecondaryReset);
+    // Account subscriptions — the "what am I paying for" line the landscape
+    // strip and other dashboards carry.
+    {
+        size_t off = 0;
+        for (uint8_t i = 0; i < g_state.subscriptionCount && off < sizeof(subsLine) - 24; i++) {
+            off += snprintf(subsLine + off, sizeof(subsLine) - off, "%s%s %s",
+                            i > 0 ? " " LV_SYMBOL_BULLET " " : "",
+                            g_state.subscriptions[i].name,
+                            g_state.subscriptions[i].until);
+        }
+    }
     unlockState();
 
-    if (n == 0) {
+    if (n == 0 && !subsLine[0]) {
         lv_obj_t* l = makeLabel(s_content, &lv_font_montserrat_14, Theme::HUDDim,
                                 "Waiting for usage data...");
         lv_obj_align(l, LV_ALIGN_CENTER, 0, 0);
@@ -447,6 +579,14 @@ static void renderUsageTab() {
             lv_obj_align(r, LV_ALIGN_TOP_RIGHT, -8, y + 2);
         }
     }
+
+    if (subsLine[0]) {
+        Utf8::sanitizeLvglText(subsLine);
+        lv_obj_t* s = makeLabel(s_content, &font_kr_12, Theme::HUDDim, subsLine);
+        lv_label_set_long_mode(s, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(s, POCKET_W - 24);
+        lv_obj_set_pos(s, 6, 12 + n * 92);
+    }
 }
 
 namespace Pocket {
@@ -467,6 +607,11 @@ void create() {
     s_statusLink = makeLabel(s_status, &lv_font_montserrat_12, Theme::HUDDim,
                              LV_SYMBOL_WIFI);
     lv_obj_align(s_statusLink, LV_ALIGN_RIGHT_MID, -8, 0);
+    // The handheld unit lives off its cell — the battery belongs on the
+    // status bar. Honest voltage only: the SY6970 has no fuel-gauge SOC
+    // register, so no fabricated percentage (same rule as the landscape strip).
+    s_statusBatt = makeLabel(s_status, &lv_font_montserrat_12, Theme::HUDDim, "");
+    lv_obj_align(s_statusBatt, LV_ALIGN_RIGHT_MID, -28, 0);
 
     s_content = lv_obj_create(s_scr);
     lv_obj_remove_style_all(s_content);
@@ -564,18 +709,24 @@ void update(float dt) {
 
     bool wifiUp = Net::wifiConnected();
     bool wsUp = Net::wsConnected();
+    bool serialUp = Net::serialConnected();
+    Input::PowerStatus power = Input::powerStatus();
 
-    // Signature: tab + session states + usage buckets + focus + link.
-    char sig[360];
+    // Signature: tab + session states/questions + usage buckets + focus +
+    // link + power. The question fragment matters: an awaiting card renders
+    // the live question and its answer chips, so a question change must
+    // rebuild even when the state string does not move.
+    char sig[480];
     {
         lockState();
-        char sess[160] = {0};
+        char sess[256] = {0};
         size_t off = 0;
-        for (uint8_t i = 0; i < g_state.sessionCount && off < sizeof(sess) - 28; i++) {
-            off += snprintf(sess + off, sizeof(sess) - off, "%.6s:%.8s:%.10s|",
+        for (uint8_t i = 0; i < g_state.sessionCount && off < sizeof(sess) - 40; i++) {
+            off += snprintf(sess + off, sizeof(sess) - off, "%.6s:%.8s:%.10s:%.8s|",
                             g_state.sessions[i].state,
                             g_state.sessions[i].projectName,
-                            g_state.sessions[i].lastEventText);
+                            g_state.sessions[i].lastEventText,
+                            g_state.sessions[i].question);
         }
         int c5 = (int)g_state.fiveHourPercent, c7 = (int)g_state.sevenDayPercent;
         int x5 = (int)g_state.codexPrimaryPercent, x7 = (int)g_state.codexSecondaryPercent;
@@ -583,21 +734,42 @@ void update(float dt) {
         strncpy(focused, g_state.focusedSessionId, sizeof(focused) - 1);
         focused[sizeof(focused) - 1] = '\0';
         uint8_t count = g_state.sessionCount;
+        uint8_t subsCount = g_state.subscriptionCount;
         bool connected = g_state.wsConnected;
         unlockState();
-        snprintf(sig, sizeof(sig), "%d|%d|%d.%d.%d.%d|%d%d%d|%d|%.31s|%s",
-                 s_tab, count, c5, c7, x5, x7,
-                 connected ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0,
-                 Camera::lampDuty() > 0 ? 1 : 0, focused, sess);
+        snprintf(sig, sizeof(sig), "%d|%d|%d.%d.%d.%d|%d|%d%d%d%d|%d|%d|%d%d|%.31s|%s",
+                 s_tab, count, c5, c7, x5, x7, subsCount,
+                 connected ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0, serialUp ? 1 : 0,
+                 Camera::lampDuty() > 0 ? 1 : 0,
+                 power.voltageMv / 20, power.charging ? 1 : 0,
+                 power.usbPowered ? 1 : 0, focused, sess);
     }
     if (strcmp(sig, s_lastSig) == 0) return;
     strncpy(s_lastSig, sig, sizeof(s_lastSig) - 1);
     s_lastSig[sizeof(s_lastSig) - 1] = '\0';
 
+    // USB serial-primary parks the WiFi radio by design — show a green USB
+    // plug on the healthy docked link instead of a red WiFi glyph.
+    lv_label_set_text_static(s_statusLink, serialUp ? LV_SYMBOL_USB : LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(
         s_statusLink,
-        lv_color_hex(wsUp ? Theme::StatusGreen
-                          : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
+        lv_color_hex((serialUp || wsUp) ? Theme::StatusGreen
+                     : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
+    if (power.valid) {
+        char batt[20];
+        snprintf(batt, sizeof(batt), "%s%.2fV",
+                 power.charging ? LV_SYMBOL_CHARGE " " : "",
+                 power.voltageMv / 1000.0f);
+        lv_label_set_text(s_statusBatt, batt);
+        lv_obj_set_style_text_color(
+            s_statusBatt,
+            lv_color_hex(power.charging ? Theme::StatusBlue : Theme::HUDDim), 0);
+    } else if (power.usbPowered) {
+        lv_label_set_text(s_statusBatt, "USB");
+        lv_obj_set_style_text_color(s_statusBatt, lv_color_hex(Theme::StatusBlue), 0);
+    } else {
+        lv_label_set_text(s_statusBatt, "");
+    }
     for (int i = 0; i < TAB_COUNT; i++) {
         lv_obj_set_style_bg_color(
             s_navBtns[i],

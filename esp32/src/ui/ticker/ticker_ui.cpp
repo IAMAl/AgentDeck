@@ -4,6 +4,7 @@
 #include "../../state/agent_state.h"
 #include "../../net/wifi_manager.h"
 #include "../../net/ws_client.h"
+#include "../../net/serial_client.h"
 #include "../../input/power_monitor.h"
 #include "../../camera/photo_capture.h"
 #include "../display.h"
@@ -320,6 +321,7 @@ static uint32_t agentColor(const char* agentType) {
     if (strncmp(agentType, "codex", 5) == 0) return Theme::CloudBody;
     if (strcmp(agentType, "openclaw") == 0) return Theme::CrayfishShell;
     if (strcmp(agentType, "opencode") == 0) return Theme::OpenCodeOuter;
+    if (strcmp(agentType, "antigravity") == 0) return Theme::AntigravityMark;
     return Theme::HUDDim;
 }
 
@@ -381,9 +383,10 @@ static void renderFocusPage(const FocusSnap& f, bool connected) {
 
     // A single high-contrast thought, with generous leading. Limiting its box
     // keeps the interaction hint stable instead of letting logs fill the strip.
+    // DOT so overflow ends in an ellipsis, not a sheared half-line.
     lv_obj_t* cap = makeLabel(s_body, &font_kr_16, Theme::HUDText, f.caption);
     lv_obj_set_width(cap, 452);
-    lv_label_set_long_mode(cap, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(cap, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_line_space(cap, 6, 0);
     lv_obj_set_height(cap, f.awaiting ? 62 : 92);
     lv_obj_align(cap, LV_ALIGN_TOP_LEFT, 16, 51);
@@ -422,9 +425,11 @@ static void renderSessionsPage() {
         bool focused;
     } rows[3];
     uint8_t n = 0;
+    uint8_t total = 0;
     s_sessionRowCount = 0;
     memset(s_sessionRowIds, 0, sizeof(s_sessionRowIds));
     lockState();
+    total = g_state.sessionCount;
     uint8_t order[10];
     uint8_t orderCount = 0;
     auto addIndex = [&](uint8_t idx) {
@@ -499,8 +504,10 @@ static void renderSessionsPage() {
         lv_label_set_long_mode(proj, LV_LABEL_LONG_DOT);
         lv_obj_align(proj, LV_ALIGN_TOP_LEFT, 122, y - 1);
 
+        // The third row's milestone line yields space to the "+N" overflow
+        // marker so the two never collide.
         lv_obj_t* line = makeLabel(s_body, &font_kr_16, Theme::HUDDim, rows[i].line);
-        lv_obj_set_width(line, 430);
+        lv_obj_set_width(line, (total > n && i == n - 1) ? 350 : 430);
         lv_label_set_long_mode(line, LV_LABEL_LONG_DOT);
         lv_obj_align(line, LV_ALIGN_TOP_LEFT, 30, y + 24);
 
@@ -511,6 +518,15 @@ static void renderSessionsPage() {
         lv_obj_t* st = makeLabel(s_body, &lv_font_montserrat_14,
                                  stateColorOf(rows[i].state), rowStatus);
         lv_obj_align(st, LV_ALIGN_TOP_RIGHT, -12, y);
+    }
+
+    // Three readable rows beat five tiny ones — but say when the roster is
+    // larger than the page, or three rows silently reads as "three sessions".
+    if (total > n) {
+        char more[16];
+        snprintf(more, sizeof(more), "+%d more", total - n);
+        lv_obj_t* m = makeLabel(s_body, &lv_font_montserrat_12, Theme::HUDFaint, more);
+        lv_obj_align(m, LV_ALIGN_BOTTOM_RIGHT, -12, -3);
     }
 }
 
@@ -851,6 +867,7 @@ void update(float dt) {
 
     bool wifiUp = Net::wifiConnected();
     bool wsUp = Net::wsConnected();
+    bool serialUp = Net::serialConnected();
     Input::PowerStatus power = Input::powerStatus();
 
     // Focus snapshot (page 0 content)
@@ -910,10 +927,10 @@ void update(float dt) {
                  g_state.fiveHourReset, g_state.sevenDayReset,
                  g_state.codexPrimaryReset, g_state.codexSecondaryReset);
         unlockState();
-        snprintf(sig, sizeof(sig), "%d|%d.%d.%d.%d|%s|%d|%d|%d%d%d|%d|%d%d|%.20s|%.6s%.10s%.36s|%.31s|%s",
+        snprintf(sig, sizeof(sig), "%d|%d.%d.%d.%d|%s|%d|%d|%d%d%d%d|%d|%d%d|%.20s|%.6s%.10s%.36s|%.31s|%s",
                  s_page,
                  c5, c7, x5, x7, resets, subsCount, count,
-                 connected ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0,
+                 connected ? 1 : 0, wifiUp ? 1 : 0, wsUp ? 1 : 0, serialUp ? 1 : 0,
                  power.voltageMv / 20, power.charging ? 1 : 0, power.usbPowered ? 1 : 0,
                  s_flashText,
                  focus.state, focus.projectName, focus.caption,
@@ -933,9 +950,13 @@ void update(float dt) {
     strncpy(s_lastSig, sig, sizeof(s_lastSig) - 1);
     s_lastSig[sizeof(s_lastSig) - 1] = '\0';
 
+    // USB serial-primary parks the WiFi radio by design — show a green USB
+    // plug on the healthy docked link instead of a red WiFi glyph.
+    lv_label_set_text_static(s_hdrWifi, serialUp ? LV_SYMBOL_USB : LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(
         s_hdrWifi,
-        lv_color_hex(wsUp ? Theme::StatusGreen : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
+        lv_color_hex((serialUp || wsUp) ? Theme::StatusGreen
+                     : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
     for (int i = 0; i < pageCount(); i++) {
         if (!s_tabs[i]) continue;
         lv_obj_set_style_text_color(s_tabs[i],
