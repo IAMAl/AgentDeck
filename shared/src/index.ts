@@ -6,6 +6,7 @@ export * from './adapter.js';
 export * from './voice-paths.js';
 export * from './net-utils.js';
 export * from './timeline.js';
+export * from './subagent-activity.js';
 export * from './timeline-icons.js';
 export * from './timeline-label.js';
 export * from './timeline-task-display.js';

@@ -16,6 +16,7 @@ enum HookInstaller {
     private static let hookEvents = [
         "SessionStart", "SessionEnd", "PreToolUse",
         "PostToolUse", "PostToolUseFailure", "Stop", "Notification", "UserPromptSubmit",
+        "SubagentStart", "SubagentStop", "TaskCompleted", "TeammateIdle",
     ]
 
     /// Canonical install target: Claude Code 2.1+ only reads hooks from files

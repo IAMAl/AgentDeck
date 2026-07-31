@@ -102,8 +102,9 @@ enum MiniToml {
     }
 
     /// Detect a `[<table>]`, `[<table>.subkey]`, or matching array-of-table
-    /// header outside the fence. Codex `[otel]` / `[features]` / `[hooks]`
-    /// tables collide with the fence we'd write.
+    /// header outside the fence. Codex `[otel]` / `[features]` tables collide
+    /// with the fence we'd write. Hook arrays are handled separately because
+    /// multiple `[[hooks.<Event>]]` entries are explicitly mergeable.
     static func hasTableOutsideFence(in text: String, table: String) -> Bool {
         let escaped = NSRegularExpression.escapedPattern(for: table)
         // Match exactly `[otel]`, `[otel.something]`, `[[otel.something]]`,
@@ -122,6 +123,30 @@ enum MiniToml {
             if regex.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) != nil {
                 return true
             }
+        }
+        return false
+    }
+
+    /// Detect user-authored hook table shapes that cannot safely coexist
+    /// with AgentDeck's lifecycle arrays. Official lifecycle arrays merge;
+    /// regular hook tables conflict. Codex's trust-state tables are metadata.
+    static func hasIncompatibleHookTableOutsideFence(in text: String) -> Bool {
+        let anyHookPattern = #"^\s*\[\[?\s*hooks(?:\.[^\]]+)?\s*\]\]?\s*$"#
+        let mergeablePattern = #"^\s*\[\[\s*hooks\.[A-Za-z0-9_-]+(?:\.hooks)?\s*\]\]\s*$"#
+        guard let anyHookRegex = try? NSRegularExpression(pattern: anyHookPattern),
+              let mergeableRegex = try? NSRegularExpression(pattern: mergeablePattern) else {
+            return false
+        }
+        var insideFence = false
+        for line in splitLines(text) {
+            if line == openFence { insideFence = true; continue }
+            if line == closeFence { insideFence = false; continue }
+            if insideFence || isCodexHookStateHeader(line) { continue }
+            let ns = line as NSString
+            let range = NSRange(location: 0, length: ns.length)
+            guard anyHookRegex.firstMatch(in: line, range: range) != nil else { continue }
+            if mergeableRegex.firstMatch(in: line, range: range) != nil { continue }
+            return true
         }
         return false
     }

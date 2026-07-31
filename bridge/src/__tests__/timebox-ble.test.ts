@@ -44,6 +44,21 @@ describe('micro layout (Timebox 11×11)', () => {
     expect(bright).toBeGreaterThan(50); // a sizeable creature, not just a status field
   });
 
+  it('degrades parent-linked subagents to fixed perimeter companions', () => {
+    const buf = renderFrame(
+      { state: State.PROCESSING, agentType: 'claude-code' } as never,
+      null,
+      claudeSession('processing'),
+      1_000,
+      11,
+      'micro',
+      { s1: { activeCount: 2 } },
+    );
+
+    expect(pixel(buf, 0, 0)).toEqual([0, 229, 255]);
+    expect(pixel(buf, 10, 0)).toEqual([0, 229, 255]);
+  });
+
   it('shows the device-native standby tide when no session exists', () => {
     const buf = renderFrame(null, null, [], 1000, 11, 'micro');
     expect(pixel(buf, 5, 6)).not.toEqual([2, 6, 10]);

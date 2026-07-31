@@ -309,6 +309,11 @@ actor DaemonTimelineStore {
         guard entry.type == "tool_exec" || entry.type == "tool_request" || entry.type == "tool_resolved" else {
             return false
         }
+        // Already coalesced lifecycle row, not observed per-tool churn.
+        if entry.type == "tool_exec",
+           entry.raw.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("Subagent ") {
+            return false
+        }
         // Observed-agent tool hooks fire for every internal Bash/MCP/read/
         // todowrite action and can easily evict the actual turn/task rows from
         // the bounded timeline. APME still ingests the hook trajectory; the

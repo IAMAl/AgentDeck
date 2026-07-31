@@ -7,6 +7,7 @@ import {
   removeManagedBlock,
   hasTopLevelKeyOutsideFence,
   hasTableOutsideFence,
+  hasIncompatibleHookTableOutsideFence,
   quoted,
   OPEN_FENCE,
   CLOSE_FENCE,
@@ -170,6 +171,33 @@ describe('codex-mini-toml: hasTableOutsideFence', () => {
   });
 });
 
+describe('codex-mini-toml: hasIncompatibleHookTableOutsideFence', () => {
+  it('allows official lifecycle arrays to merge', () => {
+    const lifecycleHooks = [
+      '[[hooks.PostToolUse]]',
+      '[[hooks.PostToolUse.hooks]]',
+      'type = "command"',
+      'command = "workmux set-window-status working"',
+      '',
+      '[[hooks.SubagentStop]]',
+      '[[hooks.SubagentStop.hooks]]',
+      'type = "command"',
+      'command = "workmux set-window-status done"',
+    ].join('\n');
+    expect(hasIncompatibleHookTableOutsideFence(lifecycleHooks)).toBe(false);
+  });
+
+  it('rejects regular hook tables while ignoring trust state', () => {
+    expect(hasIncompatibleHookTableOutsideFence('[hooks]\nmanaged_dir = "/tmp/hooks"')).toBe(true);
+    expect(hasIncompatibleHookTableOutsideFence('[hooks.Stop]\ncommand = "legacy"')).toBe(true);
+    expect(hasIncompatibleHookTableOutsideFence([
+      '[hooks.state]',
+      '[hooks.state."/Users/me/.codex/config.toml:stop:0:0"]',
+      'trusted_hash = "sha256:abc"',
+    ].join('\n'))).toBe(false);
+  });
+});
+
 describe('codex-mini-toml: quoted', () => {
   it('escapes backslash and double quote', () => {
     expect(quoted('a\\b"c')).toBe('"a\\\\b\\"c"');
@@ -262,9 +290,11 @@ describe('codex-install: managedBlockBody', () => {
 
     const decodedLifecycleCommands = [...withFence.matchAll(/-EncodedCommand ([A-Za-z0-9+/=]+)"/g)]
       .map((match) => Buffer.from(match[1], 'base64').toString('utf16le'));
-    expect(decodedLifecycleCommands).toHaveLength(5);
+    expect(decodedLifecycleCommands).toHaveLength(7);
     const decoded = decodedLifecycleCommands.join('\n');
     expect(decoded).toContain('/hooks/codex_user_prompt_submit');
+    expect(decoded).toContain('/hooks/codex_subagent_start');
+    expect(decoded).toContain('/hooks/codex_subagent_stop');
     expect(decoded).toContain('/hooks/codex_tool_start');
     expect(decoded).toContain('/hooks/codex_tool_end');
     expect(decoded).toContain('/hooks/codex_stop');
@@ -360,11 +390,28 @@ describe('codex-install: install / uninstall (file I/O)', () => {
     expect(result.reason).toContain('[features]');
   });
 
-  it('skips when user already has [hooks] table outside fence', () => {
-    writeFileSync(configPath, `[[hooks.Stop]]\nmatcher = ""\n`, 'utf-8');
+  it('preserves user lifecycle arrays in the same TOML representation', () => {
+    const userHooks = [
+      '[[hooks.Stop]]',
+      '[[hooks.Stop.hooks]]',
+      'type = "command"',
+      'command = "workmux set-window-status done"',
+      '',
+    ].join('\n');
+    writeFileSync(configPath, userHooks, 'utf-8');
+    const result = installCodexHooksIfNeeded({ configPath, notifyScriptPath });
+    expect(result.installed).toBe(true);
+    const text = readFileSync(configPath, 'utf-8');
+    expect(text).toContain(userHooks.trim());
+    expect(text).toContain(OPEN_FENCE);
+    expect(text.match(/\[\[hooks\.Stop\]\]/g)).toHaveLength(2);
+  });
+
+  it('skips when user has an incompatible regular [hooks] table', () => {
+    writeFileSync(configPath, `[hooks]\nmanaged_dir = "/tmp/hooks"\n`, 'utf-8');
     const result = installCodexHooksIfNeeded({ configPath, notifyScriptPath });
     expect(result.installed).toBe(false);
-    expect(result.reason).toContain('[hooks]');
+    expect(result.reason).toContain('incompatible');
   });
 
   it('omits notify when user has top-level notify', () => {

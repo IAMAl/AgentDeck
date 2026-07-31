@@ -11,6 +11,11 @@ import { State } from '../types.js';
 import type { BridgeEvent, StateUpdateEvent, UsageEvent } from '../types.js';
 import type { SessionInfo, SessionsListEvent } from '@agentdeck/shared/protocol';
 import { DISPLAY_FORWARDED_EVENTS } from '@agentdeck/shared/protocol';
+import {
+  deriveSubagentActivity,
+  type SubagentActivityBySession,
+  type TimelineEntry,
+} from '@agentdeck/shared';
 import { pushFrame, pushFrames, setBrightness, clearText, getDeviceBackoffStatus, switchToCustomChannel, onDeviceStatusChange, stopProbeTimer } from './pixoo-client.js';
 import { renderFrame, renderDisconnectedFrame, formatResetDetailed } from './pixoo-renderer.js';
 import { debug } from '../logger.js';
@@ -38,6 +43,7 @@ const deviceLastPushTime = new Map<string, number>();
 let lastStateEvent: StateUpdateEvent | null = null;
 let lastUsageEvent: UsageEvent | null = null;
 let lastSessions: SessionInfo[] | null = null;
+let lastTimelineEntries: TimelineEntry[] = [];
 
 // Display sleep state — when Mac display is off, dim Pixoo and pause stream
 let displayDimmed = false;
@@ -68,7 +74,11 @@ export function pixooPushIntervalMs(stateChanged: boolean, mode: PixooPushMode):
 const CHANNEL_REASSERT_MS = 30_000;     // Re-assert custom channel every 30s (fast recovery after reboots)
 const DEFAULT_BRIGHTNESS = 100;
 
-const FORWARDED_EVENTS = DISPLAY_FORWARDED_EVENTS;
+const FORWARDED_EVENTS = new Set([
+  ...DISPLAY_FORWARDED_EVENTS,
+  'timeline_event',
+  'timeline_history',
+]);
 
 // Broadcast function injected by module for sending status notifications
 let broadcastFn: ((event: BridgeEvent) => void) | null = null;
@@ -136,10 +146,33 @@ export function broadcastPixoo(event: BridgeEvent): void {
     case 'sessions_list':
       lastSessions = (event as SessionsListEvent).sessions;
       break;
+    case 'timeline_event': {
+      const entry = (event as { entry?: TimelineEntry }).entry;
+      if (entry) {
+        const upsert = (event as { upsert?: boolean }).upsert === true;
+        const index = upsert
+          ? lastTimelineEntries.findIndex((item) =>
+            item.ts === entry.ts && item.type === entry.type)
+          : -1;
+        if (index >= 0) lastTimelineEntries[index] = entry;
+        else lastTimelineEntries.push(entry);
+        lastTimelineEntries.sort((a, b) => a.ts - b.ts);
+        if (lastTimelineEntries.length > 96) {
+          lastTimelineEntries.splice(0, lastTimelineEntries.length - 96);
+        }
+      }
+      break;
+    }
+    case 'timeline_history':
+      lastTimelineEntries = [
+        ...((event as { entries?: TimelineEntry[] }).entries ?? []),
+      ].sort((a, b) => a.ts - b.ts).slice(-96);
+      break;
     case 'connection':
       if ((event as any).status === 'disconnected') {
         lastStateEvent = null;
         lastUsageEvent = null;
+        lastTimelineEntries = [];
       }
       break;
     case 'display_state': {
@@ -232,6 +265,7 @@ export async function stopPixooBridge(): Promise<void> {
   lastStateEvent = null;
   lastUsageEvent = null;
   lastSessions = null;
+  lastTimelineEntries = [];
   displayDimmed = false;
   lastDisplayDimSignature = '';
   broadcastFn = null;
@@ -321,14 +355,26 @@ function calculateStateHash(): string {
   const sessionInfo = lastSessions
     ? lastSessions.map(s => `${s.id}:${s.agentType}:${s.state}`).join(',')
     : '';
+  const subagentInfo = Object.entries(currentSubagentActivity())
+    .map(([sessionId, activity]) =>
+      `${sessionId}:${activity.activeCount}:${activity.lastCompletedAt ?? 0}`)
+    .sort()
+    .join(',');
 
-  return `${stateStr}|${gatewayConnected}|${gatewayHasError}|${r5}|${r7}|${u5}|${u7}|${cx1}|${cx2}|${cxStale}|${uStale}|${sessionInfo}|${displayDimmed}`;
+  return `${stateStr}|${gatewayConnected}|${gatewayHasError}|${r5}|${r7}|${u5}|${u7}|${cx1}|${cx2}|${cxStale}|${uStale}|${sessionInfo}|${subagentInfo}|${displayDimmed}`;
 }
 
 function isAnimationActive(): boolean {
   const state = lastStateEvent?.state ?? 'disconnected';
   if (state === 'processing' || state.startsWith('awaiting')) return true;
+  if (Object.values(currentSubagentActivity()).some((activity) => activity.activeCount > 0)) {
+    return true;
+  }
   return lastSessions?.some(s => s.alive && (s.state === 'processing' || s.state?.startsWith('awaiting'))) ?? false;
+}
+
+function currentSubagentActivity(now = Date.now()): SubagentActivityBySession {
+  return deriveSubagentActivity(lastTimelineEntries, { now });
 }
 
 /**
@@ -360,7 +406,15 @@ function doStateCheckAndPush(): void {
     const promises = due.map(({ dev, mode }) => {
       const count = 1;
       const frames = Array.from({ length: count }, (_, i) =>
-        renderFrame(lastStateEvent, lastUsageEvent, lastSessions, now + i * 180));
+        renderFrame(
+          lastStateEvent,
+          lastUsageEvent,
+          lastSessions,
+          now + i * 180,
+          64,
+          'standard',
+          currentSubagentActivity(now + i * 180),
+        ));
       // Rate-limit attempts as well as successes. This prevents a failed
       // endpoint from being retried on every 500 ms scheduler tick.
       deviceLastPushTime.set(dev.ip, Date.now());
@@ -387,14 +441,30 @@ function doStateCheckAndPush(): void {
  * Used by the live preview endpoint when no Pixoo device is connected.
  */
 export function renderPreviewFrame(size?: 11 | 32 | 64, layout: 'standard' | 'micro' = 'standard'): Uint8Array {
-  return renderFrame(lastStateEvent, lastUsageEvent, lastSessions, undefined, size, layout);
+  return renderFrame(
+    lastStateEvent,
+    lastUsageEvent,
+    lastSessions,
+    undefined,
+    size,
+    layout,
+    currentSubagentActivity(),
+  );
 }
 
 /**
  * Get the last calculated frame.
  */
 export function getLastFrame(size?: 11 | 32 | 64, layout: 'standard' | 'micro' = 'standard'): Uint8Array | null {
-  return renderFrame(lastStateEvent, lastUsageEvent, lastSessions, undefined, size, layout);
+  return renderFrame(
+    lastStateEvent,
+    lastUsageEvent,
+    lastSessions,
+    undefined,
+    size,
+    layout,
+    currentSubagentActivity(),
+  );
 }
 
 /** Notify all SSE frame listeners. */
@@ -410,7 +480,15 @@ function startPreviewTimer(): void {
   const intervalMs = Math.round(1000 / previewFps);
   previewTimer = setInterval(() => {
     if (frameListeners.length === 0) { stopPreviewTimer(); return; }
-    const frame = renderFrame(lastStateEvent, lastUsageEvent, lastSessions);
+    const frame = renderFrame(
+      lastStateEvent,
+      lastUsageEvent,
+      lastSessions,
+      undefined,
+      64,
+      'standard',
+      currentSubagentActivity(),
+    );
     notifyFrameListeners(frame);
   }, intervalMs);
 }

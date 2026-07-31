@@ -144,6 +144,12 @@ final class CodexConfigInstallerTests: XCTestCase {
         XCTAssertTrue(MiniToml.hasTableOutsideFence(in: "[features]\nhooks = true", table: "features"))
         XCTAssertTrue(MiniToml.hasTableOutsideFence(in: "[hooks]\nmanaged_dir = \"/tmp/hooks\"", table: "hooks"))
         XCTAssertTrue(MiniToml.hasTableOutsideFence(in: "[[hooks.Stop]]\nmatcher = \"\"", table: "hooks"))
+        XCTAssertTrue(MiniToml.hasIncompatibleHookTableOutsideFence(
+            in: "[hooks]\nmanaged_dir = \"/tmp/hooks\""
+        ))
+        XCTAssertFalse(MiniToml.hasIncompatibleHookTableOutsideFence(
+            in: "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"workmux set-window-status done\""
+        ))
         XCTAssertFalse(MiniToml.hasTableOutsideFence(
             in: "[hooks.state]\n\n[hooks.state.\"/Users/me/.codex/config.toml:stop:0:0\"]\ntrusted_hash = \"sha256:abc\"",
             table: "hooks"

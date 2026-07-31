@@ -243,6 +243,51 @@ static void drawLine(int x0, int y0, int x1, int y1, uint32_t color24, uint8_t a
     }
 }
 
+// Decorative parent/child topology. Fixed arithmetic only: no heap allocation
+// or growable container in the render loop (important on TTGO/C6 boards).
+static void drawSubagentOrbit(float x, float y, uint8_t activeCount, float time) {
+    if (activeCount == 0) return;
+    const int cx = (int)(x * canvasW);
+    const int cy = (int)(y * canvasH);
+    // Cast BOTH: canvasW/canvasH are per-board macros, int constants on TTGO and
+    // IPS10 but int16_t globals on the C6, so casting only one side leaves
+    // min(int16_t&, int) with no viable overload there.
+    const int minDim = min((int)canvasW, (int)canvasH);
+    const int rx = max(10, (int)(minDim * 0.105f));
+    const int ry = max(4, (int)(rx * 0.38f));
+    // Fixed tilt coefficients avoid extra libm state/code on DRAM-tight TTGO.
+    constexpr float tiltCos = 0.96105546f;
+    constexpr float tiltSin = -0.27635565f;
+    constexpr uint32_t cyan = 0x00E5FF;
+
+    // Dotted, tilted Saturn ring.
+    for (uint8_t step = 0; step < 40; step += 2) {
+        float angle = (float)step / 40.0f * 2.0f * M_PI;
+        float localX = fastCos(angle) * rx;
+        float localY = fastSin(angle) * ry;
+        int px = cx + (int)(localX * tiltCos - localY * tiltSin);
+        int py = cy + (int)(localX * tiltSin + localY * tiltCos);
+        setPixelAlpha(px, py, cyan, 105);
+    }
+
+    uint8_t visible = activeCount < 3 ? activeCount : 3;
+    for (uint8_t i = 0; i < visible; i++) {
+        float angle = time * 0.72f + (float)i * 2.0f * M_PI / visible;
+        float localX = fastCos(angle) * rx;
+        float localY = fastSin(angle) * ry;
+        int sx = cx + (int)(localX * tiltCos - localY * tiltSin);
+        int sy = cy + (int)(localX * tiltSin + localY * tiltCos);
+        drawLine(cx, cy, sx, sy, cyan, 34);
+        int nodeRadius = (i == 2 && activeCount > 3) ? 3 : 2;
+        fillCircle(sx, sy, nodeRadius, cyan, 235);
+        if (i == 2 && activeCount > 3) {
+            // Tiny '+' overflow mark; detailed count remains in Timeline.
+            drawLine(sx + 4, sy, sx + 8, sy, cyan, 210);
+            drawLine(sx + 6, sy - 2, sx + 6, sy + 2, cyan, 210);
+        }
+    }
+}
+
 namespace Terrarium {
 
 void init(lv_obj_t* parent) {
@@ -351,6 +396,32 @@ void render(float dt) {
     CreatureState cloudStates[(MAX_CLOUD > 0) ? MAX_CLOUD : 1];
     CreatureState opencodeStates[(MAX_OPENCODE > 0) ? MAX_OPENCODE : 1];
     CreatureState antigravityStates[(MAX_ANTIGRAVITY > 0) ? MAX_ANTIGRAVITY : 1];
+    uint8_t octSubagents[(MAX_OCTOPUS > 0) ? MAX_OCTOPUS : 1] = {};
+    uint8_t cloudSubagents[(MAX_CLOUD > 0) ? MAX_CLOUD : 1] = {};
+    uint8_t opencodeSubagents[(MAX_OPENCODE > 0) ? MAX_OPENCODE : 1] = {};
+    uint8_t antigravitySubagents[(MAX_ANTIGRAVITY > 0) ? MAX_ANTIGRAVITY : 1] = {};
+
+    // Preserve the session ordering used by the creature-state mapper.
+    uint8_t octActivityIdx = 0, cloudActivityIdx = 0;
+    uint8_t openCodeActivityIdx = 0, antigravityActivityIdx = 0;
+    for (uint8_t s = 0; s < g_state.sessionCount; s++) {
+        const SessionInfo& session = g_state.sessions[s];
+        if (!session.alive) continue;
+        uint8_t active = g_state.activeSubagentsForSession(session.id);
+        if (strcmp(session.agentType, "claude-code") == 0 &&
+            octActivityIdx < MAX_OCTOPUS) {
+            octSubagents[octActivityIdx++] = active;
+        } else if (isCodexAgentType(session.agentType) &&
+                   cloudActivityIdx < MAX_CLOUD) {
+            cloudSubagents[cloudActivityIdx++] = active;
+        } else if (strcmp(session.agentType, "opencode") == 0 &&
+                   openCodeActivityIdx < MAX_OPENCODE) {
+            opencodeSubagents[openCodeActivityIdx++] = active;
+        } else if (strcmp(session.agentType, "antigravity") == 0 &&
+                   antigravityActivityIdx < MAX_ANTIGRAVITY) {
+            antigravitySubagents[antigravityActivityIdx++] = active;
+        }
+    }
 
     // Helper lambda to map session state string to CreatureState
     auto mapSessionState = [](const char* stateStr) -> CreatureState {
@@ -523,6 +594,26 @@ void render(float dt) {
     // 7d. Antigravity creatures
     for (uint8_t i = 0; i < antigravityCount && i < MAX_ANTIGRAVITY; i++) {
         Antigravity::render(canvas_buf, canvasW, canvasH, totalTime, dt, antigravityStates[i], i, antigravityCount);
+    }
+
+    // Parent-linked orbit accents sit above the creature layer but remain
+    // decorative; the underlying session is still the only interaction target.
+    for (uint8_t i = 0; i < octCount && i < MAX_OCTOPUS; i++) {
+        drawSubagentOrbit(Octopus::getX(i), Octopus::getY(i), octSubagents[i], totalTime);
+    }
+    for (uint8_t i = 0; i < cloudCount && i < MAX_CLOUD; i++) {
+        drawSubagentOrbit(Cloud::getX(i), Cloud::getY(i), cloudSubagents[i], totalTime);
+    }
+    for (uint8_t i = 0; i < opencodeCount && i < MAX_OPENCODE; i++) {
+        drawSubagentOrbit(OpenCode::getX(i), OpenCode::getY(i), opencodeSubagents[i], totalTime);
+    }
+    for (uint8_t i = 0; i < antigravityCount && i < MAX_ANTIGRAVITY; i++) {
+        drawSubagentOrbit(
+            Antigravity::getX(i),
+            Antigravity::getY(i),
+            antigravitySubagents[i],
+            totalTime
+        );
     }
 
     // 8. Data particles (food crumbs from working agents)

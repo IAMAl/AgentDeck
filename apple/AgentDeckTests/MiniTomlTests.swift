@@ -132,6 +132,33 @@ final class MiniTomlTests: XCTestCase {
         XCTAssertTrue(MiniToml.hasTableOutsideFence(in: withUser, table: "hooks"))
     }
 
+    func testMergeableLifecycleHookArraysAreCompatible() {
+        let hooks = """
+        [[hooks.PostToolUse]]
+        [[hooks.PostToolUse.hooks]]
+        type = "command"
+        command = "workmux set-window-status working"
+
+        [[hooks.SubagentStop]]
+        [[hooks.SubagentStop.hooks]]
+        type = "command"
+        command = "workmux set-window-status done"
+        """
+        XCTAssertFalse(MiniToml.hasIncompatibleHookTableOutsideFence(in: hooks))
+    }
+
+    func testRegularHookTablesAreIncompatibleButTrustStateIsNot() {
+        XCTAssertTrue(MiniToml.hasIncompatibleHookTableOutsideFence(
+            in: "[hooks]\nmanaged_dir = \"/tmp/hooks\""
+        ))
+        XCTAssertTrue(MiniToml.hasIncompatibleHookTableOutsideFence(
+            in: "[hooks.Stop]\ncommand = \"legacy\""
+        ))
+        XCTAssertFalse(MiniToml.hasIncompatibleHookTableOutsideFence(
+            in: "[hooks.state]\n[hooks.state.\"/tmp/config.toml:stop:0:0\"]\ntrusted_hash = \"sha256:abc\""
+        ))
+    }
+
     func testIgnoresOtelInsideFence() {
         let withFence = MiniToml.applyManagedBlock(in: "", body: "[otel]\nexporter = \"otlp-http\"")
         XCTAssertFalse(MiniToml.hasTableOutsideFence(in: withFence, table: "otel"))

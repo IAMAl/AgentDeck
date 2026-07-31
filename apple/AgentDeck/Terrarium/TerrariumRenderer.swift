@@ -41,6 +41,8 @@ final class TerrariumRenderer {
     // Focus halo
     private var focusedSessionId: String?
     private var focusPulse: Float = 0
+    private var subagentOrbitPhase: Float = 0
+    private var currentTimeMs: Double = 0
     /// 0..1 envelope. Ramps up when a creature gains focus, fades down when
     /// the focused creature has no on-screen sprite (or focus cleared).
     /// Avoids halo "snapping" on/off when sessions reorganize.
@@ -81,6 +83,8 @@ final class TerrariumRenderer {
         // Focus halo state
         focusedSessionId = state.focusedSessionId
         focusPulse += dt * 1.6
+        subagentOrbitPhase += dt * 0.72
+        currentTimeMs = Date().timeIntervalSince1970 * 1000
         let hasVisibleFocus: Bool = {
             guard let id = focusedSessionId else { return false }
             return octopuses[id] != nil ||
@@ -229,6 +233,11 @@ final class TerrariumRenderer {
         // row taps so this is the visible feedback for that gesture.
         drawFocusHalo(context: &context, size: size)
 
+        // Layer 6.8: read-only parent/child topology. The dashed Saturn ring
+        // and wired satellites belong to the parent creature and never enter
+        // hit testing, session selection, approval, or steering paths.
+        drawSubagentOrbits(context: &context, size: size)
+
         // Layer 7: Crayfish
         crayfish.draw(context: &context, size: size)
 
@@ -340,6 +349,158 @@ final class TerrariumRenderer {
 
     private func isCrayfishFocusId(_ id: String) -> Bool {
         id == "openclaw-gateway" || id == "crayfish"
+    }
+
+    // MARK: - Subagent Orbits
+
+    private func drawSubagentOrbits(context: inout GraphicsContext, size: CGSize) {
+        guard let state = lastState else { return }
+
+        for creature in state.creatures {
+            guard let live = octopuses[creature.id] else { continue }
+            drawSubagentOrbit(
+                context: &context,
+                size: size,
+                x: live.currentX,
+                y: live.currentY,
+                scale: live.scale,
+                activity: creature.subagentActivity
+            )
+        }
+        for creature in state.cloudCreatures {
+            guard let live = clouds[creature.id] else { continue }
+            drawSubagentOrbit(
+                context: &context,
+                size: size,
+                x: live.currentX,
+                y: live.currentY,
+                scale: live.scale,
+                activity: creature.subagentActivity
+            )
+        }
+        for creature in state.opencodeCreatures {
+            guard let live = opencodeCreatures[creature.id] else { continue }
+            drawSubagentOrbit(
+                context: &context,
+                size: size,
+                x: live.currentX,
+                y: live.currentY,
+                scale: live.scale,
+                activity: creature.subagentActivity
+            )
+        }
+        for creature in state.antigravityCreatures {
+            guard let live = antigravityCreatures[creature.id] else { continue }
+            drawSubagentOrbit(
+                context: &context,
+                size: size,
+                x: live.currentX,
+                y: live.currentY,
+                scale: live.scale,
+                activity: creature.subagentActivity
+            )
+        }
+    }
+
+    private func drawSubagentOrbit(
+        context: inout GraphicsContext,
+        size: CGSize,
+        x: Float,
+        y: Float,
+        scale: Float,
+        activity: SubagentVisualActivity
+    ) {
+        let completionAge = currentTimeMs - (activity.lastCompletedAt ?? 0)
+        let completionProgress = completionAge >= 0 && completionAge < 4_000
+            ? CGFloat(completionAge / 4_000)
+            : nil
+        guard activity.activeCount > 0 || completionProgress != nil else { return }
+
+        let center = CGPoint(x: CGFloat(x) * size.width, y: CGFloat(y) * size.height)
+        let minDim = min(size.width, size.height)
+        let radiusX = max(24, CGFloat(scale) * minDim * 0.115)
+        let radiusY = radiusX * 0.38
+        let tilt = CGFloat(-0.28)
+
+        func point(angle: CGFloat, radiusMultiplier: CGFloat = 1) -> CGPoint {
+            let localX = cos(angle) * radiusX * radiusMultiplier
+            let localY = sin(angle) * radiusY * radiusMultiplier
+            return CGPoint(
+                x: center.x + localX * cos(tilt) - localY * sin(tilt),
+                y: center.y + localX * sin(tilt) + localY * cos(tilt)
+            )
+        }
+
+        if activity.activeCount > 0 {
+            var ring = Path()
+            for index in 0...48 {
+                let angle = CGFloat(index) / 48 * .pi * 2
+                let p = point(angle: angle)
+                if index == 0 {
+                    ring.move(to: p)
+                } else {
+                    ring.addLine(to: p)
+                }
+            }
+            context.stroke(
+                ring,
+                with: .color(TerrariumColors.tetraNeon.opacity(0.48)),
+                style: StrokeStyle(lineWidth: 1, dash: [3, 4])
+            )
+
+            let visibleCount = min(activity.activeCount, 3)
+            for index in 0..<visibleCount {
+                let angle = CGFloat(subagentOrbitPhase)
+                    + CGFloat(index) * (.pi * 2 / CGFloat(visibleCount))
+                let satellite = point(angle: angle)
+
+                var wire = Path()
+                wire.move(to: center)
+                wire.addLine(to: satellite)
+                context.stroke(
+                    wire,
+                    with: .color(TerrariumColors.tetraNeon.opacity(0.18)),
+                    lineWidth: 0.75
+                )
+
+                let nodeRadius: CGFloat = index == 2 && activity.activeCount > 3 ? 4.2 : 3.2
+                let nodeRect = CGRect(
+                    x: satellite.x - nodeRadius,
+                    y: satellite.y - nodeRadius,
+                    width: nodeRadius * 2,
+                    height: nodeRadius * 2
+                )
+                context.fill(
+                    Path(ellipseIn: nodeRect),
+                    with: .color(TerrariumColors.tetraNeon.opacity(0.94))
+                )
+
+                if index == 2 && activity.activeCount > 3 {
+                    context.draw(
+                        Text("+\(activity.activeCount - 3)")
+                            .font(.system(size: max(8, minDim * 0.014), weight: .semibold))
+                            .foregroundStyle(TerrariumColors.tetraNeon),
+                        at: CGPoint(x: satellite.x + 10, y: satellite.y - 7)
+                    )
+                }
+            }
+        }
+
+        if let progress = completionProgress {
+            let pulseRadius = radiusX * (0.72 + progress * 0.58)
+            let alpha = Double(1 - progress) * 0.72
+            let pulseRect = CGRect(
+                x: center.x - pulseRadius,
+                y: center.y - pulseRadius,
+                width: pulseRadius * 2,
+                height: pulseRadius * 2
+            )
+            context.stroke(
+                Path(ellipseIn: pulseRect),
+                with: .color(TerrariumColors.tetraNeon.opacity(alpha)),
+                lineWidth: 1.5
+            )
+        }
     }
 
     // MARK: - Background (3-color gradient, environment-adaptive)

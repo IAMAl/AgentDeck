@@ -19,7 +19,11 @@
  */
 
 import { State } from '../types.js';
-import { PASSIVE_OFFLINE_LABEL } from '@agentdeck/shared';
+import {
+  PASSIVE_OFFLINE_LABEL,
+  type SubagentActivityBySession,
+  type SubagentVisualActivity,
+} from '@agentdeck/shared';
 import type { StateUpdateEvent, UsageEvent } from '../types.js';
 import type { SessionInfo } from '@agentdeck/shared/protocol';
 import { hasOpenClawSession, foldCodexSessionsForDisplay } from '@agentdeck/shared';
@@ -834,6 +838,8 @@ function renderMicroFrame(
   stateEvent: StateUpdateEvent | null,
   sessions: SessionInfo[] | null,
   usagePct: number,
+  subagentActivity: SubagentActivityBySession,
+  now: number,
 ): void {
   // Presence-driven SSOT: the crayfish renders iff the daemon emitted an
   // OpenClaw session — never from raw gateway flags. The daemon emits it iff
@@ -869,6 +875,25 @@ function renderMicroFrame(
   }
   paintTimeboxBeacon(base, creature, aggregate, animFrame);
 
+  // At 11×11 a literal orbit would destroy the official mark. Keep only a
+  // fixed perimeter constellation: up to three cyan companion pixels owned by
+  // the dominant parent. It is static, legible, and still non-interactive.
+  const dominantActivity = dominant
+    ? subagentActivity[dominant.sessionId]
+    : undefined;
+  const companionPixels: ReadonlyArray<readonly [number, number]> = [
+    [0, 0], [10, 0], [10, 10],
+  ];
+  for (let i = 0; i < Math.min(dominantActivity?.activeCount ?? 0, 3); i++) {
+    setPixel(base, companionPixels[i][0], companionPixels[i][1], [0, 229, 255]);
+  }
+  const completionAge = dominantActivity?.lastCompletedAt == null
+    ? Infinity
+    : now - dominantActivity.lastCompletedAt;
+  if (completionAge >= 0 && completionAge < 4_000) {
+    setPixel(base, 0, 10, [170, 245, 255]);
+  }
+
   // Scale the 11×11 base into the size×size output (1:1 when size === 11).
   for (let y = 0; y < size; y++) {
     const sy = Math.min(MICRO_SIZE - 1, Math.floor((y * MICRO_SIZE) / size));
@@ -890,6 +915,8 @@ function renderCompact32Frame(
   stateEvent: StateUpdateEvent | null,
   sessions: SessionInfo[] | null,
   usageEvent: UsageEvent | null,
+  subagentActivity: SubagentActivityBySession,
+  now: number,
 ): void {
   const set = (x: number, y: number, color: RGB) => setPixel(outputBuf, x, y, color);
   const state = String(stateEvent?.state ?? State.IDLE);
@@ -909,8 +936,15 @@ function renderCompact32Frame(
     kind === 'jellyfish' ? 'codex' : kind === 'opencode' ? 'openCode'
       : kind === 'antigravity' ? 'antigravity' : 'claudeCode';
   const priority = (s: CreatureInstance['state']) => s === 'awaiting' ? 0 : s === 'processing' ? 1 : 2;
-  const marks: Array<{ glyph: OfficialDotGlyphName; state: CreatureInstance['state'] }> =
-    [...creatureInstances.values()].map((c) => ({ glyph: glyphFor(c.creatureType), state: c.state }));
+  const marks: Array<{
+    glyph: OfficialDotGlyphName;
+    state: CreatureInstance['state'];
+    sessionId?: string;
+  }> = [...creatureInstances.values()].map((c) => ({
+    glyph: glyphFor(c.creatureType),
+    state: c.state,
+    sessionId: c.sessionId,
+  }));
   if (hasOpenClawSession(sessions ?? [])) {
     const routing = sessions?.some((s) => s.agentType === 'openclaw' && s.state === 'processing') ?? false;
     marks.push({ glyph: 'openClaw', state: routing ? 'processing' : 'idle' });
@@ -976,6 +1010,24 @@ function renderCompact32Frame(
       set(Math.min(31, x0 + slot.size), Math.max(2, y0), [255, 190, 45]);
       set(Math.min(31, x0 + slot.size), Math.max(2, y0 + 1), [255, 190, 45]);
     }
+
+    const activity = mark.sessionId ? subagentActivity[mark.sessionId] : undefined;
+    const visibleCount = Math.min(activity?.activeCount ?? 0, 3);
+    for (let satellite = 0; satellite < visibleCount; satellite++) {
+      const angle = now / 2_500 + satellite * Math.PI * 2 / visibleCount;
+      const radius = slot.size / 2 + 2;
+      const sx = Math.round(slot.x + Math.cos(angle) * radius);
+      const sy = Math.round(slot.y + bob + Math.sin(angle) * radius * 0.45);
+      set(Math.round((slot.x + sx) / 2), Math.round((slot.y + bob + sy) / 2), [20, 92, 112]);
+      set(sx, sy, [0, 229, 255]);
+    }
+    const completionAge = activity?.lastCompletedAt == null
+      ? Infinity
+      : now - activity.lastCompletedAt;
+    if (completionAge >= 0 && completionAge < 4_000) {
+      set(Math.max(0, x0 - 1), Math.max(2, y0 - 1), [170, 245, 255]);
+      set(Math.min(31, x0 + slot.size), Math.max(2, y0 - 1), [170, 245, 255]);
+    }
   });
 
   if (marks.length === 0) {
@@ -1006,6 +1058,144 @@ function renderCompact32Frame(
   });
 }
 
+function drawSubagentPixelLine(
+  buf: Uint8Array,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  color: RGB,
+): void {
+  let x = Math.round(fromX);
+  let y = Math.round(fromY);
+  const targetX = Math.round(toX);
+  const targetY = Math.round(toY);
+  const dx = Math.abs(targetX - x);
+  const sx = x < targetX ? 1 : -1;
+  const dy = -Math.abs(targetY - y);
+  const sy = y < targetY ? 1 : -1;
+  let error = dx + dy;
+  let step = 0;
+  while (true) {
+    if ((step++ & 1) === 0) blendPixel(buf, x, y, color, 0.42);
+    if (x === targetX && y === targetY) break;
+    const twiceError = error * 2;
+    if (twiceError >= dy) {
+      error += dy;
+      x += sx;
+    }
+    if (twiceError <= dx) {
+      error += dx;
+      y += sy;
+    }
+  }
+}
+
+function drawSubagentOrbitForCreature(
+  buf: Uint8Array,
+  creature: CreatureInstance,
+  camera: Camera,
+  activity: SubagentVisualActivity,
+  animFrame: number,
+  now: number,
+): void {
+  const completionAge = activity.lastCompletedAt == null
+    ? Infinity
+    : now - activity.lastCompletedAt;
+  const completionProgress = completionAge >= 0 && completionAge < 4_000
+    ? completionAge / 4_000
+    : null;
+  if (activity.activeCount <= 0 && completionProgress == null) return;
+
+  const [centerX, centerY] = worldToScreen(creature.worldX, creature.worldY, camera);
+  const radiusX = Math.max(6, 7.5 * creature.sizeScale * camera.zoom);
+  const radiusY = Math.max(2, radiusX * 0.38);
+  const tilt = -0.28;
+  const point = (angle: number, multiplier = 1): [number, number] => {
+    const localX = Math.cos(angle) * radiusX * multiplier;
+    const localY = Math.sin(angle) * radiusY * multiplier;
+    return [
+      centerX + localX * Math.cos(tilt) - localY * Math.sin(tilt),
+      centerY + localX * Math.sin(tilt) + localY * Math.cos(tilt),
+    ];
+  };
+
+  if (activity.activeCount > 0) {
+    const ringColor: RGB = [20, 105, 126];
+    for (let step = 0; step < 44; step += 2) {
+      const [x, y] = point(step / 44 * Math.PI * 2);
+      blendPixel(buf, Math.round(x), Math.round(y), ringColor, 0.76);
+    }
+
+    const visibleCount = Math.min(activity.activeCount, 3);
+    for (let index = 0; index < visibleCount; index++) {
+      const angle = animFrame * 0.072 + index * Math.PI * 2 / visibleCount;
+      const [satelliteX, satelliteY] = point(angle);
+      drawSubagentPixelLine(
+        buf,
+        centerX,
+        centerY,
+        satelliteX,
+        satelliteY,
+        [16, 90, 110],
+      );
+      glowPixel(
+        buf,
+        Math.round(satelliteX),
+        Math.round(satelliteY),
+        [0, 229, 255],
+        0.88,
+      );
+
+      if (index === 2 && activity.activeCount > 3) {
+        const labelX = Math.max(4, Math.min(57, Math.round(satelliteX + 5)));
+        const labelY = Math.max(1, Math.min(58, Math.round(satelliteY - 3)));
+        setPixel(buf, labelX, labelY + 2, [160, 245, 255]);
+        setPixel(buf, labelX - 1, labelY + 2, [160, 245, 255]);
+        setPixel(buf, labelX + 1, labelY + 2, [160, 245, 255]);
+        setPixel(buf, labelX, labelY + 1, [160, 245, 255]);
+        setPixel(buf, labelX, labelY + 3, [160, 245, 255]);
+        drawText(
+          buf,
+          String(activity.activeCount - 3),
+          Math.min(64, labelX + 8),
+          labelY,
+          [160, 245, 255],
+        );
+      }
+    }
+  }
+
+  if (completionProgress != null) {
+    const pulseRadius = radiusX * (0.72 + completionProgress * 0.58);
+    const pulseColor: RGB = [130, 238, 255];
+    for (let step = 0; step < 36; step += 2) {
+      const angle = step / 36 * Math.PI * 2;
+      blendPixel(
+        buf,
+        Math.round(centerX + Math.cos(angle) * pulseRadius),
+        Math.round(centerY + Math.sin(angle) * pulseRadius),
+        pulseColor,
+        (1 - completionProgress) * 0.76,
+      );
+    }
+  }
+}
+
+function drawSubagentOrbits(
+  buf: Uint8Array,
+  camera: Camera,
+  activityBySession: SubagentActivityBySession,
+  animFrame: number,
+  now: number,
+): void {
+  for (const creature of creatureInstances.values()) {
+    const activity = activityBySession[creature.sessionId];
+    if (!activity) continue;
+    drawSubagentOrbitForCreature(buf, creature, camera, activity, animFrame, now);
+  }
+}
+
 /**
  * Render a complete frame with camera system.
  * Returns RGB buffer.
@@ -1020,6 +1210,7 @@ export function renderFrame(
   timeOverrideMs?: number,
   size: 11 | 32 | 64 = 64,
   layout: 'standard' | 'micro' = 'standard',
+  subagentActivity: SubagentActivityBySession = {},
 ): Uint8Array {
   const worldBuf = new Uint8Array(W * W * 3);
   const outputBuf = new Uint8Array(size * size * 3);
@@ -1028,13 +1219,30 @@ export function renderFrame(
   if (layout === 'micro') {
     // Still sync creature instances so dominant-creature selection reflects live state.
     syncCreatures(sessions, stateEvent);
-    renderMicroFrame(outputBuf, size, animFrame, stateEvent, sessions, usageEvent?.fiveHourPercent ?? 0);
+    renderMicroFrame(
+      outputBuf,
+      size,
+      animFrame,
+      stateEvent,
+      sessions,
+      usageEvent?.fiveHourPercent ?? 0,
+      subagentActivity,
+      timeOverrideMs ?? Date.now(),
+    );
     return outputBuf;
   }
 
   if (size === 32) {
     syncCreatures(sessions, stateEvent);
-    renderCompact32Frame(outputBuf, animFrame, stateEvent, sessions, usageEvent);
+    renderCompact32Frame(
+      outputBuf,
+      animFrame,
+      stateEvent,
+      sessions,
+      usageEvent,
+      subagentActivity,
+      timeOverrideMs ?? Date.now(),
+    );
     return outputBuf;
   }
 
@@ -1165,6 +1373,14 @@ export function renderFrame(
       drawTetra(outputBuf, t.x / W, t.y / W, t.heading, camera);
     }
   }
+
+  drawSubagentOrbits(
+    outputBuf,
+    camera,
+    subagentActivity,
+    animFrame,
+    now,
+  );
 
   // Creature instances — octopus or jellyfish based on agent type
   const creatureOrder = [...creatureInstances.keys()];

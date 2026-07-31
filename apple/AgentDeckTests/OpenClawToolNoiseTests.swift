@@ -294,6 +294,20 @@ final class OpenClawToolNoiseTests: XCTestCase {
             "Codex tool_exec rows are hidden from the daemon timeline even when detail carries signal")
     }
 
+    func testStoreFilterKeepsCoalescedCodexSubagentLifecycle() {
+        let entry = DaemonTimelineEntry(
+            ts: Date().timeIntervalSince1970 * 1000,
+            type: "tool_exec",
+            raw: "Subagent reviewer · Started",
+            agentType: "codex-cli",
+            sessionId: "codex:thread-1"
+        )
+        XCTAssertFalse(
+            DaemonTimelineStore.shouldDropLowSignalEntry(entry),
+            "one coalesced child lifecycle row is not the per-tool firehose"
+        )
+    }
+
     /// Codex stop-time review 2026-05-18 (second round): detail="status: running"
     /// alone (no input/output line) is still placeholder noise — just an
     /// ack of state with no tool/payload to show. Earlier looser
@@ -739,6 +753,52 @@ final class OpenClawToolNoiseTests: XCTestCase {
         XCTAssertNil(OpenClawAdapter.extractMessageText([
             "message": ["content": [["type": "text", "text": ""]]],
         ]))
+    }
+
+    // MARK: - Subagent terrarium activity
+
+    func testSubagentActivityPairsRowsUnderParentSession() {
+        let store = TimelineStore()
+        store.addEntry(TimelineEntry(
+            ts: 100,
+            type: .toolExec,
+            raw: "Subagent reviewer · Started",
+            sessionId: "parent-1",
+            startedAt: 100
+        ))
+        store.addEntry(TimelineEntry(
+            ts: 110,
+            type: .toolExec,
+            raw: "Subagent tester · Started",
+            sessionId: "parent-1",
+            startedAt: 110
+        ))
+        store.addEntry(TimelineEntry(
+            ts: 120,
+            type: .toolResolved,
+            raw: "Subagent reviewer · Review complete",
+            sessionId: "parent-1",
+            startedAt: 100
+        ))
+
+        XCTAssertEqual(
+            store.subagentActivityBySession(now: 150)["parent-1"],
+            SubagentVisualActivity(activeCount: 1, lastCompletedAt: 120)
+        )
+    }
+
+    func testSubagentActivityExpiresOrphanedStarts() {
+        let store = TimelineStore()
+        store.addEntry(TimelineEntry(
+            ts: 20,
+            type: .toolExec,
+            raw: "Subagent stale · Started",
+            sessionId: "parent-1"
+        ))
+
+        XCTAssertTrue(
+            store.subagentActivityBySession(now: 1_000, activeTtlMs: 100).isEmpty
+        )
     }
 }
 #endif

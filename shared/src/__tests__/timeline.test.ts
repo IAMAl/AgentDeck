@@ -146,6 +146,16 @@ describe('normalizeTimelineEntryForStorage', () => {
     })).toBe(false);
   });
 
+  it('keeps coalesced Codex subagent lifecycle rows', () => {
+    expect(shouldDropLowSignalTimelineEntry({
+      ts: 100,
+      type: 'tool_exec',
+      raw: 'Subagent reviewer · Started',
+      agentType: 'codex-cli',
+      sessionId: 'codex:thread-1',
+    })).toBe(false);
+  });
+
   it('drops OpenClaw NO_REPLY polling responses from the user-facing timeline', () => {
     expect(shouldDropLowSignalTimelineEntry({
       ts: 100,

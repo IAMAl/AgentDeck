@@ -549,8 +549,8 @@ describe('migration 7 — unbounded curl self-heal', () => {
 
     const repaired = readFileSync(settingsPath, 'utf-8');
     if (process.platform !== 'win32') {
-      // 8 events minus the two request-response ones.
-      expect(repaired.split('--max-time 0.8').length - 1).toBe(6);
+      // 12 events minus the two request-response ones.
+      expect(repaired.split('--max-time 0.8').length - 1).toBe(10);
       expect(repaired).toContain('--connect-timeout 0.2 --max-time 0.3');
       expect(repaired).toContain('--max-time 60');
       expect(repaired).toContain('--max-time 10');

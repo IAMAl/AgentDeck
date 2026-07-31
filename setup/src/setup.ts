@@ -212,6 +212,10 @@ const HOOK_EVENTS = [
   'Stop',
   'Notification',
   'UserPromptSubmit',
+  'SubagentStart',
+  'SubagentStop',
+  'TaskCompleted',
+  'TeammateIdle',
 ] as const;
 
 /**

@@ -76,6 +76,7 @@ struct RowSnap {
     // detail line carries what the agent actually asked/answered/finished.
     char work[152];
     bool alive;
+    uint8_t subagentCount;
 };
 
 struct Snap {
@@ -129,6 +130,7 @@ void snapshot(Snap& s) {
         strncpy(dst.question, src.question, sizeof(dst.question) - 1);
         strncpy(dst.activity, src.activity, sizeof(dst.activity) - 1);
         dst.alive = src.alive;
+        dst.subagentCount = g_state.activeSubagentsForSession(src.id);
         // TIMELINE-grade work summary for the card detail: prefer the
         // daemon-computed latest milestone (authoritative store — survives
         // board reboots), composed as "HH:MM · task · text". Fall back to the
@@ -303,6 +305,7 @@ uint32_t contentHash(const Snap& s) {
         h = fnvStr(h, r.tool); h = fnvStr(h, r.model); h = fnvStr(h, r.question);
         h = fnvStr(h, r.activity); h = fnvStr(h, r.work);
         h = fnv(h, &r.alive, 1);
+        h = fnv(h, &r.subagentCount, 1);
     }
     h = fnv(h, &s.optionCount, 1);
     for (uint8_t i = 0; i < s.optionCount; i++) h = fnvStr(h, s.options[i]);
@@ -766,7 +769,25 @@ void drawSessionCard(const Snap& s, const RowSnap& r, bool firstAwaiting,
     drawAgentGlyph(r.agentType, gx, gy, glyph);
 
     int16_t tx = gx + glyph + (w >= 340 ? 18 : 12);
-    int16_t maxTextW = x + w - tx - 12;
+    int16_t subagentReserve = r.subagentCount > 0 ? 52 : 0;
+    int16_t maxTextW = x + w - tx - 12 - subagentReserve;
+
+    // E-ink uses a static miniature orbit so there is no refresh animation or
+    // ghosting churn. The parent card remains the only selectable entity.
+    if (r.subagentCount > 0) {
+        constexpr int8_t ringX[12] = {-12, -10, -6, 0, 6, 10, 12, 10, 6, 0, -6, -10};
+        constexpr int8_t ringY[12] = {0, -3, -5, -6, -5, -3, 0, 3, 5, 6, 5, 3};
+        int16_t orbitX = x + w - 30;
+        int16_t orbitY = y + 19;
+        for (uint8_t i = 0; i < 12; i += 2) {
+            display.drawPixel(orbitX + ringX[i], orbitY + ringY[i], inkColor);
+        }
+        display.drawLine(orbitX, orbitY, orbitX + 12, orbitY, inkColor);
+        display.fillCircle(orbitX + 12, orbitY, 2, inkColor);
+        char count[6];
+        snprintf(count, sizeof(count), "%u", (unsigned)r.subagentCount);
+        textRight(x + w - 8, y + 38, count, CLASSIC_FONT);
+    }
 
     // Project name — ASCII gets the bold cascade; 한글 names render via the
     // unifont path (previously mangled to '#' runs by the ASCII sanitizer)

@@ -4,6 +4,22 @@
 import Foundation
 import Combine
 
+struct SubagentVisualActivity: Equatable {
+    var activeCount: Int = 0
+    var lastCompletedAt: Double?
+
+    static let none = SubagentVisualActivity()
+
+    func merged(with other: SubagentVisualActivity) -> SubagentVisualActivity {
+        SubagentVisualActivity(
+            activeCount: activeCount + other.activeCount,
+            lastCompletedAt: max(lastCompletedAt ?? 0, other.lastCompletedAt ?? 0) > 0
+                ? max(lastCompletedAt ?? 0, other.lastCompletedAt ?? 0)
+                : nil
+        )
+    }
+}
+
 final class TimelineStore: ObservableObject, @unchecked Sendable {
     @Published private(set) var entries: [TimelineEntry] = []
     // NOTE: no stored `grouped` here. The store used to keep a @Published
@@ -32,6 +48,65 @@ final class TimelineStore: ObservableObject, @unchecked Sendable {
 
     /// Whether we're receiving timeline from bridge (suppress local generation)
     @Published var receivingBridgeTimeline = false
+
+    /// Parent/child decoration derived entirely from existing timeline rows.
+    /// Keeping this out of DashboardState preserves wire compatibility with
+    /// older app, daemon, Android, Pixoo, and ESP32 builds.
+    func subagentActivityBySession(
+        now: Double = Date().timeIntervalSince1970 * 1000,
+        activeTtlMs: Double = 6 * 60 * 60 * 1000
+    ) -> [String: SubagentVisualActivity] {
+        struct ActiveStart {
+            let ts: Double
+            let startedAt: Double?
+        }
+
+        var active: [String: [ActiveStart]] = [:]
+        var completed: [String: Double] = [:]
+        let ordered = entries.enumerated().sorted {
+            $0.element.ts == $1.element.ts
+                ? $0.offset < $1.offset
+                : $0.element.ts < $1.element.ts
+        }
+
+        for (_, entry) in ordered {
+            guard let sessionId = entry.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !sessionId.isEmpty else { continue }
+            let isSubagent = entry.raw.hasPrefix("Subagent ")
+            let isTeamCompletion = entry.raw.hasPrefix("Team ")
+
+            if entry.type == .toolExec && isSubagent {
+                active[sessionId, default: []].append(
+                    ActiveStart(ts: entry.ts, startedAt: entry.startedAt)
+                )
+                continue
+            }
+            guard entry.type == .toolResolved, isSubagent || isTeamCompletion else { continue }
+
+            completed[sessionId] = max(completed[sessionId] ?? 0, entry.endedAt ?? entry.ts)
+            guard isSubagent, var starts = active[sessionId], !starts.isEmpty else { continue }
+            let matchingIndex = entry.startedAt.flatMap { target in
+                starts.firstIndex(where: { $0.startedAt == target })
+            } ?? starts.startIndex
+            starts.remove(at: matchingIndex)
+            active[sessionId] = starts
+        }
+
+        var result: [String: SubagentVisualActivity] = [:]
+        let sessionIds = Set(active.keys).union(completed.keys)
+        for sessionId in sessionIds {
+            let activeCount = active[sessionId, default: []]
+                .filter { now - $0.ts <= activeTtlMs }
+                .count
+            let lastCompletedAt = completed[sessionId]
+            guard activeCount > 0 || lastCompletedAt != nil else { continue }
+            result[sessionId] = SubagentVisualActivity(
+                activeCount: activeCount,
+                lastCompletedAt: lastCompletedAt
+            )
+        }
+        return result
+    }
 
     // MARK: - Add Entry
 

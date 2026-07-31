@@ -24,6 +24,7 @@ import { checkDependencies } from './check-deps.js';
 import { enableDebugLog, log, debug, setPtyMode } from './logger.js';
 import { EventJournal } from './event-journal.js';
 import { PtyRingBuffer } from './pty-ringbuffer.js';
+import { isSubagentOnlyHook, SubagentTimelineTracker } from './subagent-timeline.js';
 import { createDiagDump } from './diag-analyzer.js';
 import { createAdapter, ClaudeCodeAdapter, CodexCliAdapter, OpenCodeAdapter } from './adapters/index.js';
 import { MonitorAdapter } from './adapters/monitor.js';
@@ -511,6 +512,23 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   // ===== Timeline wiring =====
   core.wireTimeline(bridgeLogStream ?? undefined);
 
+  // Child agents remain part of the parent session. Emit two concise,
+  // backward-compatible Timeline rows and never expose a controllable child
+  // SessionInfo or team configuration surface.
+  const subagentTimeline = new SubagentTimelineTracker((entry) => {
+    core.bridgeTimeline.addEntry(entry, { bypassSuppression: true });
+  });
+  adapter.on('event', (evt: AdapterEvent) => {
+    if (evt.source !== 'hook') return;
+    subagentTimeline.handle({
+      eventName: evt.event,
+      payload: evt.data ?? {},
+      sessionId: core.sessionId,
+      agentType,
+      projectName: core.projectName,
+    });
+  });
+
   // Claude Code hook events → timeline entries
   if (agentType === 'claude-code') {
     wireClaudeCodeTimeline(adapter, core, journal, ptyRingBuffer);
@@ -532,6 +550,9 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     switch (evt.source) {
       case 'hook':
         journal.write('hook', 'hook', { event: evt.event, data: evt.data });
+        // Child hooks are telemetry-only. In particular, a child PreToolUse
+        // must not mutate the parent state or enter an approval/control path.
+        if (isSubagentOnlyHook(evt.event, evt.data ?? {})) break;
         // APME ingestion via the shared TelemetrySpan envelope. Codex
         // CLI sessions go through codexHookToSpans (codex_* event prefix);
         // Claude Code goes through claudeHookToSpans. Both adapters detect
@@ -1315,6 +1336,9 @@ function wireAgentApme(
     : null;
 
   adapter.on('event', (evt: import('./types.js').AdapterEvent) => {
+    if (evt.source === 'hook' && isSubagentOnlyHook(evt.event, evt.data ?? {})) {
+      return;
+    }
     // ── Timeline events (OpenCode / OpenClaw) ──
     // Both adapters emit { source: 'timeline', entry: TimelineEntry }.
     // The timeline adapter normalizes them to AgentDeck telemetry spans.
@@ -1586,6 +1610,7 @@ function wireClaudeCodeTimeline(
 
   adapter.on('event', (evt: AdapterEvent) => {
     if (evt.source !== 'hook') return;
+    if (isSubagentOnlyHook(evt.event, evt.data ?? {})) return;
     const now = Date.now();
     switch (evt.event) {
       case 'UserPromptSubmit': {

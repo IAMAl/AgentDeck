@@ -92,8 +92,9 @@ export function hasTopLevelKeyOutsideFence(text: string, key: string): boolean {
 }
 
 /** Detect a `[<table>]`, `[<table>.subkey]`, or matching array-of-table
- *  header outside the fence. Codex `[otel]` / `[features]` / `[hooks]`
- *  tables collide with the fence we'd write. */
+ *  header outside the fence. Codex `[otel]` / `[features]` tables collide
+ *  with the fence we'd write. Hook arrays are handled separately because
+ *  multiple `[[hooks.<Event>]]` entries are explicitly mergeable. */
 export function hasTableOutsideFence(text: string, table: string): boolean {
   const escaped = escapeRegex(table);
   // Match exactly `[otel]`, `[otel.something]`, `[[otel.something]]`,
@@ -106,6 +107,27 @@ export function hasTableOutsideFence(text: string, table: string): boolean {
     if (insideFence) continue;
     if (table === 'hooks' && isCodexHookStateHeader(line)) continue;
     if (regex.test(line)) return true;
+  }
+  return false;
+}
+
+/** Detect user-authored hook table shapes that cannot safely coexist with
+ *  AgentDeck's lifecycle arrays. Official `[[hooks.<Event>]]` and nested
+ *  `[[hooks.<Event>.hooks]]` arrays are mergeable and therefore allowed;
+ *  regular `[hooks]` / `[hooks.<...>]` tables remain a conflict. Codex's
+ *  generated `[hooks.state]` trust cache is metadata and is also ignored. */
+export function hasIncompatibleHookTableOutsideFence(text: string): boolean {
+  const anyHookHeader = /^\s*\[\[?\s*hooks(?:\.[^\]]+)?\s*\]\]?\s*$/;
+  const mergeableLifecycleArray =
+    /^\s*\[\[\s*hooks\.[A-Za-z0-9_-]+(?:\.hooks)?\s*\]\]\s*$/;
+  let insideFence = false;
+  for (const line of splitLines(text)) {
+    if (line === OPEN_FENCE) { insideFence = true; continue; }
+    if (line === CLOSE_FENCE) { insideFence = false; continue; }
+    if (insideFence || isCodexHookStateHeader(line)) continue;
+    if (!anyHookHeader.test(line)) continue;
+    if (mergeableLifecycleArray.test(line)) continue;
+    return true;
   }
   return false;
 }

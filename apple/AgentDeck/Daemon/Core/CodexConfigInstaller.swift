@@ -20,9 +20,9 @@
 //      because the daemon intentionally rejects protobuf at this route.
 //
 // Edits live inside a fenced block (see MiniToml) so user keys / comments /
-// profile tables / MCP server tables are preserved verbatim. If the user
-// already wrote their own `[features]` or `[hooks]` table we abort cleanly
-// rather than producing duplicate-table TOML.
+// profile tables / MCP server tables are preserved verbatim. Official user
+// lifecycle arrays can coexist with ours, while conflicting `[features]` or
+// non-array `[hooks]` tables abort cleanly.
 
 import AppKit
 import Foundation
@@ -93,17 +93,16 @@ enum CodexConfigInstaller {
 
         let original = readText(at: url)
 
-        // Refuse to clobber user-authored lifecycle hook config. This
-        // line-mode editor cannot safely merge existing `[features]` or
-        // `[hooks]` tables without a real TOML parser, and duplicate tables
-        // would make Codex reject config.toml.
+        // A user `[features]` table would duplicate ours. Official lifecycle
+        // arrays are intentionally additive in Codex and can coexist with
+        // AgentDeck; refuse only non-array hook tables.
         if MiniToml.hasTableOutsideFence(in: original, table: "features") {
             DaemonLogger.shared.info("Codex config: user-authored `[features]` present — observation not installed")
             AppPreferences.shared.codexConfigInstalled = false
             return
         }
-        if MiniToml.hasTableOutsideFence(in: original, table: "hooks") {
-            DaemonLogger.shared.info("Codex config: user-authored `[hooks]` present — observation not installed")
+        if MiniToml.hasIncompatibleHookTableOutsideFence(in: original) {
+            DaemonLogger.shared.info("Codex config: incompatible user-authored `[hooks]` table present — observation not installed")
             AppPreferences.shared.codexConfigInstalled = false
             return
         }
@@ -323,6 +322,8 @@ enum CodexConfigInstaller {
             ("PreToolUse", "codex_tool_start", "*"),
             ("PostToolUse", "codex_tool_end", "*"),
             ("Stop", "codex_stop", nil),
+            ("SubagentStart", "codex_subagent_start", "*"),
+            ("SubagentStop", "codex_subagent_stop", "*"),
         ]
 
         var lines: [String] = []

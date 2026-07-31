@@ -49,6 +49,7 @@ struct CloudCreatureState: Identifiable {
     /// "×N" badge or simply ignore it (default 1 = unfolded).
     var groupSize: Int = 1
     var exitedWaiting = false
+    var subagentActivity: SubagentVisualActivity = .none
 }
 
 // MARK: - Agent Creature State
@@ -64,6 +65,7 @@ struct AgentCreatureState: Identifiable {
 
     /// Whether this session just exited ASKING (triggers pop burst)
     var exitedAsking = false
+    var subagentActivity: SubagentVisualActivity = .none
 }
 
 // MARK: - OpenCode Creature State
@@ -76,6 +78,7 @@ struct OpenCodeCreatureState: Identifiable {
     let homeX: Float
     let homeY: Float
     let scale: Float
+    var subagentActivity: SubagentVisualActivity = .none
 }
 
 // MARK: - Antigravity Creature State
@@ -88,6 +91,7 @@ struct AntigravityCreatureState: Identifiable {
     let homeX: Float
     let homeY: Float
     let scale: Float
+    var subagentActivity: SubagentVisualActivity = .none
 }
 
 // MARK: - Terrarium State (aggregate)
@@ -116,7 +120,10 @@ struct TerrariumState {
 // MARK: - Mapping from DashboardState
 
 extension DashboardState {
-    func toTerrariumState(previous: TerrariumState? = nil) -> TerrariumState {
+    func toTerrariumState(
+        previous: TerrariumState? = nil,
+        subagentActivityBySession: [String: SubagentVisualActivity] = [:]
+    ) -> TerrariumState {
         var result = TerrariumState()
 
         // Primary session creature (skip daemon/openclaw/codex-cli/opencode/antigravity — they're not octopuses)
@@ -158,7 +165,8 @@ extension DashboardState {
                 homeX: slot.x,
                 homeY: slot.y,
                 scale: slot.scale,
-                exitedAsking: exitedAsking
+                exitedAsking: exitedAsking,
+                subagentActivity: subagentActivityBySession[sessionId ?? "primary"] ?? .none
             ))
             slotIdx = 1
         }
@@ -175,7 +183,8 @@ extension DashboardState {
                 state: sibState,
                 homeX: s.x,
                 homeY: s.y,
-                scale: s.scale
+                scale: s.scale,
+                subagentActivity: subagentActivityBySession[sibling.id] ?? .none
             ))
         }
 
@@ -199,7 +208,8 @@ extension DashboardState {
                     homeX: creatures[i].homeX,
                     homeY: creatures[i].homeY,
                     scale: creatures[i].scale,
-                    exitedAsking: creatures[i].exitedAsking
+                    exitedAsking: creatures[i].exitedAsking,
+                    subagentActivity: creatures[i].subagentActivity
                 )
             }
         }
@@ -305,6 +315,9 @@ extension DashboardState {
             let representative = members.max(by: { (lhs, rhs) in
                 (lhs.startedAt ?? "") < (rhs.startedAt ?? "")
             }) ?? members.last!
+            let subagentActivity = members.reduce(SubagentVisualActivity.none) {
+                $0.merged(with: subagentActivityBySession[$1.id] ?? .none)
+            }
             let slot = cloudSlots.indices.contains(slotIdx)
                 ? cloudSlots[slotIdx]
                 : (cloudSlots.last ?? CreatureSlot(x: 0.50, y: 0.45, scale: 1.0))
@@ -316,7 +329,8 @@ extension DashboardState {
                 homeX: slot.x,
                 homeY: slot.y,
                 scale: slot.scale,
-                groupSize: members.count
+                groupSize: members.count,
+                subagentActivity: subagentActivity
             ))
             if let focused = focusedSessionId, members.contains(where: { $0.id == focused }) {
                 resolvedFocusId = representative.id
@@ -343,7 +357,8 @@ extension DashboardState {
                 projectName: projectName,
                 modelName: modelName,
                 state: mapToOpenCodeState(state),
-                homeX: s.x, homeY: s.y, scale: s.scale
+                homeX: s.x, homeY: s.y, scale: s.scale,
+                subagentActivity: subagentActivityBySession[sessionId ?? "oc-primary"] ?? .none
             ))
             openCodeSlotIdx = 1
         }
@@ -356,7 +371,8 @@ extension DashboardState {
                 projectName: sibling.projectName,
                 modelName: sibling.modelName,
                 state: mapSiblingToOpenCodeState(sibling.state),
-                homeX: s.x, homeY: s.y, scale: s.scale
+                homeX: s.x, homeY: s.y, scale: s.scale,
+                subagentActivity: subagentActivityBySession[sibling.id] ?? .none
             ))
         }
         result.opencodeCreatures = openCodeCreatures
@@ -379,7 +395,8 @@ extension DashboardState {
                 projectName: projectName,
                 modelName: modelName,
                 state: mapToAntigravityState(state),
-                homeX: s.x, homeY: s.y, scale: s.scale
+                homeX: s.x, homeY: s.y, scale: s.scale,
+                subagentActivity: subagentActivityBySession[sessionId ?? "ag-primary"] ?? .none
             ))
             antigravitySlotIdx = 1
         }
@@ -392,7 +409,8 @@ extension DashboardState {
                 projectName: sibling.projectName,
                 modelName: sibling.modelName,
                 state: mapSiblingToAntigravityState(sibling.state),
-                homeX: s.x, homeY: s.y, scale: s.scale
+                homeX: s.x, homeY: s.y, scale: s.scale,
+                subagentActivity: subagentActivityBySession[sibling.id] ?? .none
             ))
         }
         result.antigravityCreatures = antigravityCreatures

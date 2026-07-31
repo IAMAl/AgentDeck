@@ -401,6 +401,11 @@ export function shouldDropLowSignalTimelineEntry(entry: TimelineEntry): boolean 
 
   const lowSignalTypes = new Set<TimelineEntryType>(['tool_exec', 'tool_request', 'tool_resolved']);
   if (!lowSignalTypes.has(entry.type)) return false;
+  // Subagent lifecycle is already coalesced to one start + one completion.
+  // It is not the per-tool firehose the observed-agent filter targets.
+  if (entry.type === 'tool_exec' && entry.raw.trimStart().startsWith('Subagent ')) {
+    return false;
+  }
   // Observed-agent tool hooks are extremely high volume (Bash/MCP/read/
   // todowrite start+complete for every internal action). Keep them available
   // to APME ingestion, but do not persist them into the bounded user-facing

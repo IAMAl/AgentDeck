@@ -66,7 +66,7 @@ struct MonitorScreen: View {
             ].joined(separator: "|"))
         }
         rows.sort()
-        return "\(primary)::\(rows.joined(separator: ","))"
+        return "\(primary)::\(rows.joined(separator: ","))::timeline:\(stateHolder.timelineVersion)"
     }
 
     var body: some View {
@@ -477,7 +477,10 @@ struct MonitorScreen: View {
     }
 
     private func updateTerrariumState() {
-        terrariumState = stateHolder.state.toTerrariumState(previous: terrariumState)
+        terrariumState = stateHolder.state.toTerrariumState(
+            previous: terrariumState,
+            subagentActivityBySession: stateHolder.timelineStore.subagentActivityBySession()
+        )
     }
 }
 

@@ -32,6 +32,10 @@ export const HOOK_EVENTS = [
   'Stop',
   'Notification',
   'UserPromptSubmit',
+  'SubagentStart',
+  'SubagentStop',
+  'TaskCompleted',
+  'TeammateIdle',
 ] as const;
 
 /**
@@ -432,6 +436,16 @@ export function migrateHooksIfNeeded(home: string = homedir()): void {
     // is the self-heal path for a machine where an older App Store build keeps
     // rewriting the same settings.json the CLI installs into.
     if (hasUnboundedHookCurl(settings)) {
+      applyHooks(settings);
+      migrated = true;
+    }
+
+    // Migration 8: install read-only child/team lifecycle telemetry. These
+    // hooks only post summaries; they never return steering decisions.
+    if (
+      !settings.hooks?.SubagentStart || !settings.hooks?.SubagentStop
+      || !settings.hooks?.TaskCompleted || !settings.hooks?.TeammateIdle
+    ) {
       applyHooks(settings);
       migrated = true;
     }

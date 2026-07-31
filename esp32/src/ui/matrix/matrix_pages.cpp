@@ -435,6 +435,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
         char state[20];
         AgentKind kind;
         int instanceIdx;
+        uint8_t subagentCount;
     };
     AgentInfo agents[6];
     int agentCount = 0;
@@ -450,6 +451,8 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
         if (strcmp(g_state.sessions[i].agentType, "daemon") == 0) continue;
         strncpy(agents[agentCount].state, g_state.sessions[i].state, 19);
         agents[agentCount].state[19] = '\0';
+        agents[agentCount].subagentCount =
+            g_state.activeSubagentsForSession(g_state.sessions[i].id);
         if (isCodexAgentType(g_state.sessions[i].agentType)) {
             agents[agentCount].kind = AGENT_CODEX;
             agents[agentCount].instanceIdx = codexSeen++;
@@ -587,6 +590,20 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
         }
     };
 
+    // The matrix has no room for a literal ring. Three cyan perimeter pixels
+    // act as a static satellite constellation owned by the adjacent glyph.
+    auto drawSubagentSatellites = [&](int x, uint8_t count) {
+        static constexpr int8_t sx[3] = {7, 7, 0};
+        static constexpr int8_t sy[3] = {0, 7, 0};
+        uint8_t visible = count < 3 ? count : 3;
+        for (uint8_t i = 0; i < visible; i++) {
+            setPixel(leds, x + sx[i], sy[i], CRGB(0, 229, 255));
+            int wireX = x + 4 + (sx[i] - 4) / 2;
+            int wireY = 4 + (sy[i] - 4) / 2;
+            setPixel(leds, wireX, wireY, CRGB(0, 62, 78));
+        }
+    };
+
     int visibleSlots = drewCrayfish ? 3 : 4;
     int spacing = 8;
 
@@ -596,6 +613,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
             CRGB bc = agentColor(agents[i].state, agents[i].kind, agents[i].instanceIdx);
             drawOfficialMatrixGlyph(leds, x, agentSprite(agents[i].kind), bc,
                                     agents[i].kind == AGENT_ANTIGRAVITY);
+            drawSubagentSatellites(x, agents[i].subagentCount);
         }
     } else {
         // Ping-pong scroll: pause → slide right → pause → slide back left
@@ -627,6 +645,7 @@ void MatrixPages::renderAgents(CRGB* leds, float animTime) {
             CRGB bc = agentColor(agents[i].state, agents[i].kind, agents[i].instanceIdx);
             drawOfficialMatrixGlyph(leds, x, agentSprite(agents[i].kind), bc,
                                     agents[i].kind == AGENT_ANTIGRAVITY);
+            drawSubagentSatellites(x, agents[i].subagentCount);
         }
     }
 }

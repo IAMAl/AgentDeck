@@ -39,6 +39,13 @@ describe('classifyObservedHookEvent', () => {
       .toEqual({ boundary: 'stop', agentType: 'codex-cli' });
   });
 
+  it('keeps Codex subagent hooks attributed to Codex', () => {
+    expect(classifyObservedHookEvent('codex_subagent_start', 'codex_subagent_start'))
+      .toEqual({ boundary: 'codex_subagent_start', agentType: 'codex-cli' });
+    expect(classifyObservedHookEvent('codex_subagent_stop', 'codex_subagent_stop'))
+      .toEqual({ boundary: 'codex_subagent_stop', agentType: 'codex-cli' });
+  });
+
   it('maps opencode_* plugin events to their boundary with opencode attribution', () => {
     expect(classifyObservedHookEvent('opencode_session_start', 'opencode_session_start'))
       .toEqual({ boundary: 'session_start', agentType: 'opencode' });

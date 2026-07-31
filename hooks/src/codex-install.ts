@@ -24,6 +24,7 @@ import {
   removeManagedBlock,
   hasTopLevelKeyOutsideFence,
   hasTableOutsideFence,
+  hasIncompatibleHookTableOutsideFence,
   quoted,
 } from './codex-mini-toml.js';
 
@@ -189,6 +190,8 @@ const LIFECYCLE_HOOKS: LifecycleHook[] = [
   { codexEvent: 'PreToolUse',       agentDeckEvent: 'codex_tool_start',         matcher: '*' },
   { codexEvent: 'PostToolUse',      agentDeckEvent: 'codex_tool_end',           matcher: '*' },
   { codexEvent: 'Stop',             agentDeckEvent: 'codex_stop',               matcher: null },
+  { codexEvent: 'SubagentStart',    agentDeckEvent: 'codex_subagent_start',     matcher: '*' },
+  { codexEvent: 'SubagentStop',     agentDeckEvent: 'codex_subagent_stop',      matcher: '*' },
 ];
 
 function buildLifecycleHookTables(platform: NodeJS.Platform): string[] {
@@ -328,25 +331,26 @@ function writeTextAtomic(text: string, path: string): boolean {
 
 /** Install AgentDeck's Codex observation entries into `~/.codex/config.toml`
  *  unless the user opted out, the user has authored a conflicting top-level
- *  `[features]` / `[hooks]` table outside the fence, or the file write
- *  failed. Idempotent: re-running with the same daemon port produces a
- *  byte-identical file, so safe to call from setup, `agentdeck codex`,
- *  and `agentdeck daemon install`. */
+ *  `[features]` or non-array `[hooks]` table outside the fence, or the file
+ *  write failed. User lifecycle arrays are preserved and merge with the
+ *  AgentDeck arrays, which lets users consolidate a same-layer `hooks.json`
+ *  into this single TOML representation. Idempotent: re-running with the
+ *  same daemon port produces a byte-identical file, so safe to call from
+ *  setup, `agentdeck codex`, and `agentdeck daemon install`. */
 export function installCodexHooksIfNeeded(opts: InstallOptions = {}): InstallResult {
   if (envOptOut()) return { installed: false, reason: 'AGENTDECK_NO_CODEX_HOOKS=1' };
 
   const path = opts.configPath ?? DEFAULT_CODEX_CONFIG_PATH;
   const original = readText(path);
 
-  // Refuse to clobber user-authored lifecycle hook config. This line-mode
-  // editor cannot safely merge existing `[features]` or `[hooks]` tables
-  // without a real TOML parser, and duplicate tables would make Codex
-  // reject config.toml.
+  // A user `[features]` table would duplicate ours. Official lifecycle
+  // arrays, however, are intentionally additive in Codex and can safely
+  // coexist with the AgentDeck arrays. Refuse only non-array hook tables.
   if (hasTableOutsideFence(original, 'features')) {
     return { installed: false, reason: 'user-authored [features] present' };
   }
-  if (hasTableOutsideFence(original, 'hooks')) {
-    return { installed: false, reason: 'user-authored [hooks] present' };
+  if (hasIncompatibleHookTableOutsideFence(original)) {
+    return { installed: false, reason: 'incompatible user-authored [hooks] table present' };
   }
 
   const platform = opts.platform ?? process.platform;
