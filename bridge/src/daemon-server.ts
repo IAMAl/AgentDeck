@@ -129,8 +129,9 @@ import {
   normalizeClientIp, parsePullTelemetry,
 } from './card-feed.js';
 import { WeatherProvider, parseWeatherSettings } from './weather.js';
+import { renderGlanceFrame, GLANCE_FRAME_BOARDS } from './glance-frame.js';
 import type { UsageEvent } from './types.js';
-import { CARD_FEED_PATH, CARD_OUTBOX_PATH, type SessionInfo, type OutboxPushRequest } from '@agentdeck/shared';
+import { CARD_FEED_PATH, CARD_OUTBOX_PATH, GLANCE_FRAME_PATH, type SessionInfo, type OutboxPushRequest } from '@agentdeck/shared';
 import { readFileSync, statSync } from 'fs';
 import { readFile, rm } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -1232,6 +1233,63 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // Auth mirrors /apme: local connections are free; anything else needs the
     // pairing token (?token=). Devices hold it from provisioning; /health
     // exposes it for LAN pairing.
+    // ===== Glance Frame (M8) — daemon-rendered pixels of the glance =====
+    // The device-side glance renderer is the offline fallback; this is the
+    // rich face. `?format=png` returns the exact dithered panel pixels, so a
+    // browser preview IS the production frame (protocol.ts § Glance Frame).
+    if (req.method === 'GET' && pathname === GLANCE_FRAME_PATH) {
+      const ip = req.socket.remoteAddress ?? '';
+      if (!isLocalConnection(ip)) {
+        const token = parsedUrl.searchParams.get('token') ?? '';
+        if (!validateToken(token)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized — token required for glance frame' }));
+          return;
+        }
+      }
+      (async () => {
+        const board = parsedUrl.searchParams.get('board') ?? 'xteink_x3';
+        const preset = GLANCE_FRAME_BOARDS[board];
+        const w = Number(parsedUrl.searchParams.get('w'));
+        const h = Number(parsedUrl.searchParams.get('h'));
+        const geometry = Number.isFinite(w) && Number.isFinite(h) && w >= 128 && h >= 128 && w <= 1600 && h <= 1600
+          ? { width: Math.round(w), height: Math.round(h), landscape: w > h }
+          : preset ?? GLANCE_FRAME_BOARDS.xteink_x3;
+        const sessions = await core.buildSessionsSnapshot();
+        const glance = buildGlance({
+          sessions: sessions as unknown as SessionInfo[],
+          usage: core.buildUsage() as UsageEvent,
+          weather: await glanceWeather.get(parseWeatherSettings(loadDaemonSettings())),
+        });
+        const d = new Date();
+        const serverHm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        const frame = await renderGlanceFrame({ glance, serverHm, geometry });
+        const headers = {
+          'X-Frame-Width': String(frame.width),
+          'X-Frame-Height': String(frame.height),
+          'X-Frame-Sig': frame.sig,
+          'Cache-Control': 'no-store',
+        };
+        // Conditional fetch, one layer down from the feed's deckSig: matching
+        // sig → 304, no body, the panel keeps holding the frame it has.
+        if (parsedUrl.searchParams.get('sig') === frame.sig) {
+          res.writeHead(304, headers);
+          res.end();
+          return;
+        }
+        if (parsedUrl.searchParams.get('format') === 'png') {
+          res.writeHead(200, { ...headers, 'Content-Type': 'image/png' });
+          res.end(await frame.png());
+          return;
+        }
+        res.writeHead(200, { ...headers, 'Content-Type': 'application/octet-stream' });
+        res.end(frame.packed);
+      })().catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+      });
+      return;
+    }
     if ((req.method === 'GET' && pathname === CARD_FEED_PATH)
       || (req.method === 'POST' && pathname === CARD_OUTBOX_PATH)) {
       const ip = req.socket.remoteAddress ?? '';

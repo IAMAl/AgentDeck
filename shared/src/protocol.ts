@@ -1005,6 +1005,18 @@ export interface OutboxPushResponse {
 /** HTTP paths on the daemon port (BRIDGE_HTTP_PORT). */
 export const CARD_FEED_PATH = '/feed';
 export const CARD_OUTBOX_PATH = '/outbox';
+/**
+ * Glance Frame (M8) — the daemon-rendered pixel form of the glance, for
+ * clients that display rather than lay out. `GET /glance-frame?board=<id>`
+ * (or `?w=&h=`) returns the frame as packed 1bpp rows (MSB-first, bit 1 =
+ * white) with headers `X-Frame-Width`, `X-Frame-Height`, `X-Frame-Sig`;
+ * `?format=png` returns the SAME dithered pixels as a PNG — the browser
+ * preview is byte-for-byte what the panel will hold. `?sig=` echoes the last
+ * applied frame sig; on a match the daemon answers 304 with no body (the
+ * conditional-pull idea, one layer down). Same auth as the card-feed routes.
+ * The device-side glance renderer remains the offline fallback.
+ */
+export const GLANCE_FRAME_PATH = '/glance-frame';
 /** Pull cadence hints (`nextPullSec`): idle default vs. when any session is
  *  mid-turn / awaiting. Hourly idle matches what a drifty RTC can honour. */
 export const CARD_FEED_IDLE_PULL_SEC = 3600;

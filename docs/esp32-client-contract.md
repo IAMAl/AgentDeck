@@ -198,6 +198,17 @@ and pull while on battery.
   query string — the only battery/link observability a wake-sync-sleep device
   has. Out-of-range values are dropped server-side. Reported per-client in the
   pull log line and `agentdeck devices` › `Card feed`.
+- **Glance Frame (M8, 2026-07-31)**: `GET /glance-frame?board=<id>` returns
+  the daemon-**rendered** glance as packed 1bpp framebuffer rows (MSB-first,
+  bit 1 = white) with `X-Frame-Width`/`X-Frame-Height`/`X-Frame-Sig` headers —
+  for clients that display rather than lay out (rich typography, vector
+  weather icons, dithered fills; ordered dithering keeps the bytes — and the
+  sig — deterministic). `?sig=` echo → `304` with no body; `?format=png` →
+  the SAME dithered pixels as a PNG, so a browser preview is byte-for-byte
+  what the panel will hold. Presets: `xteink_x3` 528×792 portrait,
+  `xteink_x4`/`inkdeck` 800×480 landscape; `?w=&h=` overrides. The
+  device-side glance renderer stays as the offline fallback. Renderer:
+  `bridge/src/glance-frame.ts` (Node daemon only).
 - **Auth**: same as `/apme` — local connections free, LAN needs the pairing
   token as `?token=` (devices hold it from provisioning; `/health` exposes it).
 - **The daemon logs every pull**, because a sleeping client with an empty outbox
