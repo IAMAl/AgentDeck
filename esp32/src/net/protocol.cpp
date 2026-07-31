@@ -13,6 +13,7 @@
 #include <WiFi.h>
 #include <Update.h>
 #include <mbedtls/base64.h>
+#include <esp_heap_caps.h>   // device_info heap diagnostics
 // Unconditional: the board headers define capability macros (BOARD_HAS_SPEAKER,
 // BOARD_SPK_CODEC_ES8311, ...) that the guards below test. Only the -DBOARD_*
 // selectors come from build flags; everything else needs this include first.
@@ -732,7 +733,8 @@ static void handleWifiProvision(JsonObject& obj) {
     unlockState();
 
     bool ok = false;
-#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
+#if defined(BOARD_T_DISPLAY_PRO) || \
+    (defined(BOARD_IPS10) && !defined(BOARD_HAS_VOICE_CAPTURE))
     if (Net::serialConnected()) {
         // USB serial is the primary transport on these boards. Persist the
         // credentials/endpoint but do not join now: on the IPS10 that avoids
@@ -748,10 +750,21 @@ static void handleWifiProvision(JsonObject& obj) {
         ok = Net::wifiConnectWith(ssid, password);
     }
     if (ok) {
-        if (!Net::wifiRadioParked() && !Net::serialConnected()) {
+        // A voice-capable IPS10 is deliberately dual-home: its 115200-baud
+        // CH340 cannot carry real-time PCM, so state stays serial-primary while
+        // voice rides WS. Every other board preserves the single-path rule.
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+        constexpr bool allowWifiAlongsideSerial = true;
+#else
+        constexpr bool allowWifiAlongsideSerial = false;
+#endif
+        if (!Net::wifiRadioParked() &&
+            (!Net::serialConnected() || allowWifiAlongsideSerial)) {
             Net::wifiSaveProvisionedBridge(bridgeIp, bridgePort, authToken);
         }
-        if (!Net::wifiRadioParked() && !Net::serialConnected() && bridgeIp[0] != '\0' && bridgePort != 0 && !Net::wsConnected()) {
+        if (!Net::wifiRadioParked() &&
+            (!Net::serialConnected() || allowWifiAlongsideSerial) &&
+            bridgeIp[0] != '\0' && bridgePort != 0 && !Net::wsConnected()) {
             Net::wsConnect(bridgeIp, bridgePort, authToken);
         }
     }
@@ -971,6 +984,16 @@ static void sendDeviceInfo() {
         resp["resetReasonCode"] = (int)resetReason;
         resp["resetReason"] = Util::resetReasonName(resetReason);
     }
+    // Internal-heap trend for the hosted-assert investigation (protocol.ts
+    // DeviceInfoMessage): ESP-Hosted kills the board with an assert when an
+    // internal allocation fails, so the low-watermark across successive
+    // device_info frames is the leak-vs-burst discriminator.
+    resp["freeHeapKb"] = (uint32_t)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    resp["minFreeHeapKb"] = (uint32_t)(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024);
+    // DMA-capable contiguous headroom — the number the hosted SDIO streaming
+    // RX allocation actually needs (one buffer per coalesced burst).
+    resp["largestFreeBlockKb"] = (uint32_t)(
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) / 1024);
     // Debug aid: what this board actually holds — lets a host-side probe
     // (daemon /devices) distinguish "data never parsed" from "render gating"
     // without stealing the serial port.
@@ -1012,19 +1035,9 @@ static void sendDeviceInfo() {
         }
     }
 #endif
-#if defined(BOARD_IPS10)
-    {
-        // Speaker capability, advertised on the WiFi path only — and that is
-        // deliberate, not an oversight. This board's host link is a CH340
-        // pinned at 115200 (~11.5 KB/s), while a 16 kHz PCM16 reply base64'd
-        // into JSON needs ~44 KB/s. Serial physically cannot carry it, so the
-        // serial device_info in serial_client.cpp stays quiet and the daemon's
-        // `audio_out` gate keeps voice replies on the socket that can.
-        JsonArray caps = resp["capabilities"].to<JsonArray>();
-        if (Audio::playbackReady()) caps.add("audio_out");
-        if (Audio::micReady()) caps.add("audio");
-    }
-#endif
+    // NOTE (ips10): the audio capabilities are deliberately NOT added here —
+    // this frame is serialized to BOTH transports below, and the serial copy
+    // must not claim audio_out. See the transport split at the tail.
 #if defined(BOARD_T_DISPLAY_PRO)
     {
         // Remote peripheral diag — lets /devices answer "did touch/ALS init?"
@@ -1065,11 +1078,39 @@ static void sendDeviceInfo() {
     // touch forensics fields pushed past 768 (serializeJson truncates
     // silently on overflow — size for the fattest board, not the average).
     char buf[896];
+#if defined(BOARD_IPS10)
+    // Per-transport capability split. This board's host link is a CH340
+    // pinned at 115200 (~11.5 KB/s) while a base64'd PCM16 reply needs
+    // ~44 KB/s — serial physically cannot carry audio, and the daemon keys
+    // spoken-reply routing off each transport's OWN advertisement. The first
+    // attempt gated the caps on wsConnected(), which still leaked: this one
+    // frame is serialized to BOTH transports, so the serial line carried the
+    // caps whenever WS happened to be up (observed 2026-07-31: a spoken reply
+    // armed onto the 11 KB/s pipe). Serialize the capability-free serial copy
+    // FIRST, then add the audio caps for the WS copy only.
+    {
+        // audio_http_pull is transport-independent (the notify frame is tiny
+        // JSON and the audio moves over its own HTTP GET), so BOTH copies
+        // carry it — a serial-only board can still fetch and play a reply.
+        JsonArray caps = resp["capabilities"].to<JsonArray>();
+        if (Audio::playbackReady()) caps.add("audio_http_pull");
+        if (Audio::micReady()) caps.add("audio");
+    }
+    serializeJson(resp, buf, sizeof(buf));
+    Net::serialWriteJsonLine(buf);
+    if (Net::wsConnected()) {
+        JsonArray caps = resp["capabilities"].as<JsonArray>();
+        if (Audio::playbackReady()) caps.add("audio_out");
+        serializeJson(resp, buf, sizeof(buf));
+        Net::wsSend(buf);
+    }
+#else
     serializeJson(resp, buf, sizeof(buf));
     // Both transports: serial for the USB-attached identify flow, WS so a
     // WiFi-only board (InkDeck) is registrable by the daemon without a cable.
     Net::serialWriteJsonLine(buf);
     if (Net::wsConnected()) Net::wsSend(buf);
+#endif
 }
 
 namespace Protocol {
@@ -1336,6 +1377,27 @@ void parseMessage(const char* json, size_t length) {
     } else if (strcmp(type, "audio_play_end") == 0) {
         Audio::playbackEnd();
         HUD::clearSpeaking();
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+    } else if (strcmp(type, "audio_reply_ready") == 0) {
+        // The daemon staged a spoken reply for HTTP pull (audio_http_pull
+        // capability): fetch it into PSRAM and play locally. See
+        // queueVoiceReplyDownload for why this board never takes the WS
+        // push stream.
+        {
+            uint32_t bytes = obj["bytes"] | 0u;
+            uint32_t rate = obj["sampleRate"] | 16000u;
+            char said[128];
+            snprintf(said, sizeof(said), "%s", obj["text"] | "");
+            Utf8::sanitizeLvglText(said);
+            Utf8::utf8TrimEnd(said);
+            if (Net::queueVoiceReplyDownload(bytes, rate)) {
+                HUD::setSpeaking(said[0] ? said : "(reply)");
+                HUD::setVoiceAnswer(said);
+            } else {
+                HUD::notify("Reply fetch busy - skipped");
+            }
+        }
+#endif
     } else if (strcmp(type, "voice_result") == 0) {
         // What the host heard, and whether it landed. Silence here was the worst
         // part of the knob's early voice UX: a failed delivery looked identical
@@ -1344,10 +1406,21 @@ void parseMessage(const char* json, size_t length) {
         bool delivered = obj["delivered"] | false;
         const char* err = obj["error"] | "";
         char note[160];
-        if (err[0])           snprintf(note, sizeof(note), "Voice error: %s", err);
+        if (err[0]) {
+            // The daemon sends short stable codes (raw NSError text used to
+            // land here and read as line noise at glance distance). Unknown
+            // codes still show verbatim so a new failure is never invisible.
+            if (strcmp(err, "no_speech") == 0 || strcmp(err, "empty_capture") == 0)
+                snprintf(note, sizeof(note), "Heard nothing - try again");
+            else if (strcmp(err, "audio_lost") == 0 || strcmp(err, "audio_incomplete") == 0)
+                snprintf(note, sizeof(note), "Audio lost in transit - try again");
+            else
+                snprintf(note, sizeof(note), "Voice error: %s", err);
+        }
         else if (!text[0])    snprintf(note, sizeof(note), "Heard nothing");
         else if (!delivered)  snprintf(note, sizeof(note), "NOT sent: \"%s\"", text);
         else                  snprintf(note, sizeof(note), "\"%s\"", text);
+        if (delivered && text[0]) HUD::pushVoiceQuestion(text);
         HUD::notify(note);
     } else if (strcmp(type, "voice_reply_skipped") == 0) {
         HUD::notify("Reply: nothing to read aloud");

@@ -12,6 +12,12 @@
 #if defined(BOARD_HAS_VOICE_CAPTURE)
 #include "../../audio/mic_capture.h"
 #endif
+#if defined(BOARD_HAS_SPEAKER)
+#include "../../audio/speaker_playback.h"   // playTone press/sent feedback
+#endif
+#if defined(BOARD_SPK_CODEC_ES8311)
+#include "../../audio/es8311_codec.h"       // volume steppers
+#endif
 #include <Arduino.h>
 #include <cstdarg>
 
@@ -223,6 +229,16 @@ static CellMeta cellMetaData[MOSAIC_MAX];
 
 // Tap-to-focus: cells matching this sid get the linked accent border (D1 focus link).
 static char focusSid[32] = "";
+
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+// Board-local voice target: which session hears the next hold-to-talk. Set by
+// tapping a session card, cleared by tapping the same card again (back to
+// auto = daemon focus → first live session). Deliberately NOT sent upstream as
+// focus_session — a wall panel picking a mic target must not steal the
+// daemon-wide focus that every other surface renders.
+static char voiceTargetSid[32] = "";
+static char voiceTargetName[40] = "";
+#endif
 
 // Detail overlay (floats on lv_layer_top, above terrarium + sidebar).
 static lv_obj_t* detailBack  = nullptr;   // dimmed backdrop (tap to close)
@@ -809,9 +825,40 @@ static void detailOpen(int idx) {
     lv_obj_move_foreground(detailBack);
     detailRefresh();
 }
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+// Short tap: toggle this session as the hold-to-talk target. Long press (the
+// separate callback below) opens the detail overlay, so the two never collide:
+// LVGL only fires SHORT_CLICKED when the press ended before the long-press
+// threshold.
+static void cellTapCb(lv_event_t* e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= MOSAIC_MAX) return;
+    const CellMeta& cm = cellMetaData[idx];
+    if (!cm.sid[0]) return;
+    char msg[96];
+    if (strcmp(voiceTargetSid, cm.sid) == 0) {
+        voiceTargetSid[0] = '\0';
+        voiceTargetName[0] = '\0';
+        snprintf(msg, sizeof(msg), "Voice target: auto");
+    } else {
+        strncpy(voiceTargetSid, cm.sid, sizeof(voiceTargetSid) - 1);
+        voiceTargetSid[sizeof(voiceTargetSid) - 1] = '\0';
+        strncpy(voiceTargetName, cm.name, sizeof(voiceTargetName) - 1);
+        voiceTargetName[sizeof(voiceTargetName) - 1] = '\0';
+        snprintf(msg, sizeof(msg), "Voice target: %s", cm.name);
+    }
+    notify(msg);   // declared in hud_bar.h; cross-core-safe slot post
+    // The selection outline is part of each cell's render signature, so the
+    // next update() pass restyles exactly the affected cells.
+}
+static void cellLongPressCb(lv_event_t* e) {
+    detailOpen((int)(intptr_t)lv_event_get_user_data(e));
+}
+#else
 static void cellTapCb(lv_event_t* e) {
     detailOpen((int)(intptr_t)lv_event_get_user_data(e));
 }
+#endif
 static void cellYesCb(lv_event_t* e) {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx >= 0 && idx < MOSAIC_MAX) hudSendApprove(cellMetaData[idx].requestId, cellMetaData[idx].sid, true);
@@ -916,16 +963,63 @@ static lv_obj_t* makeUsageBlock(lv_obj_t* parent, const lv_image_dsc_t* icon, ui
 // with "go back" and therefore needs a 400 ms arm threshold. Here press means
 // press: there is nothing else the control could mean.
 //
-// The target session is the daemon's own focus (`g_state.focusedSessionId`),
-// the same source the knob uses. Inventing a device-local selection UX here
-// would give the operator two different notions of "current session" to
-// reconcile, and the cards are deliberately passive status tiles.
+// Target resolution: tap-selected card (`voiceTargetSid`) → daemon focus
+// (`g_state.focusedSessionId`) → first live session. The tap selection is
+// board-local by design (see voiceTargetSid); the button's sub-label always
+// names the session the next hold will speak to, because a mic whose target is
+// discovered only after release is a mic nobody trusts twice.
 static lv_obj_t* voiceBtn = nullptr;
 static lv_obj_t* voiceBtnLabel = nullptr;
+static lv_obj_t* voiceBtnTarget = nullptr;   // sub-label: who hears the next hold
 static lv_obj_t* voiceBanner = nullptr;
 static lv_obj_t* voiceBannerLabel = nullptr;
 static char voiceNotice[128] = {0};
 static uint32_t voiceNoticeUntilMs = 0;
+// While non-zero: an utterance is uploading/transcribing and the banner shows
+// "Sending". Resolved by whatever arrives first (voice_result NOTICE, the
+// spoken-reply SPEAKING state) or by this deadline — a board stuck on
+// "Sending" forever was exactly the old undiagnosable failure mode.
+static uint32_t voiceWaitingDeadlineMs = 0;
+
+// Protocol::parseMessage() runs on CORE_NETWORK, while every LVGL call must
+// stay on CORE_UI. Voice results and spoken-reply state arrive through the
+// protocol path, so publish one fixed-size command here and consume it from
+// voiceTick(). A single latest-state slot is sufficient: if BEGIN and END both
+// arrive before one UI frame, showing the final state is the correct result.
+// Static storage avoids a queue allocation in this hot, device-lifetime path.
+enum class VoiceUiOp : uint8_t {
+    NONE,
+    LISTENING,
+    WAITING,     // released: uploading + transcribing, outcome not yet known
+    SPEAKING,
+    NOTICE,
+    HIDE,
+};
+
+struct VoiceUiCommand {
+    VoiceUiOp op;
+    char text[128];
+};
+
+static portMUX_TYPE voiceUiMux = portMUX_INITIALIZER_UNLOCKED;
+static VoiceUiCommand pendingVoiceUi = {VoiceUiOp::NONE, {0}};
+
+// Recent Q&A ring, rendered in the banner whenever it is otherwise idle —
+// the empty space to the left of the talk button becomes a tiny transcript.
+// Written from the network core (voice_result / audio_reply_ready), rendered
+// by voiceTick() on the UI core; the same mux covers it.
+struct VoiceQA { char q[72]; char a[96]; };
+static VoiceQA voiceQA[2];
+static uint8_t voiceQACount = 0;
+static bool voiceQADirty = false;
+
+static void voiceUiPost(VoiceUiOp op, const char* text) {
+    VoiceUiCommand next = {op, {0}};
+    snprintf(next.text, sizeof(next.text), "%s", text ? text : "");
+    portENTER_CRITICAL(&voiceUiMux);
+    pendingVoiceUi = next;
+    portEXIT_CRITICAL(&voiceUiMux);
+}
 
 static void voiceBannerShow(const char* text, uint32_t colour) {
     if (!voiceBanner || !voiceBannerLabel) return;
@@ -939,26 +1033,92 @@ static void voiceBannerShow(const char* text, uint32_t colour) {
     lv_obj_set_style_opa(voiceBanner, LV_OPA_COVER, 0);
 }
 
+// Idle banner = recent Q&A when there is any, else invisible. Keeps the
+// status states (Listening/Sending/Speaking/notices) untouched — they always
+// take the banner over and this view only returns once they clear.
+static void voiceBannerIdle() {
+    if (!voiceBanner || !voiceBannerLabel) return;
+    VoiceQA snap[2];
+    uint8_t count;
+    portENTER_CRITICAL(&voiceUiMux);
+    count = voiceQACount;
+    for (uint8_t i = 0; i < count && i < 2; i++) snap[i] = voiceQA[i];
+    voiceQADirty = false;
+    portEXIT_CRITICAL(&voiceUiMux);
+    if (count == 0) {
+        lv_obj_set_style_opa(voiceBanner, LV_OPA_TRANSP, 0);
+        return;
+    }
+    char text[240];
+    size_t off = 0;
+    // One pair fits the 76 px banner cleanly (Q line + A line); the second
+    // ring slot is retention for a future taller layout.
+    for (uint8_t i = 0; i < count && i < 1 && off < sizeof(text) - 8; i++) {
+        int n = snprintf(text + off, sizeof(text) - off, "%sQ %s%s%s",
+                         i > 0 ? "\n" : "", snap[i].q,
+                         snap[i].a[0] ? "\nA " : "", snap[i].a);
+        if (n < 0) break;
+        off += (size_t)n;
+        if (off >= sizeof(text)) { off = sizeof(text) - 1; break; }
+    }
+    text[sizeof(text) - 1] = '\0';
+    Utf8::utf8TrimEnd(text);
+    lv_label_set_text(voiceBannerLabel, text);
+    lv_obj_set_style_border_color(voiceBanner, lv_color_hex(0x1B3F39), 0);
+    lv_obj_set_style_text_color(voiceBannerLabel, lv_color_hex(0x8FA6A2), 0);
+    lv_obj_set_style_opa(voiceBanner, LV_OPA_COVER, 0);
+}
+
 static void voiceBannerHide() {
-    if (voiceBanner) lv_obj_set_style_opa(voiceBanner, LV_OPA_TRANSP, 0);
+    voiceBannerIdle();
 }
 
 // Which session does a press talk to?
 //
-// The daemon's `focusedSessionId` is an *explicit user* focus
-// (`userFocusedSessionId ?? ''` on the daemon side). Nobody sets that on a wall
-// panel, so keying off it alone made the button do nothing at all — pressed,
-// returned early, no feedback. Prefer it when present, otherwise fall back to
-// the first live session, which is the primary card the operator is looking at.
+// Ladder: the card the operator tapped (`voiceTargetSid`) → a general-purpose
+// assistant session (OpenClaw / Hermes — see isGeneralAssistantSession) → the
+// daemon's explicit user focus → the first live session. The tap selection
+// wins because it is the only one the operator chose *on this panel*; it
+// self-clears when its session dies, so a stale pick can never silently
+// swallow dictation. Auto prefers the general assistant because dictation with
+// no explicit pick is conversation, and a coding session treats it as a work
+// order for its repo. The focus fallback exists because nobody sets a daemon
+// focus from a wall panel, and keying off it alone made the button do nothing
+// at all — pressed, returned early, no feedback.
 static bool voiceResolveTarget(char* idOut, size_t idCap, char* labelOut, size_t labelCap) {
     bool found = false;
     lockState();
-    if (g_state.focusedSessionId[0]) {
+    if (voiceTargetSid[0]) {
+        for (uint8_t i = 0; i < g_state.sessionCount && !found; i++) {
+            const SessionInfo& si = g_state.sessions[i];
+            if (!si.alive || strcmp(si.id, voiceTargetSid) != 0) continue;
+            snprintf(idOut, idCap, "%s", si.id);
+            snprintf(labelOut, labelCap, "%s", si.projectName[0] ? si.projectName : si.id);
+            found = true;
+        }
+        if (!found) {
+            // Session ended since it was picked — fall through to auto.
+            voiceTargetSid[0] = '\0';
+            voiceTargetName[0] = '\0';
+        }
+    }
+    if (!found) {
+        for (uint8_t i = 0; i < g_state.sessionCount && !found; i++) {
+            const SessionInfo& si = g_state.sessions[i];
+            if (!si.alive || !si.id[0]) continue;
+            if (!isGeneralAssistantSession(si.agentType, si.projectName)) continue;
+            snprintf(idOut, idCap, "%s", si.id);
+            snprintf(labelOut, labelCap, "%s", si.projectName[0] ? si.projectName : si.id);
+            found = true;
+        }
+    }
+    if (!found && g_state.focusedSessionId[0]) {
         snprintf(idOut, idCap, "%s", g_state.focusedSessionId);
         snprintf(labelOut, labelCap, "%s",
                  g_state.projectName[0] ? g_state.projectName : g_state.focusedSessionId);
         found = true;
-    } else {
+    }
+    if (!found) {
         for (uint8_t i = 0; i < g_state.sessionCount && !found; i++) {
             const SessionInfo& si = g_state.sessions[i];
             if (!si.alive || !si.id[0]) continue;
@@ -985,6 +1145,17 @@ static void voicePressCb(lv_event_t* e) {
         return;
     }
     Audio::micStart(target);
+    if (!Audio::micCapturing()) {
+        // micStart refused (codec init failure) — without this the button
+        // shows Listening over a mic that is capturing nothing.
+        HUD::notify("Mic init failed");
+        return;
+    }
+    // Press feedback tick — a silent button reads as a dead one. AFTER
+    // micStart on purpose: micStart's codec-ensure runs synchronously on this
+    // thread, so the tone's playback task never races those ~40 I2C writes.
+    // The mic picks up the tick's tail; the recognizer shrugs it off.
+    Audio::playTone(1200, 25, 0.18f);
     HUD::setListening(label);
     lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(Theme::StatusAmber), 0);
     lv_obj_set_style_text_color(voiceBtnLabel, lv_color_hex(0x0B1D1A), 0);
@@ -996,7 +1167,16 @@ static void voiceReleaseCb(lv_event_t* e) {
     Serial.println("[Voice] button RELEASED");
     if (!Audio::micCapturing()) return;
     Audio::micStop(false);
-    HUD::clearListening();
+    // "Sent" blip — the audible counterpart of the Sending banner. Deferred
+    // ~350 ms would avoid the capture tail, but micStop's TAIL_DRAIN already
+    // covers the last word and the blip rides behind it harmlessly.
+    Audio::playTone(880, 45, 0.22f);
+    // Between release and voice_result there is an upload + a transcription —
+    // seconds of real work. Show it, or every slow round trip reads as a
+    // dropped one. Whatever arrives next (transcript, error, empty-capture
+    // notice) replaces this state; a deadline in voiceTick() catches the case
+    // where nothing ever arrives.
+    voiceUiPost(VoiceUiOp::WAITING, "Sending...");
     lv_obj_set_style_bg_color(voiceBtn, lv_color_hex(0x1D4A42), 0);
     lv_obj_set_style_text_color(voiceBtnLabel, lv_color_hex(Theme::HUDText), 0);
     lv_label_set_text(voiceBtnLabel, "Hold to talk");
@@ -1005,9 +1185,93 @@ static void voiceReleaseCb(lv_event_t* e) {
 // Called from update(): a transient notice has to clear itself, and update() is
 // the only thing already ticking on the LVGL thread.
 static void voiceTick() {
+    VoiceUiCommand command = {VoiceUiOp::NONE, {0}};
+    portENTER_CRITICAL(&voiceUiMux);
+    command = pendingVoiceUi;
+    pendingVoiceUi.op = VoiceUiOp::NONE;
+    portEXIT_CRITICAL(&voiceUiMux);
+
+    if (command.op != VoiceUiOp::NONE) {
+        Serial.printf("[VoiceUI] apply op=%u on core %d\n",
+                      (unsigned)command.op, xPortGetCoreID());
+    }
+    static bool voiceBannerBusy = false;
+    switch (command.op) {
+        case VoiceUiOp::LISTENING:
+            voiceNoticeUntilMs = 0;
+            voiceWaitingDeadlineMs = 0;
+            voiceBannerBusy = true;
+            voiceBannerShow(command.text, Theme::StatusAmber);
+            break;
+        case VoiceUiOp::WAITING:
+            voiceNoticeUntilMs = 0;
+            // Upload (≤15 s HTTP timeout) + transcription; anything past this
+            // deadline means no voice_result is coming.
+            voiceWaitingDeadlineMs = millis() + 25000;
+            voiceBannerBusy = true;
+            voiceBannerShow(command.text, Theme::HUDText);
+            break;
+        case VoiceUiOp::SPEAKING:
+            voiceNoticeUntilMs = 0;
+            voiceWaitingDeadlineMs = 0;
+            voiceBannerBusy = true;
+            voiceBannerShow(command.text, Theme::StatusGreen);
+            break;
+        case VoiceUiOp::NOTICE:
+            voiceWaitingDeadlineMs = 0;
+            voiceBannerBusy = false;
+            snprintf(voiceNotice, sizeof(voiceNotice), "%s", command.text);
+            voiceNoticeUntilMs = millis() + 6000;
+            voiceBannerShow(voiceNotice, Theme::HUDText);
+            break;
+        case VoiceUiOp::HIDE:
+            voiceWaitingDeadlineMs = 0;
+            voiceBannerBusy = false;
+            if (voiceNoticeUntilMs == 0) voiceBannerHide();
+            break;
+        case VoiceUiOp::NONE:
+            break;
+    }
+
+    // New Q&A content while the banner sits idle → refresh the transcript view.
+    if (voiceQADirty && !voiceBannerBusy &&
+        voiceNoticeUntilMs == 0 && voiceWaitingDeadlineMs == 0) {
+        voiceBannerIdle();
+    }
+
     if (voiceNoticeUntilMs && (int32_t)(millis() - voiceNoticeUntilMs) >= 0) {
         voiceNoticeUntilMs = 0;
         if (!Audio::micCapturing()) voiceBannerHide();
+    }
+    if (voiceWaitingDeadlineMs && (int32_t)(millis() - voiceWaitingDeadlineMs) >= 0) {
+        voiceWaitingDeadlineMs = 0;
+        snprintf(voiceNotice, sizeof(voiceNotice), "No response - check daemon");
+        voiceNoticeUntilMs = millis() + 6000;
+        voiceBannerShow(voiceNotice, Theme::StatusAmber);
+    }
+
+    // Keep the button's sub-label naming the session the NEXT hold will speak
+    // to. Throttled: resolving takes the state lock, and the label only
+    // changes when sessions/focus/tap-selection do.
+    static uint32_t lastTargetPollMs = 0;
+    static char lastTargetLabel[64] = {0};
+    uint32_t now = millis();
+    if (voiceBtnTarget && (uint32_t)(now - lastTargetPollMs) >= 500) {
+        lastTargetPollMs = now;
+        char id[32] = {0};
+        char label[96] = {0};
+        char line[64];
+        if (voiceResolveTarget(id, sizeof(id), label, sizeof(label))) {
+            Utf8::sanitizeLvglText(label);
+            snprintf(line, sizeof(line), "%s%s", voiceTargetSid[0] ? "" : "auto: ", label);
+            Utf8::utf8TrimEnd(line);
+        } else {
+            snprintf(line, sizeof(line), "no session");
+        }
+        if (strcmp(line, lastTargetLabel) != 0) {
+            snprintf(lastTargetLabel, sizeof(lastTargetLabel), "%s", line);
+            lv_label_set_text(voiceBtnTarget, line);
+        }
     }
 }
 
@@ -1047,6 +1311,48 @@ static void voiceCreate(lv_obj_t* pane) {
     // and the button would slide left every time the banner appears.
     lv_obj_set_style_opa(voiceBanner, LV_OPA_TRANSP, 0);
 
+    // Speaker volume — two compact steppers between the transcript and the
+    // talk button. Direct Es8311 writes on the UI thread (same bus discipline
+    // as the touch reads that share it), toast for feedback.
+    auto mkVolBtn = [&](const char* txt, lv_event_cb_t cb) {
+        lv_obj_t* b = lv_button_create(row);
+        lv_obj_set_size(b, 48, 76);
+        lv_obj_set_style_radius(b, 12, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x123B35), 0);
+        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(b, lv_color_hex(0x1B3F39), 0);
+        lv_obj_set_style_border_width(b, 1, 0);
+        lv_obj_t* l = lv_label_create(b);
+        lv_obj_set_style_text_font(l, &font_kr_20, 0);
+        lv_obj_set_style_text_color(l, lv_color_hex(Theme::HUDText), 0);
+        lv_label_set_text(l, txt);
+        lv_obj_center(l);
+        lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
+        return b;
+    };
+    mkVolBtn(LV_SYMBOL_VOLUME_MID, [](lv_event_t*) {
+#if defined(BOARD_SPK_CODEC_ES8311)
+        int v = Es8311::volume() - 10;
+        if (v < 20) v = 20;
+        Es8311::setVolume(v);
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Volume %d%%", v);
+        HUD::notify(msg);
+        Audio::playTone(880, 40, 0.2f);
+#endif
+    });
+    mkVolBtn(LV_SYMBOL_VOLUME_MAX, [](lv_event_t*) {
+#if defined(BOARD_SPK_CODEC_ES8311)
+        int v = Es8311::volume() + 10;
+        if (v > 100) v = 100;
+        Es8311::setVolume(v);
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Volume %d%%", v);
+        HUD::notify(msg);
+        Audio::playTone(880, 40, 0.2f);
+#endif
+    });
+
     voiceBtn = lv_button_create(row);
     lv_obj_set_size(voiceBtn, 168, 76);
     lv_obj_set_style_radius(voiceBtn, 16, 0);
@@ -1061,7 +1367,17 @@ static void voiceCreate(lv_obj_t* pane) {
     lv_label_set_text(voiceBtnLabel, "Hold to talk");
     lv_obj_set_style_text_font(voiceBtnLabel, &font_kr_20, 0);
     lv_obj_set_style_text_color(voiceBtnLabel, lv_color_hex(Theme::HUDText), 0);
-    lv_obj_center(voiceBtnLabel);
+    lv_obj_align(voiceBtnLabel, LV_ALIGN_TOP_MID, 0, 8);
+
+    // Sub-label: the session the next hold speaks to (tap a card to change).
+    voiceBtnTarget = lv_label_create(voiceBtn);
+    lv_obj_set_style_text_font(voiceBtnTarget, &font_kr_12, 0);
+    lv_obj_set_style_text_color(voiceBtnTarget, lv_color_hex(0x8FD8CE), 0);
+    lv_label_set_long_mode(voiceBtnTarget, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(voiceBtnTarget, 148);
+    lv_obj_set_style_text_align(voiceBtnTarget, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(voiceBtnTarget, "");
+    lv_obj_align(voiceBtnTarget, LV_ALIGN_BOTTOM_MID, 0, -8);
     // PRESSED/RELEASED, not CLICKED: this is hold-to-talk, and RELEASED still
     // fires when the finger slides off, which is the behaviour we want — a
     // half-committed gesture should close the utterance, not strand it open.
@@ -1290,11 +1606,24 @@ void init(lv_obj_t* parent) {
         lv_obj_clear_flag(cell[i], LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_flex_flow(cell[i], LV_FLEX_FLOW_COLUMN);
         lv_obj_set_flex_align(cell[i], LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+        // Voice builds: a short tap picks this session as the hold-to-talk
+        // target (cyan outline + button sub-label), a long press opens the
+        // detail overlay. This replaces the earlier "passive status tiles"
+        // stance, which dated from when this panel's touch controller had
+        // never reported a point — the mic gave the cards their first real
+        // reason to be pressable. Approve/Deny stay separate child buttons and
+        // do not bubble up here.
+        lv_obj_add_flag(cell[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(cell[i], cellTapCb, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)i);
+        lv_obj_add_event_cb(cell[i], cellLongPressCb, LV_EVENT_LONG_PRESSED, (void*)(intptr_t)i);
+#else
         // Cells are PASSIVE status tiles: everything the user needs is shown inline as text
         // (name · state · tool · activity · meta) and awaiting cells expose explicit Approve/Deny
         // buttons. No tap-to-open detail overlay. Non-clickable so a phantom press does nothing.
         lv_obj_clear_flag(cell[i], LV_OBJ_FLAG_CLICKABLE);
         (void)cellTapCb;
+#endif
 
         // Creature mark — top-right overlay, OUTSIDE the flex flow (IGNORE_LAYOUT)
         cellGlyph[i] = lv_image_create(cell[i]);
@@ -2280,6 +2609,12 @@ void update() {
             bool working  = (strcmp(mc[i].state, "processing") == 0);
             bool idle     = (!awaiting && !working);
             bool linked   = (focusSid[0] && mc[i].sid[0] && strcmp(focusSid, mc[i].sid) == 0);
+#if defined(BOARD_IPS10) && defined(BOARD_HAS_VOICE_CAPTURE)
+            bool voiceSel = (voiceTargetSid[0] && mc[i].sid[0] &&
+                             strcmp(voiceTargetSid, mc[i].sid) == 0);
+#else
+            const bool voiceSel = false;
+#endif
 
             lv_obj_clear_flag(cell[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_pos(cell[i], px, py);     // LVGL no-ops these when unchanged (settled)
@@ -2296,7 +2631,8 @@ void update() {
             for (const char* s = mc[i].activity; *s; s++) sig = sig * 31u + (uint8_t)*s;
             for (uint8_t r = 0; r < mc[i].feedCount; r++)
                 for (const char* s = mc[i].feed[r]; *s; s++) sig = sig * 31u + (uint8_t)*s;
-            sig ^= (uint32_t)mc[i].elapsed + (uint32_t)(pw * 131) + (uint32_t)(ph * 17) + (linked ? 7u : 0u);
+            sig ^= (uint32_t)mc[i].elapsed + (uint32_t)(pw * 131) + (uint32_t)(ph * 17)
+                 + (linked ? 7u : 0u) + (voiceSel ? 13u : 0u);
             if (sig == cellSig[i]) continue;     // settled + unchanged → no LVGL work
             cellSig[i] = sig;
 
@@ -2305,6 +2641,12 @@ void update() {
             // Focus just thickens the same rail.
             lv_obj_set_style_border_width(cell[i], linked ? 4 : 3, 0);
             lv_obj_set_style_border_color(cell[i], lv_color_hex(mc[i].stateCol), 0);
+            // Voice target = cyan outline around the whole card, independent of
+            // the state rail: the selection must stay visible while the state
+            // colour changes underneath it.
+            lv_obj_set_style_outline_width(cell[i], voiceSel ? 3 : 0, 0);
+            lv_obj_set_style_outline_pad(cell[i], 2, 0);
+            lv_obj_set_style_outline_color(cell[i], lv_color_hex(D1_OK), 0);
 
             int innerW = pw - 24; if (innerW < 24) innerW = 24;
 
@@ -2511,29 +2853,54 @@ void update() {
 void setListening(const char* target) {
     char line[128];
     snprintf(line, sizeof(line), "Listening · %s", (target && target[0]) ? target : "(no session)");
-    voiceBannerShow(line, Theme::StatusAmber);
-    voiceNoticeUntilMs = 0;   // a live hold outranks any transient notice
+    voiceUiPost(VoiceUiOp::LISTENING, line);
 }
 
 void clearListening() {
-    if (voiceNoticeUntilMs == 0) voiceBannerHide();
+    voiceUiPost(VoiceUiOp::HIDE, nullptr);
 }
 
 void setSpeaking(const char* text) {
-    char line[160];
+    char line[128];
     snprintf(line, sizeof(line), "Reply · %s", (text && text[0]) ? text : "(playing)");
-    voiceBannerShow(line, Theme::StatusGreen);
-    voiceNoticeUntilMs = 0;
+    voiceUiPost(VoiceUiOp::SPEAKING, line);
 }
 
 void clearSpeaking() {
-    if (voiceNoticeUntilMs == 0) voiceBannerHide();
+    voiceUiPost(VoiceUiOp::HIDE, nullptr);
 }
 
 void notify(const char* text) {
-    snprintf(voiceNotice, sizeof(voiceNotice), "%s", text ? text : "");
-    voiceNoticeUntilMs = millis() + 6000;
-    voiceBannerShow(voiceNotice, Theme::HUDText);
+    voiceUiPost(VoiceUiOp::NOTICE, text);
+}
+
+void pushVoiceQuestion(const char* q) {
+    if (!q || !q[0]) return;
+    char safe[72];
+    snprintf(safe, sizeof(safe), "%s", q);
+    Utf8::sanitizeLvglText(safe);
+    Utf8::utf8TrimEnd(safe);
+    portENTER_CRITICAL(&voiceUiMux);
+    voiceQA[1] = voiceQA[0];
+    snprintf(voiceQA[0].q, sizeof(voiceQA[0].q), "%s", safe);
+    voiceQA[0].a[0] = '\0';
+    if (voiceQACount < 2) voiceQACount++;
+    voiceQADirty = true;
+    portEXIT_CRITICAL(&voiceUiMux);
+}
+
+void setVoiceAnswer(const char* a) {
+    if (!a || !a[0]) return;
+    char safe[96];
+    snprintf(safe, sizeof(safe), "%s", a);
+    Utf8::sanitizeLvglText(safe);
+    Utf8::utf8TrimEnd(safe);
+    portENTER_CRITICAL(&voiceUiMux);
+    if (voiceQACount > 0) {
+        snprintf(voiceQA[0].a, sizeof(voiceQA[0].a), "%s", safe);
+        voiceQADirty = true;
+    }
+    portEXIT_CRITICAL(&voiceUiMux);
 }
 #endif
 

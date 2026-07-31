@@ -31,10 +31,8 @@
 // ({"type":"i2c_diag"}); the same sweep also found unidentified devices at
 // 0x32 and 0x36.
 //
-// BOARD_HAS_AUDIO gates the *mic* / wake-word path only, which is a separate
-// question from playback — playback is live, see BOARD_HAS_SPEAKER below.
-// Capture stays unbuilt: the vendor claims two microphones, nothing has
-// verified them, and the codec's ADC half is unconfigured.
+// BOARD_HAS_AUDIO gates the dormant wake-word path only, which is separate
+// from the verified push-to-talk capture and playback paths below.
 #define BOARD_HAS_AUDIO      0
 
 // ---- Speaker playback via the ES8311 -------------------------------------
@@ -62,3 +60,9 @@
 // rather than a separate PDM peripheral. BOARD_HAS_AUDIO stays 0 — that gates
 // the dormant wake-word path, which is a different feature.
 #define BOARD_HAS_VOICE_CAPTURE  1
+// Utterances buffer whole in PSRAM and POST once to /esp32/voice. Both
+// live-streaming transports lost audio on this board: 115200-baud serial is a
+// ~11 KB/s link under a 32 KB/s capture, and the hosted-C6 WebSocket stalls
+// long enough to overflow any DRAM-sized ring (89/191 frames dropped,
+// 2026-07-30). Same lesson, same fix as the camera's photo path.
+#define BOARD_VOICE_HTTP_UPLOAD  1

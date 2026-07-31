@@ -2,6 +2,7 @@
 #define _LCD_GSL3680_H
 
 #include "esp_lcd_touch.h"
+#include "driver/i2c_master.h"
 
 
 #define MAX_FINGER_NUM      3
@@ -57,7 +58,8 @@ typedef struct _TPDSVR_SIG_T{
 	XY_DATA_T xy_position[3];
 }TPDSVR_SIG_T;
 
-esp_err_t esp_lcd_touch_new_i2c_gsl3680(esp_lcd_panel_io_handle_t io, const esp_lcd_touch_config_t *config, esp_lcd_touch_handle_t *out_touch);
+esp_err_t esp_lcd_touch_new_i2c_gsl3680(i2c_master_bus_handle_t bus, const esp_lcd_touch_config_t *config, esp_lcd_touch_handle_t *out_touch);
+void esp_lcd_touch_gsl3680_set_trace(bool enabled);
 
 #define ESP_LCD_TOUCH_IO_I2C_GSL3680_ADDRESS          (0x40)
 
@@ -67,7 +69,7 @@ typedef struct {
 
 struct fw_data
 {
-	char offset;
+	uint8_t offset;
 	uint32_t val;
 };
 

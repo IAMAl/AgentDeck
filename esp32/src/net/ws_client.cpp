@@ -18,6 +18,13 @@
 #if defined(BOARD_HAS_DVP_CAMERA)
 #include <HTTPClient.h>
 #endif
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+// Upload-failure banner (cross-core-safe slot post; see hud_bar.h). The
+// upload itself is a hand-paced raw socket, not HTTPClient — see
+// pumpVoiceHttp for why that matters on this board.
+#include "../ui/widgets/hud_bar.h"
+#include <esp_heap_caps.h>
+#endif
 #include <WebSocketsClient.h>
 #include <Arduino.h>
 #include <mbedtls/base64.h>
@@ -60,6 +67,82 @@ static size_t audioLen[AUDIO_SLOTS] = {0};
 static int audioHead = 0;
 static int audioCount = 0;
 static SemaphoreHandle_t audioMutex = nullptr;
+#endif
+
+// ── voice utterance HTTP upload (capture task → network core) ──
+// One whole utterance per POST, same shape as the photo path below and for the
+// same reason: this board's live-streaming transports both lost audio. The
+// capture module owns the PSRAM buffer; this holds only a borrowed pointer
+// between queueVoiceHttpUpload() and the blocking POST in pumpVoiceHttp().
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+static const uint8_t* voiceHttpBuf = nullptr;
+static size_t voiceHttpLen = 0;
+static char voiceHttpBoard[16] = {0};
+static char voiceHttpSession[40] = {0};
+static uint32_t voiceHttpRate = 16000;
+static uint32_t voiceHttpMs = 0;
+static volatile bool voiceHttpPending = false;
+static char voiceHttpIp[16] = {0};
+static uint16_t voiceHttpPort = 0;
+static char voiceHttpToken[40] = {0};
+static SemaphoreHandle_t voiceHttpMutex = nullptr;
+// Connect-retry + self-heal state. The hosted-C6 STA wedges when the daemon
+// restarts under it: the old WebSocket stays half-open and NEW TCP connects
+// fail while the STA still reports "connected" (http_-1 at 23:17 and 23:49 on
+// 2026-07-30/31, both minutes after a daemon restart; a board reboot was the
+// only cure). So a failed connect is retried across pump passes, and after two
+// failures the radio is bounced (park→unpark → STA rejoin), which rebuilds the
+// hosted data path without rebooting the board. The utterance stays buffered
+// in PSRAM the whole time.
+static uint8_t voiceHttpAttempts = 0;
+static uint32_t voiceHttpFirstTryMs = 0;
+static bool voiceHttpRejoinKicked = false;
+static constexpr uint32_t VOICE_HTTP_DEADLINE_MS = 30000;
+
+// ── spoken-reply HTTP pull (network core → PSRAM → local playback) ──
+// See queueVoiceReplyDownload in ws_client.h for why this replaces WS binary
+// streaming on this board. The buffer is PSRAM and reused per reply.
+// 4 MB ≈ 131 s of 16 kHz PCM16. The daemon caps spoken replies at 700 chars,
+// and a 576-char Korean answer measured 2.65 MB — the original 2 MB cap
+// silently refused it and the user heard nothing.
+static constexpr size_t REPLY_BUF_MAX = 4 * 1024 * 1024;
+static uint8_t* replyBuf = nullptr;
+static size_t replyLen = 0;
+static uint32_t replyRate = 16000;
+static uint32_t replyExpectedBytes = 0;
+static volatile bool replyDownloadPending = false;
+static volatile bool replyFeeding = false;
+// How much of replyBuf the download loop already fed into the playback ring —
+// the feed task resumes from here rather than restarting the utterance.
+static size_t replyFedOffset = 0;
+
+// Feed the remaining downloaded PCM into the playback ring at the ring's own
+// pace. Dedicated task: the network core must not block for the length of an
+// utterance, and the LVGL core must never touch blocking audio I/O. Playback
+// itself was already started by the download loop (streaming start), so this
+// only continues the feed.
+static void replyFeedTask(void*) {
+    size_t off = replyFedOffset;
+    while (off < replyLen) {
+        size_t chunk = replyLen - off;
+        if (chunk > 2048) chunk = 2048;
+        if (Audio::playbackFeed(replyBuf + off, chunk)) {
+            off += chunk;
+        } else {
+            // Ring full (normal steady state) or playback aborted.
+            if (!Audio::playbackActive()) break;
+            vTaskDelay(pdMS_TO_TICKS(15));
+        }
+    }
+    Audio::playbackEnd();
+    Serial.printf("[VoiceReply] fed %u/%u bytes to playback\n",
+                  (unsigned)off, (unsigned)replyLen);
+    replyFeeding = false;
+#if defined(BOARD_IPS10)
+    HUD::clearSpeaking();
+#endif
+    vTaskDelete(nullptr);
+}
 #endif
 
 // ── photo upload (UI shutter → network core) ──
@@ -172,6 +255,9 @@ void wsInit() {
 #endif
 #if defined(BOARD_HAS_DVP_CAMERA)
     if (!photoMutex) photoMutex = xSemaphoreCreateMutex();
+#endif
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+    if (!voiceHttpMutex) voiceHttpMutex = xSemaphoreCreateMutex();
 #endif
 }
 
@@ -474,6 +560,352 @@ bool audioBacklogged() {
 }
 #endif  // BOARD_HAS_VOICE_CAPTURE
 
+#if !defined(BOARD_VOICE_HTTP_UPLOAD)
+// Boards without the HTTP voice path keep the API but always refuse, which
+// routes the capture module down its live-streaming branch.
+bool queueVoiceHttpUpload(const uint8_t*, size_t, const char*, const char*,
+                          uint32_t, uint32_t) { return false; }
+bool voiceUploadBusy() { return false; }
+bool queueVoiceReplyDownload(uint32_t, uint32_t) { return false; }
+#else
+bool queueVoiceReplyDownload(uint32_t expectedBytes, uint32_t sampleRate) {
+    if (expectedBytes == 0 || expectedBytes > REPLY_BUF_MAX) return false;
+    if (!Net::wifiConnected()) return false;
+    if (replyDownloadPending) return false;   // mid-transfer — let it finish
+    if (replyFeeding) {
+        // A newer answer preempts the one still playing: the user asked a new
+        // question and the old audio is now just in the way. playbackStop()
+        // makes the feed task exit; give it a moment, then proceed.
+        Audio::playbackStop();
+        for (int i = 0; i < 40 && replyFeeding; i++) vTaskDelay(pdMS_TO_TICKS(10));
+        if (replyFeeding) return false;
+    }
+    if (!replyBuf) {
+        replyBuf = (uint8_t*)heap_caps_malloc(REPLY_BUF_MAX, MALLOC_CAP_SPIRAM);
+        if (!replyBuf) {
+            Serial.println("[VoiceReply] PSRAM buffer alloc failed");
+            return false;
+        }
+    }
+    replyExpectedBytes = expectedBytes;
+    replyRate = (sampleRate >= 8000 && sampleRate <= 48000) ? sampleRate : 16000;
+    replyDownloadPending = true;
+    return true;
+}
+
+// Download the staged reply on the network core. Paced small reads: TCP flow
+// control means the daemon can only send what this loop consumes, which is
+// the whole point — the hosted RX path never sees an unpaced burst.
+static void pumpVoiceReplyDownload() {
+    if (!replyDownloadPending) return;
+    char ip[16] = {0};
+    uint16_t port = 0;
+    char token[40] = {0};
+    if (savedIp[0] && savedPort != 0) {
+        strncpy(ip, savedIp, sizeof(ip) - 1);
+        port = savedPort;
+        strncpy(token, savedToken, sizeof(token) - 1);
+    } else {
+        lockState();
+        strncpy(ip, g_state.bridgeIp, sizeof(ip) - 1); ip[sizeof(ip) - 1] = '\0';
+        port = g_state.bridgePort;
+        strncpy(token, g_state.authToken, sizeof(token) - 1); token[sizeof(token) - 1] = '\0';
+        unlockState();
+    }
+    if (!ip[0] || port == 0) { replyDownloadPending = false; return; }
+
+    WiFiClient client;
+    bool ok = false;
+    if (client.connect(ip, port, 3000)) {
+        char hdr[240];
+        int hlen = snprintf(hdr, sizeof(hdr),
+                 "GET /esp32/voice-reply?board=ips_10&token=%s HTTP/1.1\r\n"
+                 "Host: %s:%u\r\nConnection: close\r\n\r\n",
+                 token, ip, (unsigned)port);
+        client.write((const uint8_t*)hdr, (size_t)hlen);
+        // Skip the response headers: read up to the blank line, byte-wise —
+        // slow but the header is ~150 bytes and this runs once per reply.
+        uint32_t hdrStart = millis();
+        int state = 0;   // counts the \r\n\r\n sequence
+        bool status200 = false;
+        char line[96]; size_t li = 0;
+        while (state < 4 && client.connected() && (uint32_t)(millis() - hdrStart) < 8000) {
+            int c = client.read();
+            if (c < 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
+            if (li < sizeof(line) - 1 && c != '\r' && c != '\n') line[li++] = (char)c;
+            if (c == '\n' || c == '\r') {
+                if (li > 0) {
+                    line[li] = '\0';
+                    if (strncmp(line, "HTTP/1.1 200", 12) == 0) status200 = true;
+                    li = 0;
+                }
+            }
+            state = (c == '\r' && (state == 0 || state == 2)) ? state + 1
+                  : (c == '\n' && (state == 1 || state == 3)) ? state + 1 : 0;
+        }
+        if (status200 && state == 4) {
+            size_t off = 0;
+            size_t fed = 0;
+            bool playbackStarted = false;
+            uint32_t lastDataMs = millis();
+            while (off < replyExpectedBytes &&
+                   (uint32_t)(millis() - lastDataMs) < 8000) {
+                size_t want = replyExpectedBytes - off;
+                if (want > 2048) want = 2048;
+                int got = client.read(replyBuf + off, want);
+                if (got > 0) {
+                    off += (size_t)got;
+                    lastDataMs = millis();
+                } else if (!client.connected()) {
+                    break;
+                } else {
+                    vTaskDelay(pdMS_TO_TICKS(5));
+                }
+                // Streaming start: begin playback as soon as one second of
+                // audio is down and keep feeding while downloading. The
+                // download outruns playback ~25:1, so waiting for the whole
+                // body just added N seconds of silence — a 2 MB answer took
+                // 15+ s to make its first sound, which read as "no playback".
+                if (!playbackStarted && off >= 32000) {
+                    Audio::playbackBegin(replyRate);
+                    playbackStarted = true;
+                }
+                if (playbackStarted && fed < off) {
+                    size_t chunk = off - fed;
+                    if (chunk > 2048) chunk = 2048;
+                    if (Audio::playbackFeed(replyBuf + fed, chunk)) fed += chunk;
+                }
+            }
+            replyLen = off;
+            replyFedOffset = fed;
+            ok = (off == replyExpectedBytes);
+            if (ok && !playbackStarted) {
+                // Short reply — never crossed the streaming threshold.
+                Audio::playbackBegin(replyRate);
+            }
+        }
+        client.stop();
+    }
+    replyDownloadPending = false;
+    Serial.printf("[VoiceReply] download %s (%u/%u bytes, %u fed inline)\n",
+                  ok ? "complete" : "FAILED",
+                  (unsigned)replyLen, (unsigned)replyExpectedBytes,
+                  (unsigned)replyFedOffset);
+    if (ok && replyLen > 0) {
+        replyFeeding = true;
+        if (xTaskCreate(replyFeedTask, "reply_feed", 4096, nullptr, 2, nullptr) != pdPASS) {
+            replyFeeding = false;
+#if defined(BOARD_IPS10)
+            HUD::notify("Reply playback task failed");
+#endif
+        }
+    } else {
+        // A streaming start may have partial audio in flight — cut it rather
+        // than let it starve out over 8 s.
+        Audio::playbackStop();
+#if defined(BOARD_IPS10)
+        HUD::notify("Reply download failed");
+        HUD::clearSpeaking();
+#endif
+    }
+}
+#endif  // !BOARD_VOICE_HTTP_UPLOAD (stubs) / implementation
+
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+bool queueVoiceHttpUpload(const uint8_t* pcm, size_t len, const char* board,
+                          const char* sessionId, uint32_t sampleRate,
+                          uint32_t durationMs) {
+    if (!pcm || len == 0 || !voiceHttpMutex) return false;
+    if (!Net::wifiConnected()) return false;
+    // Endpoint: prefer the address this client actually connected to — same
+    // rationale as the photo path (a fresh boot has a live WS before g_state
+    // carries a bridge endpoint).
+    char ip[16] = {0};
+    uint16_t port = 0;
+    char token[40] = {0};
+    if (savedIp[0] && savedPort != 0) {
+        strncpy(ip, savedIp, sizeof(ip) - 1);
+        port = savedPort;
+        strncpy(token, savedToken, sizeof(token) - 1);
+    } else {
+        lockState();
+        strncpy(ip, g_state.bridgeIp, sizeof(ip) - 1); ip[sizeof(ip) - 1] = '\0';
+        port = g_state.bridgePort;
+        strncpy(token, g_state.authToken, sizeof(token) - 1); token[sizeof(token) - 1] = '\0';
+        unlockState();
+    }
+    if (!ip[0] || port == 0) {
+        Serial.println("[Voice] no bridge endpoint for HTTP upload");
+        return false;
+    }
+
+    bool taken = false;
+    xSemaphoreTake(voiceHttpMutex, portMAX_DELAY);
+    if (!voiceHttpPending) {
+        voiceHttpBuf = pcm;
+        voiceHttpLen = len;
+        strncpy(voiceHttpBoard, board ? board : "esp32", sizeof(voiceHttpBoard) - 1);
+        voiceHttpBoard[sizeof(voiceHttpBoard) - 1] = '\0';
+        strncpy(voiceHttpSession, sessionId ? sessionId : "", sizeof(voiceHttpSession) - 1);
+        voiceHttpSession[sizeof(voiceHttpSession) - 1] = '\0';
+        voiceHttpRate = sampleRate;
+        voiceHttpMs = durationMs;
+        strncpy(voiceHttpIp, ip, sizeof(voiceHttpIp) - 1);
+        voiceHttpPort = port;
+        strncpy(voiceHttpToken, token, sizeof(voiceHttpToken) - 1);
+        voiceHttpAttempts = 0;
+        voiceHttpFirstTryMs = 0;
+        voiceHttpRejoinKicked = false;
+        voiceHttpPending = true;
+        taken = true;
+    }
+    xSemaphoreGive(voiceHttpMutex);
+    return taken;
+}
+
+bool voiceUploadBusy() { return voiceHttpPending; }
+
+// Perform the pending POST on the network core. Blocking for the duration —
+// same trade as the photo path: the UI core keeps rendering, and a state
+// machine buys nothing for a body this small (≤960 KB, typically ~100-200 KB).
+//
+// Hand-rolled rather than HTTPClient, and that is load-bearing: HTTPClient's
+// POST hands the whole body to one WiFiClient::write(), and on the P4 the
+// resulting segment burst exhausted ESP-Hosted's TX buffer pool — the hosted
+// glue ASSERTS instead of returning an error (`transport_drv_sta_tx
+// (copy_buff)`) and reboots the board. Measured on the very first real
+// utterance, 2026-07-31. Writing ≤1 KB per iteration with a small yield keeps
+// only a couple of TCP segments outstanding, which the SDIO link drains
+// comfortably; ~1 KB / 4 ms ≈ 250 KB/s still uploads a 6 s utterance in
+// under a second.
+static void pumpVoiceHttp() {
+    if (!voiceHttpMutex || !voiceHttpPending) return;
+    xSemaphoreTake(voiceHttpMutex, portMAX_DELAY);
+    const uint8_t* buf = voiceHttpBuf;
+    size_t len = voiceHttpLen;
+    char ip[16];
+    uint16_t port = voiceHttpPort;
+    char path[220];
+    strncpy(ip, voiceHttpIp, sizeof(ip) - 1); ip[sizeof(ip) - 1] = '\0';
+    snprintf(path, sizeof(path),
+             "/esp32/voice?board=%s&sessionId=%s&rate=%lu&ms=%lu&token=%s",
+             voiceHttpBoard, voiceHttpSession,
+             (unsigned long)voiceHttpRate, (unsigned long)voiceHttpMs, voiceHttpToken);
+    xSemaphoreGive(voiceHttpMutex);
+    if (!buf || len == 0) { voiceHttpPending = false; return; }
+
+    // Multi-pass retry with a radio bounce: one pump pass makes ONE quick
+    // connect attempt (3 s cap) so the network core keeps servicing serial/WS
+    // between tries; the utterance stays latched in PSRAM until the deadline.
+    uint32_t now = millis();
+    if (voiceHttpFirstTryMs == 0) voiceHttpFirstTryMs = now;
+    if ((uint32_t)(now - voiceHttpFirstTryMs) > VOICE_HTTP_DEADLINE_MS) {
+        Serial.println("[Voice] upload deadline exceeded — giving up");
+        HUD::notify("Voice upload failed - network wedged");
+        char diag[120];
+        snprintf(diag, sizeof(diag),
+                 "{\"type\":\"voice_abort\",\"reason\":\"deadline_%u_tries\",\"total\":%u}",
+                 (unsigned)voiceHttpAttempts, (unsigned)len);
+        queueOutbound(diag);
+        xSemaphoreTake(voiceHttpMutex, portMAX_DELAY);
+        voiceHttpBuf = nullptr;
+        voiceHttpLen = 0;
+        voiceHttpPending = false;
+        xSemaphoreGive(voiceHttpMutex);
+        return;
+    }
+    if (!Net::wifiConnected()) return;   // rejoin in progress — try next pass
+
+    // The hosted transport allocates its TX copies from internal heap and
+    // aborts the whole board when that fails. Better to refuse one utterance
+    // than to reboot mid-shift.
+    size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    Serial.printf("[Voice] HTTP upload attempt %u: %u bytes, internal heap %u KB\n",
+                  (unsigned)(voiceHttpAttempts + 1), (unsigned)len,
+                  (unsigned)(freeInternal / 1024));
+    int code = -1;
+    if (freeInternal < 60 * 1024) {
+        Serial.println("[Voice] internal heap too low for WiFi TX — refusing upload");
+        code = -3;
+    } else {
+        WiFiClient client;
+        if (client.connect(ip, port, 3000)) {
+            char hdr[360];
+            int hlen = snprintf(hdr, sizeof(hdr),
+                     "POST %s HTTP/1.1\r\nHost: %s:%u\r\n"
+                     "Content-Type: application/octet-stream\r\n"
+                     "Content-Length: %u\r\nConnection: close\r\n\r\n",
+                     path, ip, (unsigned)port, (unsigned)len);
+            client.write((const uint8_t*)hdr, (size_t)hlen);
+            size_t off = 0;
+            uint32_t startMs = millis();
+            while (off < len && client.connected() &&
+                   (uint32_t)(millis() - startMs) < 20000) {
+                size_t chunk = len - off;
+                if (chunk > 1024) chunk = 1024;
+                size_t wrote = client.write(buf + off, chunk);
+                if (wrote == 0) { vTaskDelay(pdMS_TO_TICKS(20)); continue; }
+                off += wrote;
+                vTaskDelay(pdMS_TO_TICKS(4));   // pace the hosted SDIO TX path
+            }
+            if (off == len) {
+                // "HTTP/1.1 200 OK" — enough of the status line to judge.
+                char status[16] = {0};
+                size_t got = 0;
+                uint32_t waitMs = millis();
+                while (got < sizeof(status) - 1 &&
+                       (uint32_t)(millis() - waitMs) < 15000 && client.connected()) {
+                    int avail = client.available();
+                    if (avail <= 0) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
+                    int r = client.read((uint8_t*)status + got, sizeof(status) - 1 - got);
+                    if (r > 0) got += (size_t)r;
+                }
+                if (got >= 12 && strncmp(status, "HTTP/1.1 ", 9) == 0) {
+                    code = atoi(status + 9);
+                }
+            } else {
+                code = -2;   // body send stalled/aborted
+            }
+            client.stop();
+        } else {
+            // Connect refused/timed out — the wedge signature. Keep the
+            // utterance and retry next pass; after two failures bounce the
+            // radio so the hosted STA rebuilds its data path.
+            voiceHttpAttempts++;
+            Serial.printf("[Voice] connect failed (attempt %u)\n", (unsigned)voiceHttpAttempts);
+            if (voiceHttpAttempts >= 2 && !voiceHttpRejoinKicked) {
+                voiceHttpRejoinKicked = true;
+                Serial.println("[Voice] bouncing STA to un-wedge hosted link");
+                HUD::notify("Network wedged - rejoining WiFi...");
+                Net::wifiSetRadioParked(true);
+                Net::wifiSetRadioParked(false);
+            }
+            vTaskDelay(pdMS_TO_TICKS(200));
+            return;   // still pending; deadline above bounds the whole affair
+        }
+    }
+    Serial.printf("[Voice] HTTP upload %u bytes -> %d (attempt %u)\n",
+                  (unsigned)len, code, (unsigned)(voiceHttpAttempts + 1));
+    if (code != 200) {
+        // The daemon never got the utterance, so no voice_result is coming —
+        // report locally AND on the transport the daemon does read.
+        char note[64];
+        snprintf(note, sizeof(note), "Voice upload failed (http %d)", code);
+        HUD::notify(note);
+        char diag[120];
+        snprintf(diag, sizeof(diag),
+                 "{\"type\":\"voice_abort\",\"reason\":\"http_%d\",\"total\":%u}",
+                 code, (unsigned)len);
+        queueOutbound(diag);
+    }
+    xSemaphoreTake(voiceHttpMutex, portMAX_DELAY);
+    voiceHttpBuf = nullptr;
+    voiceHttpLen = 0;
+    voiceHttpPending = false;
+    xSemaphoreGive(voiceHttpMutex);
+}
+#endif  // BOARD_VOICE_HTTP_UPLOAD
+
 // Enqueue an outbound JSON command from any task (typically CORE_UI). Dropped if
 // the small queue is full — interactive commands are user-paced, not bursty.
 void queueOutbound(const char* json) {
@@ -553,6 +985,10 @@ void pumpOutbound() {
 #if defined(BOARD_HAS_DVP_CAMERA)
     pumpPhotoHttp();
     pumpPhoto();
+#endif
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+    pumpVoiceHttp();
+    pumpVoiceReplyDownload();
 #endif
 }
 

@@ -71,6 +71,36 @@ bool queueAudioChunk(const uint8_t* data, size_t len);
 bool audioBacklogged();
 
 /**
+ * Upload one whole captured utterance as a single HTTP POST to the daemon
+ * (`POST /esp32/voice`, raw PCM16LE body). Preferred whenever WiFi is up, for
+ * the same reason as the photo path: live streaming lost audio on both of this
+ * board's transports (serial too slow, hosted-C6 WS stalls overflowed the DRAM
+ * ring), while TCP handles ordering and retransmit. Does NOT take ownership —
+ * the capture module keeps the buffer and must not start a new utterance while
+ * voiceUploadBusy(). Returns false when an upload is already pending or no
+ * bridge endpoint is known.
+ */
+bool queueVoiceHttpUpload(const uint8_t* pcm, size_t len, const char* board,
+                          const char* sessionId, uint32_t sampleRate,
+                          uint32_t durationMs);
+
+/** True from queueVoiceHttpUpload() until the POST completes or fails. */
+bool voiceUploadBusy();
+
+/**
+ * Fetch a spoken reply the daemon has staged (`GET /esp32/voice-reply`) into
+ * PSRAM and play it locally. The push alternative — WS binary streaming — is
+ * what this replaces on the hosted-C6 board: sustained inbound frames both
+ * stuttered (RX jitter against a thin realtime-paced ring) and could exhaust
+ * the hosted RX pool, which asserts and reboots the board
+ * (`sdio_push_data_to_queue (pkt_rxbuff)`, observed twice on 2026-07-31
+ * during reply playback). A pull download is paced by this board's own reads
+ * via TCP flow control, and playback then runs entirely from memory.
+ * Returns false when a download/playback is already in progress.
+ */
+bool queueVoiceReplyDownload(uint32_t expectedBytes, uint32_t sampleRate);
+
+/**
  * Upload a captured JPEG as a single HTTP POST to the daemon
  * (`POST /esp32/photo`). Preferred whenever WiFi is up: TCP handles ordering
  * and retransmit, so neither the CDC's 64-byte FIFO holes nor the WS client's

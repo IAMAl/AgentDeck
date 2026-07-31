@@ -15,6 +15,17 @@
 #include "speaker_playback.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#if defined(BOARD_SPK_CODEC_ES8311)
+#include "es8311_codec.h"
+#endif
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+#include <esp_heap_caps.h>
+#include "../net/wifi_manager.h"   // Net::wifiConnected — the HTTP-mode gate
+// Local outcome banners for cases the daemon never learns about (empty
+// utterance, refused upload). Cross-core-safe: HUD entry points publish a
+// fixed-size slot that HUD::update() applies on the LVGL core.
+#include "../ui/widgets/hud_bar.h"
+#endif
 #endif
 
 // The daemon keys the utterance by board, so this must match device_info.
@@ -50,6 +61,25 @@ static bool s_closing = false;
 static bool s_closingCancel = false;
 static uint32_t s_closingSinceMs = 0;
 static uint32_t s_closingDurationMs = 0;
+static uint32_t s_capturedBytes = 0;
+static uint32_t s_queuedBytes = 0;
+static uint32_t s_droppedFrames = 0;
+
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+// Whole-utterance PSRAM buffer for the HTTP upload path. Streaming the PCM
+// live was tried twice and lost audio both times: 115200-baud serial tops out
+// at ~11 KB/s against the 32 KB/s capture rate, and the hosted-C6 WebSocket
+// stalled long enough to overflow the 6-slot DRAM ring (89 of 191 frames
+// dropped on a 6 s utterance, 2026-07-30). Transcription only starts at
+// utterance end anyway, so buffering everything and POSTing once — the same
+// move that fixed the camera (photo → HTTP, c7ee9ee9) — costs nothing but
+// PSRAM this board has to spare.
+static constexpr size_t UTTER_BUF_BYTES = SAMPLE_RATE * 2u * (MAX_UTTERANCE_MS / 1000u);
+static uint8_t* s_utterBuf = nullptr;
+static size_t s_utterLen = 0;
+static bool s_httpActive = false;      // this utterance rides HTTP, not WS/serial
+static char s_session[40] = {0};
+#endif
 
 // The only board-dependent part of capture. Everything below — tail drain,
 // backlog ordering, runaway guard — is shared, and deliberately so: those rules
@@ -60,6 +90,30 @@ static size_t micReadFrame() {
 #else
     return Audio::captureRead((uint8_t*)s_buf, sizeof(s_buf));
 #endif
+}
+
+static void micQueueFrame(size_t got) {
+    if (got == 0) return;
+    s_capturedBytes += got;
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+    if (s_httpActive) {
+        // Sized to the runaway cap, so this only trips on the tail-drain frames
+        // of a maximum-length utterance.
+        if (s_utterLen + got <= UTTER_BUF_BYTES) {
+            memcpy(s_utterBuf + s_utterLen, s_buf, got);
+            s_utterLen += got;
+            s_queuedBytes += got;
+        } else {
+            s_droppedFrames++;
+        }
+        return;
+    }
+#endif
+    if (Net::queueAudioChunk((const uint8_t*)s_buf, got)) {
+        s_queuedBytes += got;
+    } else {
+        s_droppedFrames++;
+    }
 }
 
 #if !defined(BOARD_PIN_MIC_DATA)
@@ -96,6 +150,16 @@ bool micInit() {
     Serial.println(s_ready ? "[Mic] codec ADC ready (16 kHz mono, shared I2S)"
                            : "[Mic] shared I2S unavailable — push-to-talk disabled");
 #endif
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+    if (s_ready && !s_utterBuf) {
+        // PSRAM only: 960 KB of internal RAM does not exist on any board, and
+        // a DRAM fallback here would quietly starve LVGL + ESP-Hosted.
+        s_utterBuf = (uint8_t*)heap_caps_malloc(UTTER_BUF_BYTES, MALLOC_CAP_SPIRAM);
+        Serial.printf("[Mic] HTTP utterance buffer %s (%u KB PSRAM)\n",
+                      s_utterBuf ? "ready" : "unavailable — will stream instead",
+                      (unsigned)(UTTER_BUF_BYTES / 1024));
+    }
+#endif
     return s_ready;
 }
 
@@ -108,16 +172,43 @@ uint32_t micElapsedMs(uint32_t nowMs) {
 
 void micStart(const char* sessionId) {
     if (!s_ready || s_capturing) return;
+#if !defined(BOARD_PIN_MIC_DATA) && defined(BOARD_SPK_CODEC_ES8311)
+    // The codec ADC only runs once begin() has programmed it — on a cold boot
+    // that never played audio, capture otherwise reads pure silence, which
+    // reached the recognizer as "No speech detected". mic_test knew to do this;
+    // push-to-talk didn't. begin() needs MCLK already up, which micInit's
+    // playbackInit guaranteed. ~40 I2C writes, once per boot.
+    if (!Es8311::ready() && !Es8311::begin(SAMPLE_RATE)) {
+        Serial.println("[Mic] ES8311 init failed — capture would be silence");
+        return;
+    }
+#endif
     s_closing = false;
     s_capturing = true;
     s_startedMs = millis();
-    char frame[160];
-    snprintf(frame, sizeof(frame),
-             "{\"type\":\"voice_begin\",\"board\":\"" MIC_BOARD_NAME "\",\"format\":\"pcm16\","
-             "\"sampleRate\":%lu,\"sessionId\":\"%s\"}",
-             (unsigned long)SAMPLE_RATE, sessionId ? sessionId : "");
-    Net::queueOutbound(frame);
-    Serial.println("[Mic] capture start");
+    s_capturedBytes = 0;
+    s_queuedBytes = 0;
+    s_droppedFrames = 0;
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+    s_utterLen = 0;
+    snprintf(s_session, sizeof(s_session), "%s", sessionId ? sessionId : "");
+    // Per-utterance decision, not a build-time one: WiFi can be down, the
+    // buffer can have failed to allocate, and the previous upload can still be
+    // in flight. Any of those falls back to the live-streaming path.
+    s_httpActive = s_utterBuf != nullptr && Net::wifiConnected() && !Net::voiceUploadBusy();
+    if (s_httpActive) {
+        Serial.println("[Mic] capture start (HTTP buffered)");
+    } else
+#endif
+    {
+        char frame[160];
+        snprintf(frame, sizeof(frame),
+                 "{\"type\":\"voice_begin\",\"board\":\"" MIC_BOARD_NAME "\",\"format\":\"pcm16\","
+                 "\"sampleRate\":%lu,\"sessionId\":\"%s\"}",
+                 (unsigned long)SAMPLE_RATE, sessionId ? sessionId : "");
+        Net::queueOutbound(frame);
+        Serial.println("[Mic] capture start");
+    }
 #if !defined(BOARD_PIN_MIC_DATA)
     if (!s_pumpTask) {
         xTaskCreate(micPumpTask, "mic_pump", 4096, nullptr, 3, &s_pumpTask);
@@ -131,22 +222,48 @@ void micPump() {
         // Phase 1: keep draining the mic so the tail of the last word is kept.
         if (since < TAIL_DRAIN_MS) {
             size_t got = micReadFrame();
-            if (got > 0) Net::queueAudioChunk((const uint8_t*)s_buf, got);
+            micQueueFrame(got);
             return;
         }
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+        if (s_httpActive) {
+            // Whole utterance is in PSRAM; hand it to the network core for one
+            // POST. No voice_end frame — the HTTP body is the utterance.
+            s_closing = false;
+            if (s_closingCancel || s_utterLen == 0) {
+                Serial.printf("[Mic] capture discarded (%s)\n",
+                              s_closingCancel ? "cancelled" : "empty");
+                if (!s_closingCancel) HUD::notify("Heard nothing");
+                return;
+            }
+            if (!Net::queueVoiceHttpUpload(s_utterBuf, s_utterLen, MIC_BOARD_NAME,
+                                           s_session, SAMPLE_RATE, s_closingDurationMs)) {
+                Serial.println("[Mic] HTTP voice upload refused — utterance dropped");
+                HUD::notify("Voice upload busy — try again");
+            }
+            Serial.printf("[Mic] capture stop (%lums, %lu bytes -> HTTP)\n",
+                          (unsigned long)s_closingDurationMs, (unsigned long)s_utterLen);
+            return;
+        }
+#endif
         // Phase 2: voice_end must not overtake the audio still in flight.
         // pumpOutbound() drains the JSON outbox BEFORE the PCM ring, so an
         // end frame queued while frames are pending reaches the daemon first
         // and the utterance is finalized without its tail.
         if (Net::audioBacklogged() && since < END_FLUSH_TIMEOUT_MS) return;
-        char frame[96];
+        char frame[160];
         snprintf(frame, sizeof(frame),
-                 "{\"type\":\"voice_end\",\"durationMs\":%lu,\"cancel\":%s}",
-                 (unsigned long)s_closingDurationMs, s_closingCancel ? "true" : "false");
+                 "{\"type\":\"voice_end\",\"durationMs\":%lu,\"cancel\":%s,"
+                 "\"capturedBytes\":%lu,\"queuedBytes\":%lu,\"droppedFrames\":%lu}",
+                 (unsigned long)s_closingDurationMs, s_closingCancel ? "true" : "false",
+                 (unsigned long)s_capturedBytes, (unsigned long)s_queuedBytes,
+                 (unsigned long)s_droppedFrames);
         Net::queueOutbound(frame);
-        Serial.printf("[Mic] capture stop (%lums%s, tail %lums)\n",
+        Serial.printf("[Mic] capture stop (%lums%s, tail %lums, %lu/%lu bytes, %lu dropped)\n",
                       (unsigned long)s_closingDurationMs,
-                      s_closingCancel ? ", cancelled" : "", (unsigned long)since);
+                      s_closingCancel ? ", cancelled" : "", (unsigned long)since,
+                      (unsigned long)s_queuedBytes, (unsigned long)s_capturedBytes,
+                      (unsigned long)s_droppedFrames);
         s_closing = false;
         return;
     }
@@ -160,7 +277,7 @@ void micPump() {
     if (got == 0) return;
     // A full ring means the link cannot keep up; drop this frame rather than
     // block — late audio is worthless and stalling here would also stall the UI.
-    Net::queueAudioChunk((const uint8_t*)s_buf, got);
+    micQueueFrame(got);
 }
 
 void micStop(bool cancel) {

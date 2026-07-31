@@ -35,6 +35,13 @@ bool playbackActive();
 /** Abort immediately (link lost, user turned the knob away). */
 void playbackStop();
 
+/**
+ * Short generated UI tone (press tick, sent blip) through the normal playback
+ * path — no asset, no allocation, and a free codec warm-up on ES8311 boards.
+ * No-op while a real reply is active. `amplitude` 0..1.
+ */
+void playTone(uint32_t freqHz, uint32_t ms, float amplitude);
+
 #if defined(BOARD_PIN_MIC_DIN)
 /**
  * Capture side of a full-duplex codec, reading from the same I2S instance the

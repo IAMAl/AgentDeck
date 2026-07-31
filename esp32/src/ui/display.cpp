@@ -635,6 +635,11 @@ static i2c_master_bus_handle_t i2c_handle = nullptr;
 static uint16_t* rotated_buf = nullptr;
 static ppa_client_handle_t ppaClient = nullptr;   // null → fall back to CPU transpose
 static size_t rotBufSizeG = 0;
+// One device-lifetime PPA target, sized to the largest LVGL flush slice below:
+// 1280 × 16 × RGB565 = 40,960 bytes. Three DMA-capable buffers share scarce
+// internal SRAM with ESP-Hosted; 24 lines left too little contiguous headroom
+// for the C6 SDIO RX pool and produced a deterministic reboot loop.
+static constexpr size_t IPS10_DRAW_LINES = 16;
 #if defined(IPS10_PERF_HUD)
 volatile uint32_t g_flushInnerUs = 0;   // accumulated PPA+push time within the current frame
 volatile uint32_t g_bufInternal = 0;    // 1 = LVGL draw buffer is in internal SRAM, 0 = PSRAM
@@ -1023,6 +1028,7 @@ void requestPortrait() { s_stripPortrait = true; }
 #if defined(BOARD_IPS10)
 void setTouchTrace(bool on) {
     s_touchTrace = on;
+    esp_lcd_touch_gsl3680_set_trace(on);
     Serial.printf("[TouchTrace] %s\n", on ? "on — tap the panel" : "off");
 }
 
@@ -1252,12 +1258,10 @@ void displayInit() {
     }
     jc_tft->begin();
 
-    // Allocate software transposition buffer.
-    // Max width of logical area is 1280 (BOARD_NATIVE_H).
-    // Max height of logical area is 40.
-    // Size = 1280 * 40 * sizeof(uint16_t) = 102400 bytes.
+    // Allocate one device-lifetime software/PPA transposition buffer. It must
+    // stay in internal DMA SRAM for PPA; size is bounded by IPS10_DRAW_LINES.
     {
-        size_t rotBufSize = BOARD_NATIVE_H * 40 * sizeof(uint16_t);
+        size_t rotBufSize = BOARD_NATIVE_H * IPS10_DRAW_LINES * sizeof(uint16_t);
         rotBufSizeG = rotBufSize;
         // 64-byte (L1 cache line) aligned — required when the PPA writes into this buffer.
         rotated_buf = (uint16_t*)heap_caps_aligned_alloc(64, rotBufSize, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -1296,27 +1300,26 @@ void displayInit() {
     i2c_bus_conf.i2c_port = I2C_NUM_1;
     i2c_bus_conf.sda_io_num = (gpio_num_t)BOARD_PIN_TOUCH_SDA;
     i2c_bus_conf.scl_io_num = (gpio_num_t)BOARD_PIN_TOUCH_SCL;
+    i2c_bus_conf.glitch_ignore_cnt = 7;
     i2c_bus_conf.flags.enable_internal_pullup = 1;
     if (i2c_new_master_bus(&i2c_bus_conf, &i2c_handle) == ESP_OK) {
-        esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-        esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GSL3680_CONFIG();
-        tp_io_config.scl_speed_hz = 100000;   // 100 kHz — 400 kHz risked I2C noise → phantom touches
-        if (esp_lcd_new_panel_io_i2c(i2c_handle, &tp_io_config, &tp_io_handle) == ESP_OK) {
-            esp_lcd_touch_config_t tp_cfg;
-            memset(&tp_cfg, 0, sizeof(tp_cfg));
-            tp_cfg.x_max = BOARD_NATIVE_W;
-            tp_cfg.y_max = BOARD_NATIVE_H;
-            tp_cfg.rst_gpio_num = (gpio_num_t)BOARD_PIN_TOUCH_RST;
-            tp_cfg.int_gpio_num = (gpio_num_t)BOARD_PIN_TOUCH_INT;
-            tp_cfg.levels.reset = 0;
-            tp_cfg.levels.interrupt = 0;
-            tp_cfg.flags.swap_xy = 0;
-            tp_cfg.flags.mirror_x = 0;
-            tp_cfg.flags.mirror_y = 1;
-            esp_lcd_touch_new_i2c_gsl3680(tp_io_handle, &tp_cfg, &tp_handle);
-            Serial.println("[Display] Touch GSL3680 initialized");
+        esp_lcd_touch_config_t tp_cfg;
+        memset(&tp_cfg, 0, sizeof(tp_cfg));
+        tp_cfg.x_max = BOARD_NATIVE_W;
+        tp_cfg.y_max = BOARD_NATIVE_H;
+        tp_cfg.rst_gpio_num = (gpio_num_t)BOARD_PIN_TOUCH_RST;
+        tp_cfg.int_gpio_num = (gpio_num_t)BOARD_PIN_TOUCH_INT;
+        tp_cfg.levels.reset = 0;
+        tp_cfg.levels.interrupt = 0;
+        tp_cfg.flags.swap_xy = 0;
+        tp_cfg.flags.mirror_x = 0;
+        tp_cfg.flags.mirror_y = 1;
+        esp_err_t touchErr = esp_lcd_touch_new_i2c_gsl3680(i2c_handle, &tp_cfg, &tp_handle);
+        if (touchErr == ESP_OK && tp_handle) {
+            Serial.println("[Display] Touch GSL3680 initialized (firmware running)");
         } else {
-            Serial.println("[Display] Touch IO init FAILED!");
+            tp_handle = nullptr;
+            Serial.printf("[Display] Touch GSL3680 init FAILED: %s\n", esp_err_to_name(touchErr));
         }
     } else {
         Serial.println("[Display] I2C bus init FAILED!");
@@ -1474,11 +1477,10 @@ void displayInit() {
 #if defined(BOARD_TTGO)
     static constexpr size_t BUF_LINES = 20;
 #elif defined(BOARD_IPS10)
-    // IPS10 draw buffers live in INTERNAL SRAM (fast per-pixel render). Keep them small so the
-    // two buffers (1280×N×2) + rotated_buf (102KB internal) + runtime all fit without OOM —
-    // 40 lines (204KB) crashed; 24 lines ≈ 122KB fits internal and keeps the flush-slice count
-    // (and per-slice widget-tree traversal) lower than 16 lines did. PPA rotates each slice cheaply.
-    static constexpr size_t BUF_LINES = 24;
+    // IPS10 draw buffers live in INTERNAL SRAM (fast per-pixel render). Keep
+    // the two buffers plus rotated_buf at 16 lines each (about 123 KB total)
+    // so ESP-Hosted retains a contiguous SDIO RX pool.
+    static constexpr size_t BUF_LINES = IPS10_DRAW_LINES;
 #else
     static constexpr size_t BUF_LINES = 40;
 #endif

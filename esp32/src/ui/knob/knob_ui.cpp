@@ -4,6 +4,7 @@
 #include "../../state/agent_state.h"
 #include "../../net/ws_client.h"
 #include "../../net/wifi_manager.h"
+#include "../../net/serial_client.h"
 #include "../../input/power_monitor.h"
 #include "../display.h"
 #include "../theme.h"
@@ -62,6 +63,11 @@ struct SessionSnap {
 
 static Mode s_mode = Mode::LIST;
 static int s_listIdx = 0;
+// Until the operator rotates (or the daemon broadcasts a focus), the carousel
+// rests on a general-purpose assistant session (OpenClaw / Hermes) when one is
+// live — that is also what push-to-talk targets, so an idle knob defaults its
+// mic to conversation, not to whichever repo session happens to sort first.
+static bool s_userNavigated = false;
 static int s_menuIdx = 0;
 static int s_menuScroll = 0;
 static MenuItem s_menu[MENU_MAX];
@@ -80,8 +86,10 @@ static bool s_powerOffRequested = false;
 static char s_listeningLabel[48] = {0};
 static char s_speakingText[64] = {0};
 
-// Transient "sent" flash — one-frame-cheap optimistic press feedback.
-static char s_flashText[48] = {0};
+// Transient "sent" flash — one-frame-cheap optimistic press feedback. Sized
+// for voice_result transcripts (the longest text routed through notify), and
+// held on screen long enough to actually read one.
+static char s_flashText[96] = {0};
 static uint32_t s_flashUntilMs = 0;
 
 // ── widgets ─────────────────────────────────────────────────────────────────
@@ -95,7 +103,7 @@ static lv_obj_t* s_hdrBatt = nullptr;   // battery % (+ charge bolt)
 static lv_obj_t* s_body = nullptr;
 static lv_obj_t* s_footer = nullptr;
 
-static char s_lastSig[256] = {0};  // content signature — rebuild body on change
+static char s_lastSig[320] = {0};  // content signature — rebuild body on change
 
 // Canonical agent creatures, kept as flash-backed A8 masks. LVGL recolors the
 // masks at draw time, so the wheel carousel needs no runtime bitmap allocation.
@@ -187,7 +195,10 @@ static void sendFocusSession(const char* sid) {
 static void flash(const char* text) {
     strncpy(s_flashText, text, sizeof(s_flashText) - 1);
     s_flashText[sizeof(s_flashText) - 1] = '\0';
-    s_flashUntilMs = millis() + 1200;
+    // The copy may have cut a UTF-8 sequence mid-byte — a torn Korean
+    // transcript must degrade to a clean end, not a garbage glyph.
+    Utf8::utf8TrimEnd(s_flashText);
+    s_flashUntilMs = millis() + 2200;
 }
 
 // ── snapshot helpers ────────────────────────────────────────────────────────
@@ -418,6 +429,41 @@ static lv_obj_t* makeLabel(lv_obj_t* parent, const lv_font_t* font,
     return l;
 }
 
+// One-shot slide for the wheel carousel: on a detent the incoming creature
+// eases in from the side the rotation pulled it from, so the physical click
+// and the on-screen motion agree. Interaction feedback only — status colors
+// stay static per the design rules (amber awaiting is the only pulse).
+static void animTranslateX(void* var, int32_t v) {
+    lv_obj_set_style_translate_x((lv_obj_t*)var, v, 0);
+}
+
+static void startCarouselSlide(lv_obj_t* obj, int dir) {
+    if (dir == 0) return;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, obj);
+    lv_anim_set_values(&a, dir * 36, 0);
+    lv_anim_set_duration(&a, 140);
+    lv_anim_set_exec_cb(&a, animTranslateX);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+}
+
+// Direction of the latest carousel move: +1 = CW (next slid in from the
+// right), -1 = CCW, 0 = not a rotation (data refresh, mode return).
+static int carouselSlideDir(int idx, uint8_t count) {
+    static int lastIdx = -1;
+    static uint8_t lastCount = 0;
+    int dir = 0;
+    if (lastIdx >= 0 && lastCount == count && count > 1 && idx != lastIdx) {
+        int fwd = (idx - lastIdx + (int)count) % (int)count;
+        dir = (fwd == 1) ? 1 : ((fwd == (int)count - 1) ? -1 : 0);
+    }
+    lastIdx = idx;
+    lastCount = count;
+    return dir;
+}
+
 static void renderListBody(bool connected, uint8_t sessionCount) {
     if (!connected) {
         bool wifiUp = Net::wifiConnected();
@@ -441,6 +487,7 @@ static void renderListBody(bool connected, uint8_t sessionCount) {
 
     SessionSnap s;
     if (!snapshotSession(s_listIdx, s)) return;
+    int slideDir = carouselSlideDir(s_listIdx, sessionCount);
 
     // The encoder is a physical carousel: the selected agent creature owns the
     // center, while the previous/next creatures peek in from either side. A
@@ -483,10 +530,12 @@ static void renderListBody(bool connected, uint8_t sessionCount) {
         lv_obj_set_style_image_recolor(image, lv_color_hex(agentColor(s.agentType)), 0);
         lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
         lv_obj_align(image, LV_ALIGN_TOP_MID, 0, 3);
+        startCarouselSlide(image, slideDir);
     } else {
         lv_obj_t* brand = makeLabel(s_body, &lv_font_montserrat_18,
                                     agentColor(s.agentType), agentShortLabel(s.agentType));
         lv_obj_align(brand, LV_ALIGN_TOP_MID, 0, 24);
+        startCarouselSlide(brand, slideDir);
     }
 
     char elapsed[12];
@@ -536,9 +585,11 @@ static void renderDetailBody(const SessionSnap& s) {
     if (strstr(s.state, "awaiting") && s.question[0]) head = s.question;
     else if (strcmp(s.state, "processing") == 0 && s.currentTool[0]) head = s.currentTool;
     else if (s.activity[0]) head = s.activity;
+    // DOT, not WRAP: a fixed-height wrapped label clips the overflow line
+    // mid-glyph; the ellipsis says "there is more" instead of shearing it.
     lv_obj_t* q = makeLabel(s_body, &font_kr_16, Theme::HUDText, head);
     lv_obj_set_width(q, 262);
-    lv_label_set_long_mode(q, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(q, LV_LABEL_LONG_DOT);
     lv_obj_set_height(q, 36);
     lv_obj_align(q, LV_ALIGN_TOP_LEFT, 8, 2);
 
@@ -612,7 +663,7 @@ static void renderScrubBody() {
 
     lv_obj_t* t = makeLabel(s_body, &font_kr_16, Theme::HUDText, cur.text);
     lv_obj_set_width(t, 304);
-    lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_line_space(t, 3, 0);
     lv_obj_set_height(t, 100);
     lv_obj_align(t, LV_ALIGN_TOP_LEFT, 8, 20);
@@ -683,6 +734,7 @@ void onRotate(int detents) {
     }
     if (s_mode == Mode::LIST) {
         if (count == 0) return;
+        s_userNavigated = true;   // an explicit pick — stop auto-defaulting
         s_listIdx = (s_listIdx + detents) % (int)count;
         if (s_listIdx < 0) s_listIdx += count;
     } else {
@@ -832,9 +884,27 @@ void update(float dt) {
             s_lastSharedFocus[0] = '\0';
         } else if (strcmp(sharedFocus, s_lastSharedFocus) != 0) {
             int focusedIdx = findSessionById(sharedFocus);
-            if (focusedIdx >= 0) s_listIdx = focusedIdx;
+            if (focusedIdx >= 0) {
+                s_listIdx = focusedIdx;
+                s_userNavigated = true;   // explicit focus — stop auto-defaulting
+            }
             strncpy(s_lastSharedFocus, sharedFocus, sizeof(s_lastSharedFocus) - 1);
             s_lastSharedFocus[sizeof(s_lastSharedFocus) - 1] = '\0';
+        }
+        // No pick yet from either the encoder or a daemon focus: rest the
+        // carousel on a general assistant session when one is live, so the
+        // default mic target is conversation (see s_userNavigated).
+        if (!s_userNavigated && count > 0) {
+            lockState();
+            for (uint8_t i = 0; i < g_state.sessionCount; i++) {
+                const SessionInfo& si = g_state.sessions[i];
+                if (!si.alive || !si.id[0]) continue;
+                if (isGeneralAssistantSession(si.agentType, si.projectName)) {
+                    s_listIdx = i;
+                    break;
+                }
+            }
+            unlockState();
         }
     }
 
@@ -861,11 +931,12 @@ void update(float dt) {
     Input::PowerStatus pw = Input::powerStatus();
     bool wifiUp = Net::wifiConnected();
     bool wsUp = Net::wsConnected();
+    bool serialUp = Net::serialConnected();
     int battBucket = pw.valid ? (pw.soc / 5) : -1;
 
     // Content signature — cheap change detection; rebuild the body only when
     // something the user can see actually changed.
-    char sig[256];
+    char sig[320];
     if (s_mode == Mode::SCRUB && haveDetail) {
         int scount, idx;
         char curHead[24] = {0};
@@ -897,18 +968,23 @@ void update(float dt) {
     // hold starts and disappears on release.
     {
         size_t n = strlen(sig);
-        snprintf(sig + n, sizeof(sig) - n, "|L%.24s|S%.24s", s_listeningLabel, s_speakingText);
+        snprintf(sig + n, sizeof(sig) - n, "|L%.24s|S%.24s|U%d",
+                 s_listeningLabel, s_speakingText, serialUp ? 1 : 0);
     }
     if (strcmp(sig, s_lastSig) == 0) return;
     strncpy(s_lastSig, sig, sizeof(s_lastSig) - 1);
     s_lastSig[sizeof(s_lastSig) - 1] = '\0';
 
-    // Status cluster: WiFi/WS link glyph + battery. Link color: green = WS to
+    // Status cluster: link glyph + battery. USB serial-primary parks the WiFi
+    // radio by design, so a red WiFi glyph there would cry wolf on a healthy
+    // docked link — show a green USB plug instead. Otherwise: green = WS to
     // the daemon, amber = WiFi without WS, red = no WiFi. Battery hides when
     // the gauge doesn't answer; charge bolt while the charger reports charging.
+    lv_label_set_text_static(s_hdrWifi, serialUp ? LV_SYMBOL_USB : LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(
         s_hdrWifi,
-        lv_color_hex(wsUp ? Theme::StatusGreen : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
+        lv_color_hex((serialUp || wsUp) ? Theme::StatusGreen
+                     : (wifiUp ? Theme::StatusAmber : Theme::StatusRed)), 0);
     if (pw.valid) {
         char batt[24];
         const char* battSym = pw.soc > 80 ? LV_SYMBOL_BATTERY_FULL
@@ -982,7 +1058,11 @@ void update(float dt) {
         lv_label_set_text(s_footer, s_flashText);
         lv_obj_set_style_text_color(s_footer, lv_color_hex(Theme::StatusGreen), 0);
     } else {
-        const char* hint = "turn: session " LV_SYMBOL_BULLET " press: open";
+        // Hold-to-talk lives on the encoder and only at list level — without
+        // this hint the mic is undiscoverable (the listening banner only
+        // appears once you already know to hold).
+        const char* hint = "turn: session " LV_SYMBOL_BULLET " press: open "
+                           LV_SYMBOL_BULLET " hold: talk";
         if (s_mode == Mode::DETAIL)
             hint = "turn: choose " LV_SYMBOL_BULLET " press: send " LV_SYMBOL_BULLET " hold: back";
         else if (s_mode == Mode::SCRUB)

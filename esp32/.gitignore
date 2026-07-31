@@ -5,3 +5,9 @@
 *.elf
 *.bin
 *.map
+# custom_sdkconfig build artifacts (regenerated from platformio.ini deltas —
+# stale copies override the deltas, so they must never be committed)
+sdkconfig.defaults
+sdkconfig.*
+managed_components/
+.dummy/

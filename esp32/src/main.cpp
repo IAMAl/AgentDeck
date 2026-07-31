@@ -154,8 +154,9 @@ static void networkTask(void* param) {
         }
 #endif
 
-#if defined(BOARD_IPS10)
-        // On IPS10, stop C6 network traffic as soon as USB serial is active.
+#if defined(BOARD_IPS10) && !defined(BOARD_HAS_VOICE_CAPTURE)
+        // On IPS10 builds without voice capture, stop C6 network traffic as
+        // soon as USB serial is active.
         // wifiSetRadioParked() deliberately keeps ESP-Hosted/SDIO initialized
         // on this board and only disassociates STA: a full WIFI_OFF teardown can
         // race an in-flight RX packet and assert inside the hosted SDIO driver.
@@ -171,6 +172,16 @@ static void networkTask(void* param) {
                 Serial.println("[WiFi] IPS10 STA restored - serial inactive");
             }
         }
+#elif defined(BOARD_IPS10)
+        // The CH340 link really runs at 115200 baud. PCM16 mono at 16 kHz is
+        // 32 KB/s raw and ~43 KB/s after the serial JSON/base64 envelope, far
+        // beyond that link's ~11 KB/s payload ceiling. Keep the hosted C6 STA
+        // and WS alive on voice-capable IPS10 builds: daemon transport dedup
+        // leaves serial as the state path, WiFi carries what serial cannot —
+        // spoken-reply PCM (WS binary downlink) and the captured utterance,
+        // which now buffers whole in PSRAM and POSTs once to /esp32/voice.
+        // Live WS uplink streaming was tried and lost ~half its frames to
+        // hosted-C6 TX stalls (2026-07-30); see BOARD_VOICE_HTTP_UPLOAD.
 #endif
 
         // === Continuous mDNS discovery ===
@@ -506,6 +517,11 @@ static void uiTask(void* param) {
         int detents = Input::encoderReadDelta();
         if (detents != 0) Knob::onRotate(detents);
         Input::KeyEvent key = Input::encoderPollKey(now);
+        // While push-to-talk is capturing, the encoder key belongs to the mic:
+        // releasing must only stop the capture. Without this, a 400–600 ms talk
+        // press both sent the utterance AND fired SHORT_PRESS on release —
+        // opening the detail menu the user never asked for.
+        if (Audio::micCapturing()) key = Input::KeyEvent::NONE;
         if (key != Input::KeyEvent::NONE) Knob::onKey(key);
         if (detents != 0 || key != Input::KeyEvent::NONE) s_lastInputMs = now;
 

@@ -186,6 +186,17 @@ static void sendDeviceInfoSerial() {
         }
     }
 #endif
+#if defined(BOARD_VOICE_HTTP_UPLOAD)
+    {
+        // Spoken replies on this board move over their own HTTP GET (the WS
+        // push stream crashed the hosted RX path), so the capability rides
+        // BOTH transports — the notify frame is tiny JSON serial can carry.
+        // audio_out stays WS-only (see protocol.cpp's transport split).
+        JsonArray caps = resp["capabilities"].to<JsonArray>();
+        caps.add("audio_http_pull");
+        caps.add("audio");
+    }
+#endif
     OtaCapability::Info ota = OtaCapability::get();
     resp["otaSupported"] = ota.supported;
     resp["otaSlotCount"] = ota.slotCount;

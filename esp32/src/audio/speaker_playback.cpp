@@ -272,6 +272,36 @@ void playbackEnd() {
 
 bool playbackActive() { return s_playing || s_streaming; }
 
+// Short UI tone (press tick / sent blip), generated in place — no asset, no
+// allocation. Runs through the normal playback path, so it also serves as the
+// codec warm-up on boards where the first press otherwise pays Es8311::begin.
+// No-op while a real reply is active: feedback must never eat an answer.
+void playTone(uint32_t freqHz, uint32_t ms, float amplitude) {
+    if (playbackActive()) return;
+    playbackBegin(16000);
+    if (!s_playing) return;
+    const uint32_t total = 16000u * ms / 1000u;
+    int16_t buf[256];
+    const float amp = amplitude * 32767.0f;
+    uint32_t n = 0;
+    while (n < total) {
+        uint32_t chunk = total - n;
+        if (chunk > 256) chunk = 256;
+        for (uint32_t i = 0; i < chunk; i++) {
+            float t = (float)(n + i);
+            // Linear fade-out over the last quarter avoids a click at the end.
+            float env = 1.0f;
+            float tail = (float)total * 0.75f;
+            if (t > tail) env = 1.0f - (t - tail) / ((float)total - tail);
+            buf[i] = (int16_t)(amp * env * sinf(2.0f * (float)M_PI * (float)freqHz * t / 16000.0f));
+        }
+        // Ring is 64 KB and the tone is ≤ a few KB — feed never fails here.
+        playbackFeed((const uint8_t*)buf, chunk * 2);
+        n += chunk;
+    }
+    playbackEnd();
+}
+
 #if defined(BOARD_PIN_MIC_DIN)
 bool captureReady() { return s_i2sOpen; }
 

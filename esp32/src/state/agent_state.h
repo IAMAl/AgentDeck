@@ -54,6 +54,26 @@ struct SessionOption {
 };
 constexpr uint8_t SESSION_OPTIONS_CAP = 6;
 
+// Voice "auto"-target preference: dictation with no explicit pick should land
+// on a general-purpose assistant, not whichever project session happens to
+// sort first — a coding session treats a spoken question as a work order for
+// its repo. OpenClaw is identified by agent type; Hermes-style assistants run
+// under a normal agent CLI, so they are recognized by project name prefix
+// (case-insensitive "hermes").
+inline bool isGeneralAssistantSession(const char* agentType, const char* projectName) {
+    if (agentType && strcmp(agentType, "openclaw") == 0) return true;
+    if (projectName) {
+        const char* h = "hermes";
+        for (size_t i = 0; h[i]; i++) {
+            char c = projectName[i];
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c != h[i]) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
 // ===== Session info (multi-agent) =====
 struct SessionInfo {
     char id[32];
@@ -365,6 +385,29 @@ struct DashboardState {
             timelineCount++;
         }
         timeline[idx] = entry;
+    }
+
+    // Active child count for a parent session, derived from the existing
+    // fixed timeline ring. No protocol field and no heap/cache allocation:
+    // old firmware ignores the summarized rows, new renderers can decorate
+    // the parent without turning children into selectable sessions.
+    uint8_t activeSubagentsForSession(const char* sessionId) const {
+        if (!sessionId || !sessionId[0]) return 0;
+        uint8_t count = 0;
+        for (uint8_t i = 0; i < timelineCount; i++) {
+            const TimelineEntry& entry =
+                timeline[(timelineHead + i) % TIMELINE_MAX_ENTRIES];
+            if (strcmp(entry.sessionId, sessionId) != 0 ||
+                strncmp(entry.raw, "Subagent ", 9) != 0) {
+                continue;
+            }
+            if (strcmp(entry.type, "tool_exec") == 0) {
+                if (count < 255) count++;
+            } else if (strcmp(entry.type, "tool_resolved") == 0 && count > 0) {
+                count--;
+            }
+        }
+        return count;
     }
 };
 
