@@ -52,7 +52,19 @@ struct SessionOption {
     uint8_t index;
     bool recommended;
 };
+// This array is the largest single line item in g_state: cap × 66 B × 10
+// sessions. The ESP32-classic boards have no PSRAM and a DRAM segment the
+// terrarium canvas already eats into, and neither surface can render an option
+// list anyway — TTGO is a 240×135 two-button panel, TC001 an 8×32 LED matrix.
+// Without this guard the growth of g_state overflowed TTGO's dram0_0_seg by
+// 768 bytes, which surfaces only as a link error on those two envs. Both
+// consumers are bound-checked against this cap (protocol.cpp parse loop,
+// knob_ui's local buffer), so a lower value truncates rather than corrupts.
+#if defined(BOARD_TTGO) || defined(BOARD_LED8X32)
+constexpr uint8_t SESSION_OPTIONS_CAP = 2;
+#else
 constexpr uint8_t SESSION_OPTIONS_CAP = 6;
+#endif
 
 // Voice "auto"-target preference: dictation with no explicit pick should land
 // on a general-purpose assistant, not whichever project session happens to
