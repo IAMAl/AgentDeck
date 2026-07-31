@@ -50,6 +50,26 @@ target-internal version consistency. See [RELEASING.md](RELEASING.md).
 
 ## 1.0.2
 
+### ESP32 firmware
+
+- Ship firmware for **every board marked Shipping** — T-Embed CC1101,
+  T-Display-S3-Pro and the Waveshare C6-LCD-1.47 had no downloadable binary in
+  `1.0.1` because the release matrix listed seven boards while ten were
+  supported
+- Name each asset by the board's canonical id (`agentdeck-ips_10.bin`), the same
+  string `agentdeck esp32-ota <target>` takes, so a downloaded file is directly
+  the update target; add `SHA256SUMS.txt` and the Wi-Fi OTA instructions
+- Restore linking on the ESP32-classic boards: the per-session option list had
+  grown `g_state` past TTGO's DRAM segment, so TTGO and TC001 now cap that array
+  at two entries — neither surface can render an option list
+- Voice: push-to-talk on the IPS10 touch panel and the T-Embed encoder, with the
+  reply spoken back through the board's own speaker where one exists
+- Restore JC8012P4A1C touch: the vendor-derived clear sequence wrote `0x88`,
+  while `0x80` is the Silead touch-count register that actually starts the
+  panel's scan core
+- InkDeck and XTeink glance rendering, camera show-and-tell on the Focus Strip,
+  and a Pocket phone-style UI for the camera strip
+
 ### Daemon and timeline
 
 - Keep the Node daemon discovery registry healthy while the process is running,
