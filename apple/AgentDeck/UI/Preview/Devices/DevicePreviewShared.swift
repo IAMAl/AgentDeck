@@ -148,6 +148,11 @@ struct PreviewDisplaySession: Identifiable {
     var projectName: String
     var modelName: String?
     var state: PixooPreviewState
+    /// Active subagents under this session. The firmware draws them as
+    /// decorative activity owned by the parent — a static miniature orbit on
+    /// e-ink, perimeter satellite pixels on the LED matrix — never as another
+    /// session. Zero means "draw nothing", not "unknown".
+    var subagentCount: Int = 0
 }
 
 /// One usage provider row (0…1 fractions) for the usage band.
@@ -198,7 +203,13 @@ extension DevicePreviewSelection {
                     agent: PixooPreviewAgent.from(agentType: s.agentType),
                     projectName: (s.projectName?.isEmpty == false) ? s.projectName! : "session",
                     modelName: s.modelName,
-                    state: PixooPreviewState.from(sessionState: s.state)
+                    state: PixooPreviewState.from(sessionState: s.state),
+                    // Live subagent counts live in TimelineStore, not in the
+                    // DashboardState this snapshot is built from, so live-follow
+                    // draws no satellites yet. Plumbing them through
+                    // LivePreviewData is a separate change; leaving it at 0 is
+                    // honest (nothing drawn) rather than invented.
+                    subagentCount: 0
                 )
             }
         }
@@ -208,7 +219,11 @@ extension DevicePreviewSelection {
                 agent: agent,
                 projectName: "\(agent.displayName.lowercased())-project",
                 modelName: nil,
-                state: previewState(for: index)
+                state: previewState(for: index),
+                // One busy session carries children so the mirrored orbit and
+                // satellites actually render in the gallery — a preview that
+                // never exercises the element cannot show it drifted.
+                subagentCount: index == 1 ? 2 : 0
             )
         }
     }

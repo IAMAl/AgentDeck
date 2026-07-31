@@ -165,15 +165,17 @@ private struct PixooPixelGrid: View {
 // electric-violet CRGB(196,112,255) while the USAGE page keeps it white.
 //
 // This preview reproduces ONLY the AGENTS page — the firmware's exact
-// generated 8×8 alpha masks rasterized from design/brand/*.svg and its
-// per-kind state colors — as a single static frame (no page cycling, gauge
-// numerals, or text scroller). The USAGE/CODEX gauge additions above (the
+// generated 8×8 alpha masks rasterized from design/brand/*.svg, its per-kind
+// state colors, and the subagent satellites (up to three cyan perimeter pixels
+// per glyph, each with a dim wire pixel toward the glyph centre) — as a single
+// static frame (no page cycling, gauge numerals, or text scroller). The
+// USAGE/CODEX gauge additions above (the
 // codex violet numeral + renderGaugePair) render on pages this preview does
 // not draw, so they leave the mirrored AGENTS pixels unchanged; they are
 // documented here so the pin bump below is a conscious "checked, does not
 // affect the AGENTS render" acknowledgement.
 //
-// SYNC-HASH esp32/src/ui/matrix/matrix_pages.cpp 88235454ec81da31c0cd9b46616ef735d41993aa
+// SYNC-HASH esp32/src/ui/matrix/matrix_pages.cpp 25b13ebe7281a38b27e43684b885632dcae55ccf
 // scripts/check-preview-mirror-sync.mjs fails CI when the origin above drifts
 // from this pin — re-verify AGENTS-page parity and bump the hash together.
 
@@ -256,6 +258,10 @@ struct UlanziMatrixPreview: View {
                 rainbow: agent == .antigravity,
                 cellW: cellW, cellH: cellH
             )
+            drawSubagentSatellites(
+                ctx: &ctx, atX: cursorX, count: session.subagentCount,
+                cellW: cellW, cellH: cellH
+            )
             cursorX += 8
         }
 
@@ -283,6 +289,41 @@ struct UlanziMatrixPreview: View {
                 cellW: cellW, cellH: cellH
             )
         }
+    }
+
+    /// Subagent satellites — mirrors `drawSubagentSatellites` in
+    /// matrix_pages.cpp. The 8×32 grid has no room for a literal orbit, so up
+    /// to three cyan perimeter pixels stand in, each with a dim "wire" pixel
+    /// pulled halfway toward the glyph centre so the satellite reads as owned
+    /// by the adjacent creature rather than as a fourth agent.
+    private func drawSubagentSatellites(
+        ctx: inout GraphicsContext, atX x: Int, count: Int,
+        cellW: CGFloat, cellH: CGFloat
+    ) {
+        guard count > 0 else { return }
+        let sx = [7, 7, 0]
+        let sy = [0, 7, 0]
+        let cyan = Color(red: 0, green: 229.0 / 255.0, blue: 1)
+        let wire = Color(red: 0, green: 62.0 / 255.0, blue: 78.0 / 255.0)
+        for i in 0..<min(count, 3) {
+            plot(ctx: &ctx, x: x + sx[i], y: sy[i], color: cyan, cellW: cellW, cellH: cellH)
+            // Integer halving toward the 4,4 centre, exactly as the firmware
+            // computes it — (0 - 4) / 2 truncates to -2 in both languages.
+            plot(ctx: &ctx, x: x + 4 + (sx[i] - 4) / 2, y: 4 + (sy[i] - 4) / 2,
+                 color: wire, cellW: cellW, cellH: cellH)
+        }
+    }
+
+    private func plot(
+        ctx: inout GraphicsContext, x: Int, y: Int, color: Color,
+        cellW: CGFloat, cellH: CGFloat
+    ) {
+        guard x >= 0, x < matrixW, y >= 0, y < matrixH else { return }
+        let rect = CGRect(
+            x: CGFloat(x) * cellW + 1, y: CGFloat(y) * cellH + 1,
+            width: cellW - 2, height: cellH - 2
+        )
+        ctx.fill(Path(roundedRect: rect, cornerRadius: 1.5), with: .color(color))
     }
 
     private func drawSprite(

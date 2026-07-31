@@ -8,7 +8,10 @@
 //     chip (filled when connected), session count, double rule at y≈62;
 //   - session card grid: double-outline rounded cards with the agent
 //     creature glyph + project name + state line + a TIMELINE-grade work
-//     summary; the first awaiting card inverts to solid black with white ink.
+//     summary; a card whose session has active subagents reserves a right
+//     strip for a static miniature orbit + child count (static by design —
+//     e-ink pays for animation in ghosting); the first awaiting card inverts
+//     to solid black with white ink.
 //     Columns are chosen by makeLayout: 1 for a lone session, 2 landscape,
 //     3 once five+ sessions share the 800px panel (rows capped at 2);
 //   - adaptive usage band (usageRowCount 0/1/2): provider rows (CLAUDE /
@@ -26,7 +29,7 @@
 // fails CI when the firmware drifts ahead of this mirror. Update this view and
 // re-pin whenever the firmware layout changes.
 //
-// SYNC-HASH esp32/src/ui/eink/eink_display.cpp a1be994f0e13760f3e635056ac8f3b80431844fc
+// SYNC-HASH esp32/src/ui/eink/eink_display.cpp 5945c47bff3fa3c608aa3f01f9d3b2ef234a4ce1
 // SYNC-HASH esp32/src/ui/eink/eink_dashboard_layout.h 9179d41777d6e2caff02735607ad7ca210de8bb8
 
 import SwiftUI
@@ -196,6 +199,14 @@ struct InkDeckPreview: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 0)
+            // Subagent orbit, reserving the right strip the firmware takes out
+            // of the text width (subagentReserve). Static by construction:
+            // e-ink pays for every animated pixel in ghosting, so the firmware
+            // draws a fixed six-dot ring with one satellite rather than a
+            // rotating one. The parent card stays the only selectable entity.
+            if session.subagentCount > 0 {
+                subagentOrbit(count: session.subagentCount, cardInk: cardInk)
+            }
         }
         .padding(8)
         .frame(maxWidth: .infinity)
@@ -218,6 +229,45 @@ struct InkDeckPreview: View {
             RoundedRectangle(cornerRadius: 8)
                 .stroke(ink, lineWidth: awaiting ? 0 : 1.4)
         )
+    }
+
+    /// The card's subagent orbit: a six-dot ellipse, one radial wire, a filled
+    /// satellite, and the count beneath — the firmware's fixed `ringX/ringY`
+    /// table drawn at every other index, scaled into this schematic card.
+    private func subagentOrbit(count: Int, cardInk: Color) -> some View {
+        VStack(spacing: 2) {
+            Canvas { ctx, size in
+                let cx = size.width / 2
+                let cy = size.height / 2
+                let rx = size.width / 2 - 1
+                let ry = rx * 0.5
+                // Same six sampled positions as the firmware (i += 2 over a
+                // twelve-point ring), expressed as angles so the schematic
+                // scales instead of hard-coding pixel offsets.
+                for i in stride(from: 0, to: 12, by: 2) {
+                    let a = Double(i) / 12 * 2 * .pi + .pi
+                    let p = CGRect(
+                        x: cx + rx * CGFloat(cos(a)) - 0.6,
+                        y: cy + ry * CGFloat(sin(a)) - 0.6,
+                        width: 1.2, height: 1.2
+                    )
+                    ctx.fill(Path(ellipseIn: p), with: .color(cardInk.opacity(0.7)))
+                }
+                var wire = Path()
+                wire.move(to: CGPoint(x: cx, y: cy))
+                wire.addLine(to: CGPoint(x: cx + rx, y: cy))
+                ctx.stroke(wire, with: .color(cardInk.opacity(0.7)), lineWidth: 0.8)
+                ctx.fill(
+                    Path(ellipseIn: CGRect(x: cx + rx - 2, y: cy - 2, width: 4, height: 4)),
+                    with: .color(cardInk)
+                )
+            }
+            .frame(width: 26, height: 14)
+            Text("\(count)")
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .foregroundStyle(cardInk.opacity(0.8))
+        }
+        .frame(width: 32)
     }
 
     /// State line text — "<LABEL>: <activity>" for a busy session (firmware

@@ -24,7 +24,7 @@
 // against; `scripts/check-preview-mirror-sync.mjs` verifies they match the
 // current `git hash-object` of each file and fails CI when the origin drifts
 // ahead of this mirror. Update them whenever you re-port.
-// SYNC-HASH shared/src/d200h-layout.ts 8de92b3940bd36365dddbe7b8b56f15ad93b7ae5
+// SYNC-HASH shared/src/d200h-layout.ts a2c68d8877938f9a6238a353f9aac3059fc75af2
 // SYNC-HASH shared/src/session-utils.ts b08adbcca7a9fe3386a44801248b2ec06b572a0e
 //
 // INTENTIONALLY OMITTED (not needed by a read-only preview):
@@ -203,12 +203,22 @@ public struct D200HDeckView: Sendable {
     public var page: Int
     /// Pin trailing/preferred keys to the global 5H/7D usage gauges.
     public var showUsage: Bool
+    /// Host push-to-talk capture state (daemon `voice_state`). Drives the
+    /// detail-view VOICE tile. A D200H press is single-fire, so the tile
+    /// toggles start/stop rather than expressing hold-to-talk.
+    public var voiceState: VoiceState
 
-    public init(mode: Mode = .list, openSessionId: String? = nil, page: Int = 0, showUsage: Bool = true) {
+    public enum VoiceState: String, Sendable { case idle, recording, transcribing, error }
+
+    public init(
+        mode: Mode = .list, openSessionId: String? = nil, page: Int = 0,
+        showUsage: Bool = true, voiceState: VoiceState = .idle
+    ) {
         self.mode = mode
         self.openSessionId = openSessionId
         self.page = page
         self.showUsage = showUsage
+        self.voiceState = voiceState
     }
 }
 
@@ -462,7 +472,6 @@ public enum D200HLayoutModel {
         let content = slots.count >= 3 ? Array(slots[2..<(slots.count - 1)]) : []
 
         // Build the content cells (kind + label + subtitle + action).
-        struct Cell { let kind: D200HSlotKind; let label: String; let subtitle: String?; let action: D200HDeckAction }
         var cells: [Cell] = []
 
         if isAwaiting(sState) {
@@ -492,6 +501,7 @@ public enum D200HLayoutModel {
             for (label, text) in presets {
                 cells.append(Cell(kind: .actionPreset, label: label, subtitle: nil, action: .command(type: "send_prompt", payload: ["text": text])))
             }
+            cells.append(voiceCell(view: view, sid: sid))
         }
 
         // Paginate cells into content slots; reserve last content slot for MORE.
@@ -520,6 +530,35 @@ public enum D200HLayoutModel {
     }
 
     // MARK: Usage tiles (port of buildUsageTiles)
+
+    /// One detail-view content cell before it is paginated into a key slot.
+    private struct Cell {
+        let kind: D200HSlotKind
+        let label: String
+        let subtitle: String?
+        let action: D200HDeckAction
+    }
+
+    /// Host push-to-talk tile — mirrors `voiceTile` in d200h-layout.ts. The
+    /// deck contributes only the button: the daemon owns the microphone,
+    /// on-device transcription, and delivery through the same ladder the
+    /// device-voice path uses. `transcribing` is deliberately inert, so a
+    /// second press cannot restart capture mid-transcription.
+    private static func voiceCell(view: D200HDeckView, sid: String) -> Cell {
+        switch view.voiceState {
+        case .recording:
+            return Cell(kind: .actionPreset, label: "VOICE", subtitle: "● tap to send",
+                        action: .command(type: "voice", payload: ["action": "stop", "sessionId": sid]))
+        case .transcribing:
+            return Cell(kind: .actionPreset, label: "VOICE", subtitle: "transcribing…", action: .none)
+        case .error:
+            return Cell(kind: .actionPreset, label: "VOICE", subtitle: "no speech",
+                        action: .command(type: "voice", payload: ["action": "start", "sessionId": sid]))
+        case .idle:
+            return Cell(kind: .actionPreset, label: "VOICE", subtitle: "tap to talk",
+                        action: .command(type: "voice", payload: ["action": "start", "sessionId": sid]))
+        }
+    }
 
     /// Every tile is hide-if-absent (TS 208b1afc): Claude 5H/7D appear only
     /// when that window's quota is actually known, so fewer (or zero) tiles are
