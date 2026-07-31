@@ -43,6 +43,9 @@ struct ADPluginCommand: Codable, Equatable {
     var type: ADType
     var value: ADValue?
     var index: Double?
+    /// Target session for daemon-side host push-to-talk (deck surfaces have no session of their
+    /// own). Absent ⇒ the focused session, then the legacy session-bridge behavior when a bridge
+    /// handles it directly.
     var sessionId: String?
     var direction: ADDirection?
     var text: String?

@@ -54,7 +54,10 @@ import {
 import { parsePeripheralMappings, resolvePeripheralAction, commandForAction } from './peripheral-mapping.js';
 import { DeviceVoiceCollector } from './device-voice.js';
 import { DevicePhotoCollector } from './device-photo.js';
-import { transcribeWithHelper, synthesizeWavWithHelper } from './foundation-models-helper.js';
+import {
+  transcribeWithHelper, synthesizeWavWithHelper,
+  recordWithHelper, stopHelperRecording, speakWithHelper,
+} from './foundation-models-helper.js';
 import { enqueueOpenCodeCommand, pollOpenCodeCommands } from './opencode-steering.js';
 import { runSessionReview, reviewSnapshot } from './review-runner.js';
 
@@ -3231,6 +3234,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   const handleDeviceCommand = (cmd: PluginCommand): void => {
     debug('daemon', `cmd: ${cmd.type}`);
+    // Host push-to-talk is the daemon's own capability (host mic + speakers),
+    // so claim it ahead of the gateway-first-dibs routing below — it must not
+    // depend on what any adapter chooses to do with the legacy `voice` shape.
+    if (cmd.type === 'voice') {
+      handleHostVoicePtt(cmd);
+      return;
+    }
     // Session-scoped commands are NEVER OpenClaw's to consume: a device
     // answering a named session (select_option{sessionId}) must reach the
     // session routing below — the gateway swallowing it as an exec-approval
@@ -3621,12 +3631,30 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     const locale = typeof voiceCfg?.locale === 'string' && voiceCfg.locale
       ? voiceCfg.locale : undefined;
+    // Host-armed dictations (deck push-to-talk) play through the host's own
+    // speakers — AVSpeechSynthesizer speaks directly, no WAV/PCM streaming
+    // detour. Split them out before synthesis so a host-only reply skips the
+    // file round trip entirely.
+    const hostTargets = targets.filter((s) => s.capabilities().includes('audio_host'));
+    const boardTargets = targets.filter((s) => !s.capabilities().includes('audio_host'));
+    if (hostTargets.length > 0) {
+      for (const sink of hostTargets) voiceReply.disarm(sink);
+      void (async () => {
+        try {
+          await speakWithHelper(spoken, locale ? { locale } : {});
+          log(`[agentdeck] voice: spoke reply on host speakers (${spoken.length} chars)`);
+        } catch (err) {
+          log(`[agentdeck] voice: host speak failed: ${String(err).slice(0, 140)}`);
+        }
+      })();
+    }
+    if (boardTargets.length === 0) return;
     void (async () => {
       const out = join(tmpdir(), `agentdeck-reply-${process.pid}-${Date.now()}.wav`);
       try {
         await synthesizeWavWithHelper(spoken, out, locale ? { locale } : {});
         const wav = await readFile(out);
-        for (const sink of targets) {
+        for (const sink of boardTargets) {
           // Pull-capable boards fetch the audio themselves over HTTP — the WS
           // push stream both stuttered and could crash the hosted-link RX
           // path (pkt_rxbuff assert). Stage the PCM, send a tiny notify
@@ -4023,6 +4051,94 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           captured.cleanup();
         }
   };
+
+  // ── Host push-to-talk (deck surfaces: Stream Deck, D200H) ────────────────
+  // A deck key contributes only a button; the host contributes the mic, the
+  // recognizer and the speakers. This restores the capability of the retired
+  // Voice dial (pulled pre-Marketplace because capture meant borrowing
+  // iTerm2's mic grant via AppleScript + Homebrew sox + a whisper model) on a
+  // dependency-free stack: capture, STT and TTS all live in the bundled Swift
+  // helper, and delivery/reply reuse the device-voice pipeline unchanged.
+  const HOST_SPEAKER_KEY = 'host-speaker';
+
+  const broadcastVoiceState = (
+    state: 'idle' | 'recording' | 'transcribing' | 'error',
+    extra: { text?: string; error?: string; sessionId?: string } = {},
+  ): void => {
+    core.broadcast({ type: 'voice_state', state, ...extra } as BridgeEvent);
+  };
+
+  /**
+   * ReplySink whose "board" is the host itself. `voice_result` frames become
+   * broadcast `voice_state` events so every deck surface can render the
+   * outcome; the spoken reply is played by the audio_host branch in
+   * speakReplyTo rather than streamed as PCM frames.
+   */
+  const hostSpeakerSink: ReplySink = {
+    send: (data) => {
+      try {
+        const msg = JSON.parse(data) as
+          { type?: string; text?: string; error?: string; sessionId?: string };
+        if (msg.type === 'voice_result') {
+          broadcastVoiceState(msg.error ? 'error' : 'idle', {
+            ...(msg.text ? { text: msg.text } : {}),
+            ...(msg.error ? { error: msg.error } : {}),
+            ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+          });
+        }
+      } catch { /* nothing renderable */ }
+    },
+    sendBinary: () => {},
+    isOpen: () => true,
+    capabilities: () => ['audio_out', 'audio_host'],
+    describe: () => 'host:speaker',
+    deviceKey: () => HOST_SPEAKER_KEY,
+  };
+
+  /** One capture at a time — PTT models a single held key. */
+  let hostPttBusy = false;
+
+  function handleHostVoicePtt(cmd: Extract<PluginCommand, { type: 'voice' }>): void {
+    if (process.platform !== 'darwin') {
+      broadcastVoiceState('error', { error: 'host voice capture requires macOS' });
+      return;
+    }
+    if (cmd.action === 'stop' || cmd.action === 'cancel') {
+      if (!hostPttBusy) return;
+      // Resolves the in-flight recordWithHelper below; a release that races
+      // the max-duration stop is a harmless no-op.
+      void stopHelperRecording({ cancel: cmd.action === 'cancel' }).catch(() => {});
+      return;
+    }
+    if (hostPttBusy) return;
+    hostPttBusy = true;
+    const sessionId = resolveDeviceSessionId(cmd.sessionId) || userFocusedSessionId || '';
+    const sessionExtra = sessionId ? { sessionId } : {};
+    const wavPath = join(tmpdir(), `agentdeck-ptt-${process.pid}-${Date.now()}.wav`);
+    broadcastVoiceState('recording', sessionExtra);
+    void (async () => {
+      try {
+        const rec = await recordWithHelper(wavPath);
+        broadcastVoiceState('transcribing', sessionExtra);
+        await finishVoiceCapture({
+          wavPath: rec.wav,
+          sessionId,
+          board: HOST_SPEAKER_KEY,
+          cleanup: () => { void rm(rec.wav, { force: true }).catch(() => {}); },
+        }, hostSpeakerSink);
+      } catch (err) {
+        const reason = String(err);
+        if (/record_cancelled/.test(reason)) {
+          broadcastVoiceState('idle', sessionExtra);
+        } else {
+          log(`[agentdeck] voice: host PTT failed: ${reason.slice(0, 200)}`);
+          broadcastVoiceState('error', { error: reason.slice(0, 160), ...sessionExtra });
+        }
+      } finally {
+        hostPttBusy = false;
+      }
+    })();
+  }
 
   /**
    * Finish one captured photo: build the prompt that points the target session

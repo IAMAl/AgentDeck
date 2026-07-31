@@ -1805,6 +1805,10 @@
         "error": {
           "type": "string"
         },
+        "sessionId": {
+          "description": "Which session the capture targets, for daemon host push-to-talk. Absent on the legacy session-bridge voice path (implicitly that bridge's own session).",
+          "type": "string"
+        },
         "state": {
           "enum": [
             "idle",

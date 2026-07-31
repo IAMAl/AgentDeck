@@ -15,7 +15,7 @@ public enum AgentCommand: Equatable {
     case switchMode(mode: String?)
     case interrupt
     case escape
-    case voice(action: String)
+    case voice(action: String, sessionId: String?)
     case queryUsage
     case querySessionTimeline(sessionId: String)
     case diag(action: String)
@@ -60,9 +60,10 @@ public enum AgentCommand: Equatable {
             return ["type": "interrupt"]
         case .escape:
             return ["type": "escape"]
-        case .voice(let action):
+        case .voice(let action, let sessionId):
             var dict: [String: Any] = ["type": "voice"]
             dict["action"] = action
+            if let sessionId = sessionId { dict["sessionId"] = sessionId }
             return dict
         case .queryUsage:
             return ["type": "query_usage"]

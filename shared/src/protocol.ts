@@ -297,6 +297,10 @@ export interface VoiceStateEvent {
   state: 'idle' | 'recording' | 'transcribing' | 'error';
   text?: string;
   error?: string;
+  /** Which session the capture targets, for daemon host push-to-talk. Absent
+   *  on the legacy session-bridge voice path (implicitly that bridge's own
+   *  session). */
+  sessionId?: string;
 }
 
 // ===== Voice Assistant (Wake Word) =====
@@ -1143,6 +1147,10 @@ export interface EscapeCommand {
 export interface VoiceCommand {
   type: 'voice';
   action: 'start' | 'stop' | 'cancel';
+  /** Target session for daemon-side host push-to-talk (deck surfaces have no
+   *  session of their own). Absent ⇒ the focused session, then the legacy
+   *  session-bridge behavior when a bridge handles it directly. */
+  sessionId?: string;
 }
 
 export interface QueryUsageCommand {

@@ -19,6 +19,8 @@ struct HelperRequest: Decodable {
     let text: String?
     let voice: String?
     let rate: Double?
+    /// `record`: hard cap on capture length; the reply arrives at stop or here.
+    let maxMs: Int?
 }
 
 @main
@@ -57,6 +59,20 @@ struct AgentDeckFMHelper {
 
         if request.type == "synthesize" {
             await handleSynthesize(request)
+            return
+        }
+
+        if request.type == "record" {
+            // Recording spans an unknown PTT hold, and the stop arrives as a
+            // later stdin line — so this must not block the read loop.
+            Task.detached { await handleRecord(request) }
+            return
+        }
+
+        if request.type == "record_stop" || request.type == "record_cancel" {
+            let stopped = activeRecording.finish(
+                cancelled: request.type == "record_cancel", reason: "stopped")
+            write(["id": request.id, "stopped": stopped])
             return
         }
 
@@ -162,6 +178,111 @@ struct AgentDeckFMHelper {
         return await withCheckedContinuation { continuation in
             let box = ResumeOnce(continuation)
             SFSpeechRecognizer.requestAuthorization { box.resume($0) }
+        }
+    }
+
+    // MARK: - Microphone capture
+
+    private static let activeRecording = RecordingBox()
+
+    /// Capture the host microphone into a 16 kHz mono PCM16 WAV. This is the
+    /// piece that retired the old Stream Deck Voice dial: capture used to mean
+    /// borrowing iTerm2's mic grant via AppleScript plus Homebrew `sox`. Here
+    /// the daemon's own bundled helper records, so the TCC grant belongs to
+    /// this process tree and there is nothing to install.
+    ///
+    /// The reply is deferred: it is written when `record_stop`/`record_cancel`
+    /// arrives on stdin or `maxMs` elapses, whichever comes first.
+    private static func handleRecord(_ request: HelperRequest) async {
+        guard let outPath = request.wav, !outPath.isEmpty else {
+            write(["id": request.id, "error": "bad_request", "reason": "missing wav output path"])
+            return
+        }
+        let granted = await ensureMicAuthorization()
+        guard granted else {
+            write([
+                "id": request.id,
+                "error": "unauthorized",
+                "reason": "microphone access not granted — grant it in System Settings › Privacy & Security › Microphone",
+            ])
+            return
+        }
+        let sampleRate = 16000.0
+        guard let outFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                            sampleRate: sampleRate,
+                                            channels: 1,
+                                            interleaved: true) else {
+            write(["id": request.id, "error": "record_failed", "reason": "output format unavailable"])
+            return
+        }
+
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let inFormat = input.outputFormat(forBus: 0)
+        guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
+            write(["id": request.id, "error": "record_failed", "reason": "no audio input device"])
+            return
+        }
+        let sink = PCMSink()
+        guard activeRecording.begin(requestId: request.id, engine: engine, sink: sink) else {
+            write(["id": request.id, "error": "busy", "reason": "a recording is already in progress"])
+            return
+        }
+        input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { buffer, _ in
+            sink.append(buffer, to: outFormat)
+        }
+        do {
+            try engine.start()
+        } catch {
+            activeRecording.clear()
+            input.removeTap(onBus: 0)
+            write(["id": request.id, "error": "record_failed", "reason": String(describing: error)])
+            return
+        }
+
+        let maxMs = max(1000, min(request.maxMs ?? 30_000, 120_000))
+        let outcome = await activeRecording.wait(maxMs: maxMs)
+        engine.stop()
+        input.removeTap(onBus: 0)
+
+        if outcome.cancelled {
+            write(["id": request.id, "cancelled": true])
+            return
+        }
+        if let failure = sink.failure {
+            write(["id": request.id, "error": "record_failed", "reason": failure])
+            return
+        }
+        let pcm = sink.pcm
+        guard pcm.count >= 2 else {
+            write(["id": request.id, "error": "record_failed", "reason": "no audio captured"])
+            return
+        }
+        do {
+            try wavData(pcm: pcm, sampleRate: Int(sampleRate)).write(to: URL(fileURLWithPath: outPath))
+        } catch {
+            write(["id": request.id, "error": "record_failed", "reason": String(describing: error)])
+            return
+        }
+        write([
+            "id": request.id,
+            "wav": outPath,
+            "sampleRate": Int(sampleRate),
+            "samples": pcm.count / 2,
+            "durationMs": Int(Double(pcm.count / 2) / sampleRate * 1000.0),
+            "stopReason": outcome.reason,
+        ])
+    }
+
+    private static func ensureMicAuthorization() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: return true
+        case .notDetermined:
+            return await withCheckedContinuation { continuation in
+                let box = ResumeOnce(continuation)
+                AVCaptureDevice.requestAccess(for: .audio) { box.resume($0) }
+            }
+        default: return false
         }
     }
 
@@ -312,13 +433,92 @@ struct AgentDeckFMHelper {
 #endif
     }
 
+    /// stdout is shared by the serial request loop and the detached record
+    /// task; the lock keeps two replies from interleaving inside one line.
+    private static let writeLock = NSLock()
+
     private static func write(_ object: [String: Any]) {
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object),
               let text = String(data: data, encoding: .utf8) else {
             return
         }
+        writeLock.lock()
         FileHandle.standardOutput.write(Data((text + "\n").utf8))
+        writeLock.unlock()
+    }
+}
+
+/// State for the single in-flight microphone capture. One at a time by design:
+/// the daemon models push-to-talk, and two overlapping engine taps on the same
+/// input device produce garbage anyway.
+private final class RecordingBox: @unchecked Sendable {
+    struct Outcome { let cancelled: Bool; let reason: String }
+
+    private let lock = NSLock()
+    private var requestId: Int?
+    private var engine: AVAudioEngine?
+    private var sink: PCMSink?
+    private var continuation: ResumeOnce<Outcome>?
+    /// Bumped per recording so a stale max-duration timer from a finished
+    /// capture cannot terminate the one that started after it.
+    private var generation = 0
+
+    func begin(requestId: Int, engine: AVAudioEngine, sink: PCMSink) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard self.requestId == nil else { return false }
+        self.requestId = requestId
+        self.engine = engine
+        self.sink = sink
+        generation += 1
+        return true
+    }
+
+    func wait(maxMs: Int) async -> Outcome {
+        let gen = currentGeneration()
+        let outcome: Outcome = await withCheckedContinuation { cont in
+            arm(ResumeOnce(cont))
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(maxMs)) { [weak self] in
+                guard let self, self.isLive(generation: gen) else { return }
+                _ = self.finish(cancelled: false, reason: "max_duration")
+            }
+        }
+        return outcome
+    }
+
+    private func currentGeneration() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return generation
+    }
+
+    private func arm(_ box: ResumeOnce<Outcome>) {
+        lock.lock(); defer { lock.unlock() }
+        continuation = box
+    }
+
+    private func isLive(generation gen: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return generation == gen && requestId != nil
+    }
+
+    /// Returns false when no recording is active — the stop raced a max-length
+    /// finish or arrived with nothing running.
+    func finish(cancelled: Bool, reason: String) -> Bool {
+        lock.lock()
+        let cont = continuation
+        let active = requestId != nil
+        continuation = nil
+        requestId = nil
+        engine = nil
+        sink = nil
+        lock.unlock()
+        guard active, let cont else { return false }
+        cont.resume(Outcome(cancelled: cancelled, reason: cancelled ? "cancelled" : reason))
+        return true
+    }
+
+    func clear() {
+        _ = finish(cancelled: true, reason: "cleared")
     }
 }
 

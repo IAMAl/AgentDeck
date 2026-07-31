@@ -6,7 +6,7 @@
  * - Detail View: button 1=BACK, button 2=session info, buttons 3-7=options, button 8=ESC/STOP
  */
 import type { SessionInfo, StatusCardTone, StatusIconKind, CodexRateLimits } from '@agentdeck/shared';
-import { State, sortSessions, assignDisplayNames, foldCodexSessionsForDisplay, aliasModelName, Brand, usageWindowKind, usageWindowLabel } from '@agentdeck/shared';
+import { State, sortSessions, assignDisplayNames, foldCodexSessionsForDisplay, aliasModelName, Brand, usageWindowKind, usageWindowLabel, UI } from '@agentdeck/shared';
 import type { PromptOption } from '@agentdeck/shared';
 import { dlog } from './log.js';
 
@@ -157,6 +157,50 @@ const CC_PRESET_DEFS: Array<Omit<PresetAction, 'iconSvg'> & { iconSvg?: string; 
   { label: 'CLEAR', iconSvg: CLEAR_ICON_SVG, color: '#1e293b', textColor: '#94a3b8', prompt: '/clear' },
 ];
 
+// Host push-to-talk. The deck contributes the button; the daemon records on
+// the host mic, transcribes on-device and routes the text to this session —
+// same pipeline as the ESP32 boards' PTT keys, minus the board.
+export type SlotVoiceState = 'idle' | 'recording' | 'transcribing' | 'error';
+
+function voiceMicIcon(stroke: string, filled: boolean): string {
+  return [
+    `<rect x="62" y="16" width="20" height="34" rx="10" fill="${filled ? stroke : 'none'}" ${filled ? 'opacity="0.9" ' : ''}stroke="${stroke}" stroke-width="2.5"/>`,
+    `<path d="M52 42a20 20 0 0 0 40 0" fill="none" stroke="${stroke}" stroke-width="2.5" stroke-linecap="round"/>`,
+    `<line x1="72" y1="62" x2="72" y2="72" stroke="${stroke}" stroke-width="2.5" stroke-linecap="round"/>`,
+    `<line x1="60" y1="72" x2="84" y2="72" stroke="${stroke}" stroke-width="2.5" stroke-linecap="round"/>`,
+  ].join('');
+}
+
+/** Build the VOICE hold-to-talk preset styled for the current capture state. */
+function buildVoicePreset(state: SlotVoiceState): PresetAction {
+  switch (state) {
+    case 'recording':
+      return {
+        label: 'VOICE', iconSvg: voiceMicIcon(UI.error, true),
+        color: UI.popupBgDark, textColor: UI.error, subtitle: '● listening',
+        localAction: 'voice_ptt',
+      };
+    case 'transcribing':
+      return {
+        label: 'VOICE', iconSvg: voiceMicIcon(UI.cyan, false),
+        color: UI.popupBgDark, textColor: UI.cyan, subtitle: 'transcribing…',
+        localAction: 'voice_ptt',
+      };
+    case 'error':
+      return {
+        label: 'VOICE', iconSvg: voiceMicIcon(UI.error, false),
+        color: UI.popupBgDark, textColor: UI.error, subtitle: 'no speech',
+        localAction: 'voice_ptt',
+      };
+    default:
+      return {
+        label: 'VOICE', iconSvg: voiceMicIcon(UI.cyan, false),
+        color: UI.popupBgDark, textColor: UI.cyan, subtitle: 'hold to talk',
+        localAction: 'voice_ptt',
+      };
+  }
+}
+
 // OpenCode observed idle: the observer plugin injects immediately via the
 // in-process SDK — same semantics as managed idle presets.
 const OC_OBSERVED_INJECT_PRESETS: Array<Omit<PresetAction, 'iconSvg'> & { iconSvg?: string }> = [
@@ -210,6 +254,8 @@ export class SessionSlotManager {
   private _detailEffortLevel: string | undefined;
   private _detailMode: string | undefined;
   private _detailSuggestedPrompt: string | undefined;
+  /** Host push-to-talk capture state, mirrored from daemon voice_state events. */
+  private _voiceState: SlotVoiceState = 'idle';
   private _modelSwitching = false;
   private _prevModelName: string | undefined;
   private _modelSwitchStartedAt = 0;
@@ -385,6 +431,14 @@ export class SessionSlotManager {
 
   // ---- Detail view state updates ----
 
+  /** Mirror the daemon's host push-to-talk state. Returns true when it changed
+   *  (caller decides whether a repaint is due). */
+  updateVoiceState(state: SlotVoiceState): boolean {
+    if (this._voiceState === state) return false;
+    this._voiceState = state;
+    return true;
+  }
+
   updateDetailState(state: State, options: PromptOption[], tool?: string, toolInput?: string, question?: string, modelName?: string, mode?: string, effortLevel?: string, suggestedPrompt?: string): void {
     this._detailState = state;
     this._detailOptions = options;
@@ -453,7 +507,7 @@ export class SessionSlotManager {
 
   /** Handle button press. Returns action to take. */
   handleSlotPress(slot: number, layout?: DeckLayout): {
-    action: 'enter-detail' | 'exit-detail' | 'select-option' | 'stop' | 'esc' | 'next-page' | 'send-prompt' | 'open-gateway' | 'switch-model' | 'review-run' | 'refresh-usage' | 'cycle-usage-page' | 'none';
+    action: 'enter-detail' | 'exit-detail' | 'select-option' | 'stop' | 'esc' | 'next-page' | 'send-prompt' | 'open-gateway' | 'switch-model' | 'review-run' | 'refresh-usage' | 'cycle-usage-page' | 'voice-ptt-begin' | 'voice-ptt-end' | 'voice-ptt-cancel' | 'none';
     sessionId?: string;
     sessionPort?: number;
     optionIndex?: number;
@@ -496,6 +550,11 @@ export class SessionSlotManager {
         }
         if (config.preset?.localAction === 'review_run') {
           return { action: 'review-run' };
+        }
+        // Hold-to-talk: the key-down begins capture; the action class pairs it
+        // with a key-up that ends (or cancels) it.
+        if (config.preset?.localAction === 'voice_ptt') {
+          return { action: 'voice-ptt-begin', sessionId: this._focusedSessionId ?? undefined };
         }
         if (config.preset?.prompt) {
           return { action: 'send-prompt', promptText: config.preset.prompt };
@@ -910,13 +969,18 @@ export class SessionSlotManager {
       if (idx === OC_OBSERVED_INJECT_PRESETS.length) return this.reviewSlotConfig(session);
       return this.idleStatusCard(session, idx - OC_OBSERVED_INJECT_PRESETS.length - 1, false, false);
     }
-    // Claude/Codex observed idle: no prompt-delivery path, but the
-    // independent review stays live.
+    // Claude/Codex observed idle: no deck-native prompt presets, but the
+    // independent review stays live — and so does voice, because the daemon
+    // delivers a dictated prompt by typing into the owning terminal
+    // (injectObservedText), the same ladder a board's PTT rides.
     if (idx === 0) return this.reviewSlotConfig(session);
     if (idx === 1) {
+      return { type: 'preset', preset: buildVoicePreset(this._voiceState) };
+    }
+    if (idx === 2) {
       return { type: 'status', label: 'OBSERVED', subtitle: 'control in terminal', icon: 'ready', tone: 'info' };
     }
-    return this.idleStatusCard(session, idx - 2, false, false);
+    return this.idleStatusCard(session, idx - 3, false, false);
   }
 
   private getDetailSlotConfig(slot: number, layout: DeckLayout): SessionSlotConfig {
@@ -1059,12 +1123,21 @@ export class SessionSlotManager {
         color: def.color,
         textColor: def.textColor,
         prompt: def.prompt,
+        // Without this, localAction presets (REVIEW → review_run) press as
+        // dead keys: handleSlotPress dispatches on preset.localAction.
+        localAction: def.localAction,
       };
       return { type: 'preset', preset };
     }
 
+    // VOICE hold-to-talk follows the preset row — host mic + host speakers,
+    // routed by the daemon through the same pipeline as a board's PTT key.
+    if (!isOpenClaw && this._detailState === State.IDLE && contentIdx === CC_PRESET_DEFS.length) {
+      return { type: 'preset', preset: buildVoicePreset(this._voiceState) };
+    }
+
     if (!isOpenClaw && this._detailState === State.IDLE) {
-      return this.idleStatusCard(session, contentIdx - CC_PRESET_DEFS.length);
+      return this.idleStatusCard(session, contentIdx - CC_PRESET_DEFS.length - 1);
     }
 
     // OpenClaw already surfaces MODEL as an actionable preset, and PROCESSING

@@ -53,8 +53,8 @@ export const agentCommand = {
   escape(): EscapeCommand {
     return { type: "escape" };
   },
-  voice(action: 'start' | 'stop' | 'cancel'): VoiceCommand {
-    return { type: "voice", action };
+  voice(action: 'start' | 'stop' | 'cancel', sessionId?: string): VoiceCommand {
+    return { type: "voice", action, sessionId };
   },
   queryUsage(): QueryUsageCommand {
     return { type: "query_usage" };

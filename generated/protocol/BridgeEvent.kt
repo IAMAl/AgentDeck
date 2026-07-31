@@ -152,6 +152,9 @@ data class BridgeEvent (
      *
      * Session that produced these options. Required for safe device actions.
      *
+     * Which session the capture targets, for daemon host push-to-talk. Absent on the legacy
+     * session-bridge voice path (implicitly that bridge's own session).
+     *
      * Set when this history is a reply to `query_session_timeline` — scopes the entries to one
      * session so reconnecting glance devices (XTeink X3) can fill a per-session Detail view on
      * demand instead of waiting for live events.

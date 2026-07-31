@@ -178,13 +178,15 @@ describe('SessionSlotManager detail layout', () => {
   });
 
   it('aliases the model name on detail MODEL surfaces (status card + OpenClaw preset)', () => {
-    // Claude Code IDLE: MODEL status card subtitle uses the alias, not the raw upstream id.
+    // Claude Code IDLE: MODEL status card subtitle uses the alias, not the raw
+    // upstream id. On the 8-key SD+ the VOICE key claims the last content slot,
+    // so the MODEL card appears on layouts with more room (classic 15-key).
     const cc = new SessionSlotManager();
     cc.updateSessions([makeSession({ modelName: 'claude-sonnet-4-6', effortLevel: undefined })]);
     cc.enterDetailView('session-1');
     cc.updateDetailState(State.IDLE, [], undefined, undefined, undefined, 'claude-sonnet-4-6');
-    const ccModelCard = [0, 1, 2, 3, 4, 5, 6, 7]
-      .map(i => cc.getSlotConfig(i, SD_PLUS_LAYOUT))
+    const ccModelCard = Array.from({ length: SD_CLASSIC_LAYOUT.keyCount }, (_, i) => i)
+      .map(i => cc.getSlotConfig(i, SD_CLASSIC_LAYOUT))
       .find(c => c.type === 'status' && c.label === 'MODEL');
     expect(ccModelCard).toMatchObject({ type: 'status', label: 'MODEL', subtitle: 'sonnet 4.6' });
 
@@ -593,5 +595,60 @@ describe('SessionSlotManager list-view usage tiles', () => {
     expect(manager.getSlotConfig(14, SD_CLASSIC_LAYOUT).type).toBe('usage');
     // Status cards still render on the front keys.
     expect(manager.getSlotConfig(0, SD_CLASSIC_LAYOUT)).toMatchObject({ type: 'status', label: 'HUB READY' });
+  });
+});
+
+describe('VOICE hold-to-talk key', () => {
+  const allSlots = (mgr: SessionSlotManager, layout: DeckLayout) =>
+    Array.from({ length: layout.keyCount }, (_, i) => mgr.getSlotConfig(i, layout));
+
+  function idleDetailManager(): SessionSlotManager {
+    const mgr = new SessionSlotManager();
+    mgr.updateSessions([makeSession({})]);
+    mgr.enterDetailView('session-1');
+    mgr.updateDetailState(State.IDLE, []);
+    return mgr;
+  }
+
+  it('renders VOICE after the CC idle presets and maps its press to voice-ptt-begin', () => {
+    const mgr = idleDetailManager();
+    const configs = allSlots(mgr, SD_PLUS_LAYOUT);
+    const voiceSlot = configs.findIndex(c => c.type === 'preset' && c.preset?.localAction === 'voice_ptt');
+    expect(voiceSlot).toBeGreaterThanOrEqual(0);
+    expect(configs[voiceSlot].preset).toMatchObject({ label: 'VOICE', subtitle: 'hold to talk' });
+
+    const press = mgr.handleSlotPress(voiceSlot, SD_PLUS_LAYOUT);
+    expect(press).toMatchObject({ action: 'voice-ptt-begin', sessionId: 'session-1' });
+  });
+
+  it('keeps localAction on materialized CC presets so REVIEW presses dispatch', () => {
+    const mgr = idleDetailManager();
+    const review = allSlots(mgr, SD_PLUS_LAYOUT)
+      .find(c => c.type === 'preset' && c.preset?.label === 'REVIEW');
+    expect(review?.preset?.localAction).toBe('review_run');
+  });
+
+  it('restyles the VOICE key from daemon voice_state transitions', () => {
+    const mgr = idleDetailManager();
+    expect(mgr.updateVoiceState('recording')).toBe(true);
+    expect(mgr.updateVoiceState('recording')).toBe(false); // no repaint on no-op
+    const voice = allSlots(mgr, SD_PLUS_LAYOUT)
+      .find(c => c.type === 'preset' && c.preset?.localAction === 'voice_ptt');
+    expect(voice?.preset?.subtitle).toBe('● listening');
+  });
+
+  it('offers VOICE on observed Claude idle next to REVIEW (terminal-injection delivery)', () => {
+    const mgr = new SessionSlotManager();
+    mgr.updateSessions([makeSession({
+      id: 'observed:claude:abc',
+      controlMode: 'observed',
+      state: State.IDLE,
+    })]);
+    mgr.enterDetailView('observed:claude:abc');
+    const configs = allSlots(mgr, SD_PLUS_LAYOUT);
+    const voice = configs.find(c => c.type === 'preset' && c.preset?.localAction === 'voice_ptt');
+    expect(voice?.preset?.label).toBe('VOICE');
+    // The honest "control in terminal" tile survives the insertion.
+    expect(configs.some(c => c.type === 'status' && c.label === 'OBSERVED')).toBe(true);
   });
 });

@@ -89,12 +89,13 @@ sealed class AgentCommand {
         }
     }
 
-    data class Voice(val action: String) : AgentCommand() {
+    data class Voice(val action: String, val sessionId: String? = null) : AgentCommand() {
         override val typeTag: String = "voice"
         override fun toJson(): String {
             val buf = StringBuilder()
             buf.append("{\"type\":\"voice\"")
             buf.append(",\"action\":").append(encode(action))
+            if (sessionId != null) buf.append(",\"sessionId\":").append(encode(sessionId))
             buf.append("}")
             return buf.toString()
         }

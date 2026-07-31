@@ -287,6 +287,50 @@ export async function transcribeWithHelper(
   return text;
 }
 
+/** Hard ceiling on one push-to-talk hold; matches the helper's own clamp. */
+export const RECORD_MAX_MS = 30_000;
+
+/**
+ * Capture the host microphone into a 16 kHz mono PCM16 WAV. Resolves when the
+ * capture ends — either `stopHelperRecording()` was called (PTT release) or
+ * `maxMs` elapsed. This replaces the sox/iTerm2-grant capture that got the
+ * original Stream Deck Voice dial pulled before the Marketplace submission:
+ * the mic TCC grant now belongs to the daemon's own bundled helper.
+ */
+export async function recordWithHelper(
+  outPath: string,
+  opts: { maxMs?: number } = {},
+): Promise<{ wav: string; durationMs: number; stopReason: string }> {
+  const maxMs = Math.min(opts.maxMs ?? RECORD_MAX_MS, 120_000);
+  const response = await requestHelper(
+    { type: 'record', wav: outPath, maxMs },
+    maxMs + 15_000,
+  );
+  if (response.cancelled === true) {
+    throw new Error('record_cancelled');
+  }
+  if (typeof response.error === 'string') {
+    throw new Error(`${response.error}: ${String(response.reason ?? '')}`.trim());
+  }
+  return {
+    wav: typeof response.wav === 'string' ? response.wav : outPath,
+    durationMs: typeof response.durationMs === 'number' ? response.durationMs : 0,
+    stopReason: typeof response.stopReason === 'string' ? response.stopReason : 'stopped',
+  };
+}
+
+/**
+ * End (or abandon) the in-flight `recordWithHelper` capture. Returns false when
+ * nothing was recording — a release that raced the max-duration stop.
+ */
+export async function stopHelperRecording(opts: { cancel?: boolean } = {}): Promise<boolean> {
+  const response = await requestHelper(
+    { type: opts.cancel ? 'record_cancel' : 'record_stop' },
+    10_000,
+  );
+  return response.stopped === true;
+}
+
 /** Speak a reply through the host's audio output (AVSpeechSynthesizer). */
 export async function speakWithHelper(
   text: string,

@@ -391,6 +391,18 @@ final class DaemonServer {
     /// Created on the main actor during `startServices` — a `@MainActor`
     /// stored property cannot be initialized from the daemon's init.
     @MainActor private var voiceAssistant: DaemonVoiceAssistant?
+    /// Host push-to-talk for deck surfaces (Stream Deck / D200H) — Node
+    /// `voice`-command parity. Same main-actor hosting rationale as
+    /// `voiceAssistant`: AVFoundation state lives on the main actor.
+    @MainActor private var pttVoice: DaemonPttVoice?
+    /// One capture at a time — PTT models a single held/toggled key.
+    private var pttBusy = false
+    /// Session the in-flight capture targets (device-sent id form).
+    private var pttTargetSessionId = ""
+    /// Session whose next chat_response should be spoken (bare-uuid form),
+    /// with the arming time for the staleness cutoff.
+    private var pttArmedSessionId: String?
+    private var pttArmedAt: TimeInterval = 0
     private let openCodeObserver = OpenCodeObserver()
     private let timelineRelay: TimelineRelay
     private let focusRelay: SessionFocusRelay
@@ -475,6 +487,14 @@ final class DaemonServer {
     /// make devices fabricate actionable permission controls for an observed
     /// terminal that AgentDeck cannot safely type into.
     private var pendingAskToolUseIdBySession: [String: String] = [:]
+    /// Read-only child lifecycle state. Child agents never become
+    /// DaemonSessionEntry rows and never participate in steering/approval;
+    /// this map exists only to pair concise Timeline start/completion rows.
+    private struct ActiveSubagentTimeline {
+        let startedAt: Double
+        let label: String
+    }
+    private var activeSubagentTimeline: [String: ActiveSubagentTimeline] = [:]
 
     // Observed-session attention: ordinary permission prompts remain
     // Notification-driven. AskUserQuestion is the safe exception because its
@@ -2855,6 +2875,14 @@ final class DaemonServer {
             cmd["sessionId"] = resolveDeviceSessionId(rawSid)
         }
 
+        // Host push-to-talk is the daemon's own capability (host mic +
+        // speakers) — claim it before any adapter/gateway routing, mirroring
+        // the Node daemon's interception in handleDeviceCommand.
+        if type == "voice" {
+            handleHostVoicePtt(cmd)
+            return
+        }
+
         // Session bridge self-registration — must run BEFORE the gateway
         // adapter dispatch so that a gateway-driven mode doesn't swallow
         // the push. Mirrors the `onRawMessage` interception used by the
@@ -3223,6 +3251,131 @@ final class DaemonServer {
 
     // MARK: - Hook Events
 
+    /// Collapse child/team lifecycle into existing Timeline row types.
+    /// Returning true means the caller must stop: child hooks are never parent
+    /// session state, approval, command, or APME input.
+    private func handleSubagentTimelineHook(
+        event: String,
+        json: [String: Any],
+        sessionId: String?
+    ) async -> Bool {
+        let lifecycleEvents: Set<String> = [
+            "subagent_start", "subagent_stop",
+            "codex_subagent_start", "codex_subagent_stop",
+            "task_completed", "teammate_idle",
+        ]
+        let agentId = (json["agent_id"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasChildIdentity = agentId?.isEmpty == false
+        guard lifecycleEvents.contains(event) || hasChildIdentity else { return false }
+
+        // Child tool churn is intentionally omitted; start + final report is
+        // the glanceable activity contract. Every other child hook and idle
+        // metadata are consumed without a row.
+        if hasChildIdentity
+            && event != "subagent_start" && event != "subagent_stop"
+            && event != "codex_subagent_start" && event != "codex_subagent_stop" {
+            return true
+        }
+        if event == "teammate_idle" { return true }
+
+        let sid = sessionId
+            ?? (json["session_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? "daemon-hook"
+        let provider = event.hasPrefix("codex_")
+            ? "codex-cli"
+            : (pushedSessionsById[sid]?.agentType ?? "claude-code")
+        let project = Self.nonEmptyString(pushedSessionsById[sid]?.projectName)
+            ?? Self.nonEmptyString(ProjectNameResolver.projectName(fromHookPayload: json))
+        let clean: (Any?) -> String? = { value in
+            guard let raw = value as? String else { return nil }
+            let collapsed = raw
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            return collapsed.isEmpty ? nil : collapsed
+        }
+        let rawLabel = clean(json["agent_type"])
+            ?? clean(json["teammate_name"])
+            ?? "Subagent"
+        let label = String((rawLabel.lowercased() == "general-purpose" ? "General" : rawLabel).prefix(28))
+        let identity = agentId
+            ?? clean(json["task_id"])
+            ?? "anonymous"
+        let key = "\(sid):\(identity)"
+        let now = Date().timeIntervalSince1970 * 1000
+        let staleCutoff = now - (6 * 60 * 60 * 1000)
+        activeSubagentTimeline = activeSubagentTimeline.filter { $0.value.startedAt >= staleCutoff }
+
+        if event == "subagent_start" || event == "codex_subagent_start" {
+            activeSubagentTimeline[key] = ActiveSubagentTimeline(startedAt: now, label: label)
+            var entry = DaemonTimelineEntry(
+                ts: now,
+                type: "tool_exec",
+                raw: "Subagent \(label) · Started",
+                detail: nil,
+                approvalId: nil,
+                status: nil,
+                agentType: provider,
+                repeatCount: nil,
+                automated: nil
+            )
+            entry.sessionId = sid
+            entry.projectName = project
+            entry.startedAt = now
+            entry.summaryKind = "progress"
+            await timelineStore.add(entry, bypassSuppression: true)
+            broadcastRaw(["type": "timeline_event", "entry": claudeCodeEntryDict(entry)])
+            return true
+        }
+
+        if event == "task_completed" {
+            let subject = clean(json["task_subject"]) ?? clean(json["task_description"])
+            let summary = subject.flatMap(TimelineSummarizer.extractTopicHint) ?? subject ?? "Completed"
+            var entry = DaemonTimelineEntry(
+                ts: now,
+                type: "tool_resolved",
+                raw: "Team \(label) · \(String(summary.prefix(96)))",
+                detail: nil,
+                approvalId: nil,
+                status: nil,
+                agentType: provider,
+                repeatCount: nil,
+                automated: nil
+            )
+            entry.sessionId = sid
+            entry.projectName = project
+            entry.endedAt = now
+            entry.summaryKind = subject == nil ? "none" : "heuristic"
+            await timelineStore.add(entry, bypassSuppression: true)
+            broadcastRaw(["type": "timeline_event", "entry": claudeCodeEntryDict(entry)])
+            return true
+        }
+
+        let active = activeSubagentTimeline.removeValue(forKey: key)
+        let response = clean(json["last_assistant_message"])
+        let summary = response.flatMap(TimelineSummarizer.extractTopicHint) ?? "Completed"
+        var entry = DaemonTimelineEntry(
+            ts: now,
+            type: "tool_resolved",
+            raw: "Subagent \(active?.label ?? label) · \(String(summary.prefix(96)))",
+            detail: nil,
+            approvalId: nil,
+            status: nil,
+            agentType: provider,
+            repeatCount: nil,
+            automated: nil
+        )
+        entry.sessionId = sid
+        entry.projectName = project
+        entry.startedAt = active?.startedAt
+        entry.endedAt = now
+        entry.summaryKind = response == nil ? "none" : "heuristic"
+        await timelineStore.add(entry, bypassSuppression: true)
+        broadcastRaw(["type": "timeline_event", "entry": claudeCodeEntryDict(entry)])
+        return true
+    }
+
     private func handleHookEvent(_ json: [String: Any]) async {
         guard let event = json["event"] as? String else { return }
         DaemonLogger.shared.debug("Hook", "Received: \(event)")
@@ -3267,6 +3420,13 @@ final class DaemonServer {
             return (json["session_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? CodexHookIdentity.threadIdSessionKey(from: json)
         }()
+
+        // Child lifecycle is telemetry-only. Consume it before resurrection,
+        // state, APME, and steering bookkeeping so a child's tool hooks can
+        // never alter or request approval through the parent session.
+        if await handleSubagentTimelineHook(event: event, json: json, sessionId: sessionId) {
+            return
+        }
 
         // Resurrection: Claude Code only fires `session_start` once per
         // claude process lifetime. If the AgentDeck daemon restarts mid-
@@ -4884,6 +5044,7 @@ final class DaemonServer {
     /// or a held device-approval gate. Anything else → empty pass-through.
     private func steerPreToolUse(body: Data) async -> HTTPServer.HTTPResponse {
         guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              json["agent_id"] as? String == nil,
               let sid = json["session_id"] as? String, !sid.isEmpty,
               let entry = pushedSessionsById[sid],
               entry.controlMode == "observed", entry.agentType == "claude-code" else {
@@ -4969,6 +5130,7 @@ final class DaemonServer {
     /// stop_hook_active loop possible).
     private func steerStop(body: Data) async -> HTTPServer.HTTPResponse {
         guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+              json["agent_id"] as? String == nil,
               let sid = json["session_id"] as? String, !sid.isEmpty,
               let entry = pushedSessionsById[sid],
               entry.controlMode == "observed", entry.agentType == "claude-code" else {
@@ -5208,6 +5370,177 @@ final class DaemonServer {
     /// Semantics differ from managed on purpose: interrupt → soft STOP (deny
     /// at next tool), send_prompt → queued for turn end, respond/select_option
     /// → resolve the held gate. Replaces the old silent swallow in focusLocal.
+    // MARK: - Host push-to-talk (deck surfaces)
+
+    /// Lazily create the PTT engine on the main actor and wire its
+    /// max-duration auto-stop back into the daemon's own stop path, so a
+    /// client that dies mid-hold still gets its utterance transcribed.
+    @MainActor private func pttVoiceEnsured() -> DaemonPttVoice {
+        if let pttVoice { return pttVoice }
+        let ptt = DaemonPttVoice()
+        ptt.onAutoStop = { [weak self] in
+            guard let self else { return }
+            Task { @DaemonActor in
+                self.handleHostVoicePtt(["action": "stop"])
+            }
+        }
+        pttVoice = ptt
+        return ptt
+    }
+
+    private func broadcastVoiceState(
+        _ state: String, text: String? = nil, error: String? = nil, sessionId: String? = nil
+    ) {
+        var e: [String: Any] = ["type": "voice_state", "state": state]
+        if let text, !text.isEmpty { e["text"] = text }
+        if let error, !error.isEmpty { e["error"] = error }
+        if let sessionId, !sessionId.isEmpty { e["sessionId"] = sessionId }
+        broadcastRaw(e)
+    }
+
+    /// A deck key contributes only a button; the host contributes mic,
+    /// recognizer and speakers. Delivery reuses this daemon's own
+    /// session_command routing (managed relay / observed steering ladder),
+    /// so a dictated prompt behaves exactly like a typed preset.
+    private func handleHostVoicePtt(_ cmd: [String: Any]) {
+        let action = cmd["action"] as? String ?? ""
+        switch action {
+        case "start":
+            guard !pttBusy else { return }
+            let sessionId = (cmd["sessionId"] as? String) ?? ""
+            pttBusy = true
+            pttTargetSessionId = sessionId
+            broadcastVoiceState("recording", sessionId: sessionId)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let err = self.pttVoiceEnsured().begin()
+                if let err {
+                    Task { @DaemonActor in
+                        self.pttBusy = false
+                        self.broadcastVoiceState("error", error: err, sessionId: sessionId)
+                    }
+                }
+            }
+        case "stop":
+            guard pttBusy else { return }
+            let sid = pttTargetSessionId
+            broadcastVoiceState("transcribing", sessionId: sid)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // A stop racing the start's engine setup must still resolve
+                // the busy flag, or one lost round bricks PTT until relaunch.
+                guard let ptt = self.pttVoice else {
+                    Task { @DaemonActor in self.finishHostPtt(text: nil, sessionId: sid) }
+                    return
+                }
+                let text = await ptt.end(preferredLocales: [Locale.current, Locale(identifier: "en_US")])
+                Task { @DaemonActor in
+                    self.finishHostPtt(text: text, sessionId: sid)
+                }
+            }
+        case "cancel":
+            guard pttBusy else { return }
+            let sid = pttTargetSessionId
+            pttBusy = false
+            Task { @MainActor [weak self] in self?.pttVoice?.cancel() }
+            broadcastVoiceState("idle", sessionId: sid)
+        default:
+            break
+        }
+    }
+
+    private func finishHostPtt(text: String?, sessionId: String) {
+        pttBusy = false
+        guard let text, !text.isEmpty else {
+            broadcastVoiceState("error", error: "no_speech", sessionId: sessionId)
+            return
+        }
+        guard !sessionId.isEmpty else {
+            // No target — surface what was heard, deliver nothing.
+            broadcastVoiceState("idle", text: text)
+            return
+        }
+        DaemonLogger.shared.info("PTT: \"\(text.prefix(40))\" -> \(sessionId.prefix(32))")
+        handleCommand([
+            "type": "session_command",
+            "sessionId": sessionId,
+            "command": ["type": "send_prompt", "text": text],
+        ])
+        // Arm the spoken reply on the bare uuid: timeline rows key on it,
+        // while devices sent the observed:<agent>:<uuid> form.
+        pttArmedSessionId = Self.pttRawSessionId(sessionId)
+        pttArmedAt = Date().timeIntervalSince1970
+        broadcastVoiceState("idle", text: text, sessionId: sessionId)
+    }
+
+    /// Speak a chat_response on the host speakers when a deck dictation armed
+    /// that session. The Node daemon's reply router collapsed to the single
+    /// host sink this daemon owns; called from broadcastRaw, the one
+    /// chokepoint every agent's chat_response passes through.
+    private func notePttReplyCandidate(_ entry: [String: Any]) {
+        guard let armed = pttArmedSessionId else { return }
+        guard (entry["type"] as? String) == "chat_response" else { return }
+        // A session that answers this much later has moved on — speaking then
+        // is worse than silence (Node REPLY_ARM_TTL_MS parity).
+        guard Date().timeIntervalSince1970 - pttArmedAt <= 600 else {
+            pttArmedSessionId = nil
+            return
+        }
+        let sid = Self.pttRawSessionId((entry["sessionId"] as? String) ?? "")
+        guard !sid.isEmpty, sid == armed else { return }
+        pttArmedSessionId = nil
+        let raw = (entry["detail"] as? String) ?? (entry["raw"] as? String) ?? ""
+        let spoken = Self.speakableReply(raw)
+        guard !spoken.isEmpty else {
+            DaemonLogger.shared.debug("Voice", "PTT reply held nothing speakable — skipped")
+            return
+        }
+        DaemonLogger.shared.info("PTT: speaking reply (\(spoken.count) chars)")
+        Task { @MainActor [weak self] in self?.pttVoice?.speakReply(spoken) }
+    }
+
+    /// Mirror of `rawSessionId` in shared/src/session-utils.ts (the SSOT for
+    /// the observed-prefix agent list) — keep the two in step.
+    nonisolated static func pttRawSessionId(_ id: String) -> String {
+        return id.replacingOccurrences(
+            of: "^observed:(?:claude|codex|codex-app|opencode|antigravity):",
+            with: "",
+            options: .regularExpression)
+    }
+
+    /// Mirror of `speakableReply` in bridge/src/device-voice-reply.ts: strip
+    /// what makes no sense read aloud (code fences, markdown scaffolding,
+    /// bare URLs) and cap at a sentence boundary.
+    nonisolated static func speakableReply(_ raw: String, maxChars: Int = 700) -> String {
+        if raw.isEmpty { return "" }
+        var text = raw
+        func gsub(_ pattern: String, _ template: String) {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { return }
+            text = re.stringByReplacingMatches(
+                in: text, range: NSRange(text.startIndex..., in: text), withTemplate: template)
+        }
+        gsub("```[\\s\\S]*?```", " (code) ")
+        gsub("`([^`]+)`", "$1")
+        gsub("!?\\[([^\\]]*)\\]\\([^)]*\\)", "$1")
+        gsub("https?://\\S+", " link ")
+        gsub("(?m)^\\s*(?:#{1,6}|>|[*\\-+])\\s+", "")
+        gsub("\\*\\*|__|~~", "")
+        gsub("[ \\t]+", " ")
+        gsub("\\n{2,}", "\n")
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.count > maxChars {
+            let head = String(text.prefix(maxChars))
+            let stops = [". ", "。", "! ", "? ", "다."]
+            let lastStop = stops.compactMap { head.range(of: $0, options: .backwards)?.upperBound }.max()
+            if let lastStop, head.distance(from: head.startIndex, to: lastStop) > maxChars / 2 {
+                text = String(head[..<lastStop])
+            } else {
+                text = head
+            }
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func handleObservedClaudeCommand(sessionId: String, command: [String: Any]) {
         let type = command["type"] as? String ?? ""
         switch type {
@@ -5268,6 +5601,10 @@ final class DaemonServer {
         case "Stop":         return "stop"
         case "UserPromptSubmit": return "user_prompt_submit"
         case "Notification": return "notification"
+        case "SubagentStart": return "subagent_start"
+        case "SubagentStop": return "subagent_stop"
+        case "TaskCompleted": return "task_completed"
+        case "TeammateIdle": return "teammate_idle"
         default: return rawName.lowercased()
         }
     }
@@ -6417,6 +6754,7 @@ final class DaemonServer {
         if (event["type"] as? String) == "timeline_event",
            let entry = event["entry"] as? [String: Any] {
             noteTimelineEntryForBoards(entry)
+            notePttReplyCandidate(entry)
         }
         guard let data = event.jsonData else { return }
         // WiFi-WS ESP32 boards are display clients, not dashboards. Shrink +
