@@ -21,14 +21,26 @@ import type { CardFeedGlance, GlanceWeather } from '@agentdeck/shared';
 // ===== Board presets (logical orientation the UI renders in) =====
 
 export interface FrameGeometry {
+  /** Logical layout space the SVG is authored in. */
   width: number;
   height: number;
   /** Landscape boards get a two-column layout. */
   landscape: boolean;
+  /**
+   * The panel's native framebuffer is landscape while the layout is portrait:
+   * rotate the raster into physical space before packing, mirroring the
+   * device's GfxRenderer Portrait mapping (phyX = y, phyY = panelH - 1 - x).
+   * A blit consumer writes the packed bytes straight into the physical
+   * framebuffer, bypassing that mapping — and a no-PSRAM C3 cannot afford a
+   * per-pixel rotate on device, so the daemon does it once here. The packed
+   * frame (and X-Frame-Width/Height) then report the PHYSICAL geometry.
+   */
+  rotateToPhysical?: boolean;
 }
 
 export const GLANCE_FRAME_BOARDS: Record<string, FrameGeometry> = {
-  xteink_x3: { width: 528, height: 792, landscape: false },
+  // X3 panel: physical 792×528 (stride 99); layout stays portrait 528×792.
+  xteink_x3: { width: 528, height: 792, landscape: false, rotateToPhysical: true },
   xteink_x4: { width: 800, height: 480, landscape: true },
   inkdeck: { width: 800, height: 480, landscape: true },
 };
@@ -272,6 +284,22 @@ const BAYER4 = [
   [15, 7, 13, 5],
 ].map((row) => row.map((v) => Math.round(((v + 0.5) * 255) / 16)));
 
+/** Rotate a logical-space grayscale raster (w×h) into physical panel space
+ *  (h×w), using the device GfxRenderer Portrait mapping: phyX = y,
+ *  phyY = physH − 1 − x (with physH = logical width). Kept exactly in sync
+ *  with `rotateCoordinates` in the XTeink fork's GfxRenderer.cpp. */
+export function rotateGrayToPhysical(gray: Buffer, width: number, height: number): Buffer {
+  const physW = height;
+  const physH = width;
+  const out = Buffer.alloc(physW * physH);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      out[(physH - 1 - x) * physW + y] = gray[y * width + x];
+    }
+  }
+  return out;
+}
+
 /** Pack 8-bit grayscale into the e-ink framebuffer format: 1bpp, MSB-first
  *  within each byte, row-major, bit 1 = white (clearScreen(0xFF) = white). */
 export function packMono(gray: Buffer, width: number, height: number): Buffer {
@@ -308,9 +336,13 @@ export interface RenderedGlanceFrame {
 }
 
 export async function renderGlanceFrame(input: GlanceFrameInput): Promise<RenderedGlanceFrame> {
-  const { width, height } = input.geometry;
   const svg = Buffer.from(renderGlanceFrameSvg(input));
-  const gray = await sharp(svg, { density: 72 }).flatten({ background: 'white' }).greyscale().raw().toBuffer();
+  let gray = await sharp(svg, { density: 72 }).flatten({ background: 'white' }).greyscale().raw().toBuffer();
+  let { width, height } = input.geometry;
+  if (input.geometry.rotateToPhysical) {
+    gray = rotateGrayToPhysical(gray, width, height);
+    [width, height] = [height, width];
+  }
   const packed = packMono(gray, width, height);
   // The sig hashes the frame's CONTENT, not its pixels: the masthead bakes the
   // "Synced HH:MM" clock stamp into the raster, so a pixel hash would change

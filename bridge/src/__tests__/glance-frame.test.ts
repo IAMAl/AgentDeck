@@ -3,6 +3,7 @@ import {
   renderGlanceFrameSvg,
   renderGlanceFrame,
   packMono,
+  rotateGrayToPhysical,
   wmoIconKey,
   GLANCE_FRAME_BOARDS,
 } from '../glance-frame.js';
@@ -98,8 +99,29 @@ describe('renderGlanceFrame', () => {
     const input = { glance: GLANCE, serverHm: '08:59', geometry: GLANCE_FRAME_BOARDS.xteink_x3 };
     const a = await renderGlanceFrame(input);
     const b = await renderGlanceFrame(input);
-    expect(a.packed.length).toBe((528 / 8) * 792);
+    // X3 is rotated to physical panel space: 792×528, stride 99.
+    expect(a.width).toBe(792);
+    expect(a.height).toBe(528);
+    expect(a.packed.length).toBe((792 / 8) * 528);
     expect(a.sig).toBe(b.sig);
+  });
+
+  it('rotates X3 into physical space with the device GfxRenderer Portrait mapping', () => {
+    // Synthetic 4×6 logical raster with unique values per pixel.
+    const w = 4, h = 6;
+    const logical = Buffer.alloc(w * h);
+    for (let i = 0; i < w * h; i++) logical[i] = i;
+    const phys = rotateGrayToPhysical(logical, w, h);
+    expect(phys.length).toBe(w * h);
+    // Device mapping: phyX = y, phyY = physH − 1 − x (physW = h, physH = w).
+    const physW = h, physH = w;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        expect(phys[(physH - 1 - x) * physW + y]).toBe(logical[y * w + x]);
+      }
+    }
+    // Corners: logical top-left lands at physical bottom-left row.
+    expect(phys[(physH - 1) * physW + 0]).toBe(logical[0]);
   });
 
   it('sig ignores the clock stamp but tracks content — a clock tick must not void the conditional', async () => {
