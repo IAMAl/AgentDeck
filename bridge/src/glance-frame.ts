@@ -288,7 +288,7 @@ export function packMono(gray: Buffer, width: number, height: number): Buffer {
   return out;
 }
 
-/** FNV-1a over the packed frame — the frame's ETag. */
+/** FNV-1a over a byte buffer (frame sig / content sig). */
 export function frameSig(packed: Buffer): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < packed.length; i++) {
@@ -312,9 +312,17 @@ export async function renderGlanceFrame(input: GlanceFrameInput): Promise<Render
   const svg = Buffer.from(renderGlanceFrameSvg(input));
   const gray = await sharp(svg, { density: 72 }).flatten({ background: 'white' }).greyscale().raw().toBuffer();
   const packed = packMono(gray, width, height);
+  // The sig hashes the frame's CONTENT, not its pixels: the masthead bakes the
+  // "Synced HH:MM" clock stamp into the raster, so a pixel hash would change
+  // every minute and silently void the ?sig= conditional (a device would
+  // re-download ~50KB on every poll past a minute boundary). Hashing the SVG
+  // with the clock stamp blanked keeps the sig stable across clock ticks while
+  // still covering everything else that moves pixels — glance data, geometry,
+  // and layout-code changes all flow through the SVG string.
+  const sig = frameSig(Buffer.from(renderGlanceFrameSvg({ ...input, serverHm: '' })));
   return {
     packed,
-    sig: frameSig(packed),
+    sig,
     width,
     height,
     png: async () => {

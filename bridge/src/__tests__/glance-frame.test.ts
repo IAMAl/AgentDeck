@@ -3,7 +3,6 @@ import {
   renderGlanceFrameSvg,
   renderGlanceFrame,
   packMono,
-  frameSig,
   wmoIconKey,
   GLANCE_FRAME_BOARDS,
 } from '../glance-frame.js';
@@ -101,7 +100,22 @@ describe('renderGlanceFrame', () => {
     const b = await renderGlanceFrame(input);
     expect(a.packed.length).toBe((528 / 8) * 792);
     expect(a.sig).toBe(b.sig);
-    expect(a.sig).toBe(frameSig(a.packed));
+  });
+
+  it('sig ignores the clock stamp but tracks content — a clock tick must not void the conditional', async () => {
+    const geometry = GLANCE_FRAME_BOARDS.xteink_x3;
+    const atT0 = await renderGlanceFrame({ glance: GLANCE, serverHm: '08:59', geometry });
+    const atT1 = await renderGlanceFrame({ glance: GLANCE, serverHm: '09:00', geometry });
+    expect(atT1.sig).toBe(atT0.sig); // clock-derived fields are excluded by design
+    expect(atT1.packed.equals(atT0.packed)).toBe(false); // …even though the pixels moved
+    const edited = await renderGlanceFrame({
+      glance: { ...GLANCE, wrapup: ['something new landed'] },
+      serverHm: '09:00',
+      geometry,
+    });
+    expect(edited.sig).not.toBe(atT0.sig);
+    const otherBoard = await renderGlanceFrame({ glance: GLANCE, serverHm: '08:59', geometry: GLANCE_FRAME_BOARDS.xteink_x4 });
+    expect(otherBoard.sig).not.toBe(atT0.sig);
   });
 
   it('landscape preset fills the X4 framebuffer', async () => {
