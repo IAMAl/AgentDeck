@@ -116,6 +116,36 @@ const GRAY = '#808080';
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+/** Conservative SVG text-width estimate used only to add an honest ellipsis
+ * before the hard clip. The production renderer cannot ask librsvg for text
+ * metrics before composing the SVG, and emitting the full string lets e-ink
+ * crop a word mid-letter. Count CJK/full-width glyphs as one em and bucket the
+ * common Latin widths; the clipPath remains the final safety boundary. */
+function fitText(s: string, maxWidth: number, fontSize: number): string {
+  const glyphEm = (ch: string): number => {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp >= 0x2e80) return 1;
+    if (/\s/.test(ch)) return 0.33;
+    if (/[ilI1.,'`|!:;]/.test(ch)) return 0.28;
+    if (/[mwMW@#%&]/.test(ch)) return 0.82;
+    return 0.56;
+  };
+  const width = (value: string): number => [...value].reduce((sum, ch) => sum + glyphEm(ch) * fontSize, 0);
+  if (width(s) <= maxWidth) return s;
+
+  const suffix = '…';
+  const suffixWidth = width(suffix);
+  let used = 0;
+  let out = '';
+  for (const ch of s) {
+    const next = glyphEm(ch) * fontSize;
+    if (used + next + suffixWidth > maxWidth) break;
+    out += ch;
+    used += next;
+  }
+  return `${out.trimEnd()}${suffix}`;
+}
+
 export interface GlanceFrameInput {
   glance?: CardFeedGlance;
   /** Daemon-local "HH:MM" at render — the frame's absolute "Synced" stamp. */
@@ -261,7 +291,7 @@ export function renderGlanceFrameSvg(input: GlanceFrameInput): string {
   for (const line of wrapup) {
     if (wy > H - 60) break;
     c.parts.push(`<circle cx="${wx + 5}" cy="${wy - 6}" r="4" fill="black"/>`);
-    text(c, wx + 20, wy, 20, line);
+    text(c, wx + 20, wy, 20, fitText(line, ww - 20, 20));
     wy += 32;
   }
   c.parts.push('</g>');

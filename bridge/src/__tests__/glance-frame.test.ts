@@ -63,6 +63,17 @@ describe('renderGlanceFrameSvg', () => {
     expect(svg).toContain('No active sessions');
     expect(svg).not.toContain('Synced');
   });
+
+  it('ellipsizes long work lines before the hard column clip', () => {
+    const long = 'AgentDeck · Checking for changes in the DEVELOPMENT_LOG and every downstream compatibility surface';
+    const svg = renderGlanceFrameSvg({
+      glance: { ...GLANCE, wrapup: [long] },
+      serverHm: '08:59',
+      geometry: GLANCE_FRAME_BOARDS.xteink_x4,
+    });
+    expect(svg).toContain('…');
+    expect(svg).not.toContain(long);
+  });
 });
 
 describe('packMono', () => {
