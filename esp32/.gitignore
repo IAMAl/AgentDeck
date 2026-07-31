@@ -11,3 +11,8 @@ sdkconfig.defaults
 sdkconfig.*
 managed_components/
 .dummy/
+
+# ESP-IDF scaffolding emitted by pio when a board builds through the IDF path
+# (ips10 does). Generated per build, never authored.
+CMakeLists.txt
+dependencies.lock
