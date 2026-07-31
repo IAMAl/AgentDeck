@@ -39,14 +39,28 @@ function commandsOf(cells: Map<string, { svg: string; action: DeckAction }>) {
 }
 
 describe('D200H observed session detail', () => {
-  it('idle: REVIEW (independent eval) is the only actionable cell — no fake prompts, inert STOP', () => {
+  it('idle: REVIEW + VOICE are the actionable cells — no fake prompts, inert STOP', () => {
     const cells = detailCells(observedStateEvt({ state: 'idle' }));
     const cmds = commandsOf(cells);
-    expect(cmds.map((c) => c.type)).toEqual(['review_run']);
+    // Both are deliverable without deck-native prompt presets: REVIEW is the
+    // daemon-side eval, VOICE dictates through the observed-steering ladder.
+    expect(cmds.map((c) => c.type)).toEqual(['review_run', 'voice']);
     expect(cmds[0].sessionId).toBe('observed:claude:uuid-1');
+    expect(cmds[1]).toMatchObject({ type: 'voice', action: 'start', sessionId: 'observed:claude:uuid-1' });
     const svgs = [...cells.values()].map((c) => c.svg).join('');
     expect(svgs).toContain('OBSERVED');
     expect(svgs).not.toContain('GO ON');
+  });
+
+  it('idle while recording: the VOICE tile flips to a stop toggle', () => {
+    const view = {
+      mode: 'detail' as const,
+      openSessionId: 'observed:claude:uuid-1',
+      voiceState: 'recording' as const,
+    };
+    const cells = buildSessionDeck(observedStateEvt({ state: 'idle' }), view, POSITIONS);
+    const voice = commandsOf(cells).find((c) => c.type === 'voice');
+    expect(voice).toMatchObject({ type: 'voice', action: 'stop' });
   });
 
   it('processing: soft STOP is the only action; no queued task or REVIEW mid-turn', () => {
@@ -149,8 +163,9 @@ describe('D200H observed session detail', () => {
     const cells = buildSessionDeck(evt, { mode: 'detail', openSessionId: 'observed:codex:t1' }, POSITIONS);
     const cmds = commandsOf(cells);
     // The independent eval needs no agent control, so it stays live even for
-    // control-less codex; every steering command stays absent.
-    expect(cmds.map((c) => c.type)).toEqual(['review_run']);
+    // notify-only codex; VOICE is likewise daemon-delivered (terminal
+    // injection on the Node daemon). Steering commands stay absent.
+    expect(cmds.map((c) => c.type)).toEqual(['review_run', 'voice']);
   });
 
   it('codex observed processing: nothing actionable — REVIEW waits for turn end', () => {

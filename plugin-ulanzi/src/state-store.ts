@@ -12,6 +12,8 @@ export class StateStore {
   private sessionStates = new Map<string, Record<string, unknown>>();
   private sessions: SessionInfo[] = [];
   private usage: Record<string, unknown> = {};
+  /** Host push-to-talk state (daemon voice_state) for the detail VOICE tile. */
+  voiceState: 'idle' | 'recording' | 'transcribing' | 'error' = 'idle';
   /** Daemon link state — false until connected, false again on disconnect. */
   private connected = false;
   /**
@@ -99,6 +101,13 @@ export class StateStore {
       case 'usage_update':
         this.usage = e;
         return true;
+      case 'voice_state': {
+        // Host push-to-talk progress — restyles the detail-view VOICE tile.
+        const state = typeof e.state === 'string' ? e.state : 'idle';
+        if (state === this.voiceState) return false;
+        this.voiceState = state as typeof this.voiceState;
+        return true;
+      }
       case 'review_status': {
         // Refusal / failure ends the optimistic REVIEWING flip immediately;
         // success lands as reviewStatus on the sessions_list row instead.

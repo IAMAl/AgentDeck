@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: required
 owner: Apple release maintainers
-reviewed: 2026-07-22
-revision: 2026-07-22
+reviewed: 2026-07-28
+revision: 2026-07-28
 source_of_truth: apple/APP_REVIEW_NOTES.md
 validators: [bash apple/scripts/verify-appstore-archive.sh]
 ---
@@ -74,6 +74,16 @@ AgentDeck can optionally register hooks in `~/.claude/settings.json` so Claude C
 5. Writes are scoped to this single user-selected file; the app reads no other files in `~/.claude/`.
 
 The UI also offers a "Remove" button that deletes our hook entries and revokes the bookmark.
+
+When Claude Code uses child agents or agent teams, the same opt-in integration
+receives lifecycle-only `SubagentStart`, `SubagentStop`, `TaskCompleted`, and
+`TeammateIdle` events. AgentDeck collapses those signals into concise Timeline
+start/completion summaries inside the parent session. It does not create
+controllable child sessions, send messages or approvals to children, or read
+or modify Claude Code's team configuration. The Terrarium may derive a
+non-interactive ring, wire, and satellite accent around that same parent from
+the summarized Timeline rows. These accents are decorative, have no hit target,
+and do not expose child-agent controls.
 
 ## Local notifications
 
@@ -144,7 +154,7 @@ Codex (OpenAI's CLI) is observed through a fully opt-in path that mirrors the Cl
 2. An `NSAlert` explains that AgentDeck will write Codex lifecycle hook entries into `~/.codex/config.toml`, with optional `notify` and `[otel]` fallback entries when the user has not already configured those channels.
 3. On acceptance, an `NSOpenPanel` requires the user to explicitly pick `~/.codex/config.toml`. Only then do we acquire a security-scoped bookmark and write the entries.
 4. AgentDeck only edits inside its own fenced TOML block (`# >>> AgentDeck managed (do not edit) <<<` / `# <<<` markers) — user keys (`model`, profiles, MCP servers) are preserved verbatim. If the user already wrote `[features]` or `[hooks]`, AgentDeck aborts instead of unsafe-merging lifecycle hooks. If the user already wrote a top-level `notify` or `[otel]`, AgentDeck still installs lifecycle hooks but omits that optional fallback/exporter to avoid duplicate keys.
-5. The values written enable `[features] hooks = true` and inline `[[hooks.*]]` command hooks. Those commands resolve AgentDeck's local-only HTTP port and POST Codex hook JSON to `http://127.0.0.1:$PORT/hooks/codex_session_start`, `/hooks/codex_user_prompt_submit`, `/hooks/codex_tool_start`, `/hooks/codex_tool_end`, and `/hooks/codex_stop`. Optional fallback entries POST notify JSON to `/hooks/codex_turn_complete` and OTel JSON traces to `/otel/v1/traces` (`protocol = "json"`). All endpoints listen on `127.0.0.1` only. The OTel `endpoint` is rewritten on every daemon startup so it always reflects the actual port the daemon is bound to.
+5. The values written enable `[features] hooks = true` and inline `[[hooks.*]]` command hooks. Those commands resolve AgentDeck's local-only HTTP port and POST Codex hook JSON to `http://127.0.0.1:$PORT/hooks/codex_session_start`, `/hooks/codex_user_prompt_submit`, `/hooks/codex_tool_start`, `/hooks/codex_tool_end`, `/hooks/codex_stop`, `/hooks/codex_subagent_start`, and `/hooks/codex_subagent_stop`. The two subagent endpoints produce read-only parent-Timeline summaries and never return control or approval decisions. Optional fallback entries POST notify JSON to `/hooks/codex_turn_complete` and OTel JSON traces to `/otel/v1/traces` (`protocol = "json"`). All endpoints listen on `127.0.0.1` only. The OTel `endpoint` is rewritten on every daemon startup so it always reflects the actual port the daemon is bound to.
 6. At runtime, Codex (the user's separately-installed CLI) is what eventually executes that snippet under its own process tree — not AgentDeck. AgentDeck itself only receives HTTP POSTs.
 
 The Settings panel offers a "Remove" button that strips AgentDeck's fenced block and revokes the bookmark; it leaves all user-authored TOML keys untouched. Reviewers without Codex installed see "Not configured"; the panel remains inert.

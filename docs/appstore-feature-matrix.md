@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: required
 owner: Apple product maintainers
-reviewed: 2026-07-27
-revision: 2026-07-27
+reviewed: 2026-07-28
+revision: 2026-07-28
 source_of_truth: docs/appstore-feature-matrix.md
 validators: [bash apple/scripts/verify-appstore-archive.sh]
 ---
@@ -49,6 +49,7 @@ All surfaces follow the same rule:
 | Claude Code hook installation | Yes | Yes | Explicit `NSOpenPanel` file consent |
 | Codex lifecycle observation | Yes | Yes | Explicit `NSOpenPanel`; managed TOML block only |
 | Voice input | Yes | Yes | Apple on-device speech in both tiers — Tier 1 calls the framework, Tier 2 the bundled Swift helper. macOS-only; no whisper/model install |
+| Deck voice key (Stream Deck hold-to-talk / D200H tap-toggle) | Yes | Yes | Deck key = trigger only; host mic/STT/TTS do the work. Tier 1: native AVFoundation+Speech (`DaemonPttVoice`), observed-Claude delivery is the queued-directive ladder (live typing needs the CLI daemon). Tier 2: bundled helper `record`, observed delivery via terminal injection |
 | Device Preview catalog | Yes | Yes | CLI-only targets appear only with external daemon |
 | APME Layer 2 LLM evaluation | Yes | Yes | Apple Intelligence default; opt-in HTTP alternatives |
 | APME Layer 1 deterministic evaluation | No | Yes | Requires `git` / package-manager subprocesses |
@@ -92,6 +93,7 @@ All surfaces follow the same rule:
 | Observed-session answer injection (device tap → host UI) | No | Yes | tmux / iTerm2 / Terminal.app by tty, GUI apps by AX button or key events. Needs `ps` tty discovery + tmux/osascript subprocesses — both CLI-only; sandbox has neither |
 | OpenCode monitoring | Opt-in read-only | Yes | Tier 1 connects only to a configured/fixed local server; no port scan |
 | Antigravity session monitoring | No | Yes | Tier 1 may display user-approved usage data only |
+| Subagent activity summaries + parent-linked orbit visuals | Yes | Yes | Read-only lifecycle hooks collapse each child to concise start/completion rows using existing Timeline types. Terrarium surfaces may derive non-interactive wire/ring/satellite accents around the owning parent; they never become selectable sessions. No subagent commands, approvals, team configuration, or process discovery |
 | Launch Claude / Codex / OpenCode session | No | Yes | App Store has no launch-session entry point |
 | OpenClaw Gateway WebSocket pairing | Yes | Yes | Local WS, Keychain identity, optional user-selected token file |
 | OpenClaw CLI pairing | No | Yes | Requires external `openclaw` process |

@@ -286,7 +286,7 @@ private enum VoicePermissionRequester {
     }
 }
 
-private enum VoiceSpeechTranscriber {
+enum VoiceSpeechTranscriber {
     static func transcribe(url: URL, preferredLocales: [Locale]) async -> String? {
         guard let recognizer = makeSpeechRecognizer(preferredLocales: preferredLocales),
               recognizer.isAvailable else {

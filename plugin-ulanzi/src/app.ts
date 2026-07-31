@@ -97,7 +97,11 @@ function layoutInput(): Record<string, unknown> {
 function deckFor(animFrame: number, animated: boolean) {
   // showUsage pins the bottom-row keys left of the D200H clock widget to the
   // quota gauges — this surface has no encoder LCD to carry usage.
-  return buildSessionDeck(layoutInput(), { ...view, animFrame, animated, showUsage: true }, positions());
+  return buildSessionDeck(
+    layoutInput(),
+    { ...view, animFrame, animated, showUsage: true, voiceState: store.voiceState },
+    positions(),
+  );
 }
 
 // Compact signature of everything the deck renders from — lets us skip the
@@ -155,7 +159,10 @@ function renderAll(): void {
   }
 
   // Skip the rebuild+raster when neither the view nor the visible state changed.
-  const sig = `${view.mode}|${view.openSessionId ?? ''}|${view.page ?? 0}|${deckSignature(ev)}`;
+  // voiceState is part of the signature: the VOICE tile is the only key that
+  // changes on a voice_state event, and a sig that omits it swallows exactly
+  // that repaint (the recurring deckSignature failure mode).
+  const sig = `${view.mode}|${view.openSessionId ?? ''}|${view.page ?? 0}|${store.voiceState}|${deckSignature(ev)}`;
   if (sig === lastDeckSig) return;
   lastDeckSig = sig;
   lastRenderAt = Date.now();
@@ -283,7 +290,20 @@ $UD.onKeyDown((m: UlanziMessage) => flog('RAW', 'keydown(ignored)', m.key));
 $UD.onKeyUp((m: UlanziMessage) => flog('RAW', 'keyUp(ignored)', m.key));
 
 // ---- AgentDeck daemon side ----
+let voiceErrorResetTimer: ReturnType<typeof setTimeout> | null = null;
 daemon.on('event', (ev) => {
+  // The daemon parks on 'error' after a failed capture; without a local
+  // reset the VOICE tile would read "no speech" until the next dictation.
+  if ((ev as { type?: string }).type === 'voice_state') {
+    if (voiceErrorResetTimer) { clearTimeout(voiceErrorResetTimer); voiceErrorResetTimer = null; }
+    if ((ev as { state?: string }).state === 'error') {
+      voiceErrorResetTimer = setTimeout(() => {
+        voiceErrorResetTimer = null;
+        store.voiceState = 'idle';
+        scheduleRender();
+      }, 3000);
+    }
+  }
   if ((ev as { type?: string }).type === 'display_state') {
     const e = ev as { displayOn?: boolean; dim?: { enabled?: boolean } };
     // `dim.enabled === false` means the user asked us to leave hardware lit.

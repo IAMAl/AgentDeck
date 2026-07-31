@@ -25,7 +25,7 @@ import {
 import { State, type PromptOption } from './states.js';
 import { sortSessions, foldCodexSessionsForDisplay } from './session-utils.js';
 import type { SessionInfo, SubscriptionInfo, CodexRateLimits } from './protocol.js';
-import { Brand } from './design-tokens.js';
+import { Brand, UI } from './design-tokens.js';
 import { PASSIVE_OFFLINE_LABEL, OPEN_AGENTDECK_LABEL } from './connection-status.js';
 import { CLAUDE_LOGO_PATH, CODEX_LOGO_PATH } from './svg-renderers/agent-logos.js';
 
@@ -604,6 +604,14 @@ export interface DeckView {
   animFrame?: number;
   animated?: boolean;
   /**
+   * Host push-to-talk capture state (daemon `voice_state` events). Drives the
+   * detail-view VOICE tile: idle → "tap to talk" (sends voice start),
+   * recording → "● listening" (sends voice stop), transcribing → inert.
+   * D200H presses are single-fire (`run`), so the tile toggles rather than
+   * holding.
+   */
+  voiceState?: 'idle' | 'recording' | 'transcribing' | 'error';
+  /**
    * Opt-in: pin the last two list-view positions to 5H/7D subscription-usage
    * tiles (the global quota gauges). Used by surfaces with no encoder LCD to
    * carry usage (Ulanzi D200H, classic Stream Deck). Off by default so other
@@ -625,6 +633,34 @@ const awaitingState = (s?: string) => !!s && s.toLowerCase().startsWith('awaitin
 const processingState = (s?: string) => s?.toLowerCase() === 'processing';
 
 /** Small colored action tile (Allow/Deny/Always/quick-action). */
+/**
+ * Host push-to-talk tile. The deck contributes the button; the daemon owns
+ * mic, on-device STT and spoken reply (host speakers), and delivery reuses
+ * the device-voice ladder. Toggle semantics — D200H fires a single `run`
+ * per press, so hold-to-talk is not expressible here.
+ */
+function voiceTile(view: DeckView, sid: string): SessionDeckCell {
+  switch (view.voiceState ?? 'idle') {
+    case 'recording':
+      return {
+        svg: actionTile('VOICE', UI.error, '● tap to send'),
+        action: { kind: 'command', command: { type: 'voice', action: 'stop', sessionId: sid } },
+      };
+    case 'transcribing':
+      return { svg: actionTile('VOICE', UI.cyan, 'transcribing…'), action: null };
+    case 'error':
+      return {
+        svg: actionTile('VOICE', UI.error, 'no speech'),
+        action: { kind: 'command', command: { type: 'voice', action: 'start', sessionId: sid } },
+      };
+    default:
+      return {
+        svg: actionTile('VOICE', UI.cyan, 'tap to talk'),
+        action: { kind: 'command', command: { type: 'voice', action: 'start', sessionId: sid } },
+      };
+  }
+}
+
 function actionTile(label: string, color: string, subtitle?: string): string {
   const els = [
     `<text x="72" y="${subtitle ? 70 : 80}" text-anchor="middle" font-family="Arial,sans-serif" font-size="22" font-weight="bold" fill="${color}">${label}</text>`,
@@ -924,11 +960,15 @@ function buildDetail(
         action: { kind: 'command', command: { type: 'session_command', sessionId: sid, command: { type: 'send_prompt', text } } },
       }));
       cells.push(reviewTile(sess, sid));
+      cells.push(voiceTile(view, sid));
     } else {
-      // Idle observed Claude/Codex: no prompt-delivery path exists, but the
-      // independent review needs no control at all — it is the one action
-      // that stays live here.
+      // Idle observed Claude/Codex: deck-native prompt presets don't exist,
+      // but the independent review stays live — and so does voice, because
+      // the daemon delivers a dictated prompt through its observed-steering
+      // ladder (terminal injection on the Node daemon, queued directive on
+      // the Swift daemon).
       cells.push(reviewTile(sess, sid));
+      cells.push(voiceTile(view, sid));
       cells.push({ svg: renderInfoSlot('OBSERVED', 'control in terminal', 'status', 'info'), action: null });
     }
   } else {
@@ -948,6 +988,7 @@ function buildDetail(
       svg: actionTile('CLEAR', '#cbd5e1'),
       action: { kind: 'command', command: { type: 'send_prompt', text: '/clear' } },
     });
+    cells.push(voiceTile(view, sid));
   }
 
   // Paginate cells into content slots; reserve last content slot for MORE if overflow.

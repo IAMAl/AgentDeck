@@ -7,10 +7,10 @@ locale: ja
 canonical: false
 status: reader-translation
 owner: Hardware maintainers
-reviewed: 2026-07-25
-revision: 2026-07-25-ja
+reviewed: 2026-07-30
+revision: 2026-07-30-ja
 translation_of: hardware.compatibility
-source_revision: 2026-07-28b
+source_revision: 2026-07-30
 source_of_truth: docs/hardware-compatibility.md
 validators: [node scripts/build-design-system-viewer.mjs --check]
 ---
