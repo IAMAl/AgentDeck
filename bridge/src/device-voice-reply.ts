@@ -155,7 +155,11 @@ export class DeviceVoiceReplyRouter {
    */
   arm(sink: ReplySink, sessionId: string): boolean {
     if (!sessionId) return false;
-    if (!sink.capabilities().includes('audio_out')) return false;
+    // Either delivery mechanism counts: `audio_out` boards take the WS push
+    // stream, `audio_http_pull` boards fetch the staged reply themselves
+    // (the hosted-link boards whose RX path a push stream can crash).
+    const caps = sink.capabilities();
+    if (!caps.includes('audio_out') && !caps.includes('audio_http_pull')) return false;
     // Store the bare uuid: devices speak the prefixed `observed:<agent>:<uuid>`
     // form while timeline rows are keyed by the uuid alone, so keying on what
     // the device sent means the completion never matches what was armed.
@@ -226,10 +230,17 @@ export class DeviceVoiceReplyRouter {
     this.armed.delete(armedSink);
     // Follow the board, not the socket: a USB-attached board parks its WiFi and
     // closes the WebSocket the dictation came in on, so by now the same device is
-    // very likely reachable over serial instead.
-    const sink = armedSink.isOpen()
+    // very likely reachable over serial instead. And prefer a transport that
+    // can PLAY the audio: when the armed sink does not advertise audio_out
+    // (arm-time fallback while the board's WS was blinking), upgrade to the
+    // board's live audio-capable transport resolved now, at stream time.
+    let sink = armedSink.isOpen()
       ? armedSink
       : this.resolveLive(armedSink.deviceKey()) ?? armedSink;
+    if (!sink.capabilities().includes('audio_out')) {
+      const live = this.resolveLive(armedSink.deviceKey());
+      if (live && live.capabilities().includes('audio_out')) sink = live;
+    }
     if (this.streaming.has(sink)) return false; // one utterance at a time per board
     const parsed = pcmFromWav(wav);
     if (!parsed || !sink.isOpen()) return false;

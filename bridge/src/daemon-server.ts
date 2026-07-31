@@ -23,6 +23,7 @@ import { BridgeLogStream } from './log-stream.js';
 import { PassiveSessionObserver } from './passive-observer.js';
 import { SessionTimelineRelay } from './session-timeline-relay.js';
 import { SessionFocusRelay } from './session-focus-relay.js';
+import { SubagentTimelineTracker } from './subagent-timeline.js';
 import { updatePushState } from './session-aggregator.js';
 import {
   setAwaitingOverlay,
@@ -105,7 +106,7 @@ import {
   lastAssistantTextForSession,
 } from './session-transcript-timeline.js';
 import {
-  DeviceVoiceReplyRouter, speakableReply, type ReplySink,
+  DeviceVoiceReplyRouter, speakableReply, pcmFromWav, type ReplySink,
 } from './device-voice-reply.js';
 import { rawSessionId } from '@agentdeck/shared';
 import { lastAgentMessageFromCodexRollout } from './codex-rollout-response.js';
@@ -720,13 +721,18 @@ async function fetchUsageRelayed(selfPort: number): Promise<ApiUsageData | null>
  * preserve any value the adapter did set, and the downstream attributor's own
  * `?? ` keeps these in turn.
  */
-export function enrichGatewayTimelineEntry<T extends { agentType?: string; projectName?: string }>(
+export function enrichGatewayTimelineEntry<T extends { agentType?: string; projectName?: string; sessionId?: string }>(
   entry: T,
 ): T {
   return {
     ...entry,
     agentType: entry.agentType ?? 'openclaw',
     projectName: entry.projectName ?? 'OpenClaw',
+    // Devices and the voice-reply router address the gateway session as
+    // 'openclaw-gateway'; without this stamp its chat_response rows carry no
+    // sessionId, so a board armed for a spoken reply never matches the turn
+    // completion and the reply silently never plays (observed 2026-07-31).
+    sessionId: entry.sessionId ?? 'openclaw-gateway',
   };
 }
 
@@ -759,6 +765,9 @@ export function classifyObservedHookEvent(
   eventName: string,
   mapped: string,
 ): { boundary: string; agentType: 'claude-code' | 'codex-cli' | 'opencode' | 'antigravity' } {
+  if (eventName === 'codex_subagent_start' || eventName === 'codex_subagent_stop') {
+    return { boundary: eventName, agentType: 'codex-cli' };
+  }
   const prefixed = /^(codex|opencode|antigravity)_(session_start|session_end|user_prompt_submit|tool_start|tool_end|stop|turn_complete|notification|permission_asked|permission_replied)$/
     .exec(eventName);
   if (!prefixed) return { boundary: mapped, agentType: 'claude-code' };
@@ -1071,6 +1080,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     | ((board: string, text: string, opts: { force?: boolean; locale?: string })
         => Promise<{ ok: boolean; detail: string }>)
     | null = null;
+  // Assigned after BridgeCore exists. The HTTP handler reads it only after
+  // startup; nullable keeps the tiny listen→core initialization window safe.
+  let subagentTimeline: SubagentTimelineTracker | null = null;
 
   // ===== HTTP server =====
   const httpServer = createServer((req, res) => {
@@ -1200,7 +1212,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         // Reply on the board's own transport (serial when it is cabled), the
         // same way the chunked path did — the HTTP response only confirms
         // receipt of the bytes.
-        await finishPhotoCapture(saved, photoResultSinkFor(board));
+        await finishPhotoCapture(saved, boardResultSinkFor(board));
         return { ok: true, bytes: saved.bytes, path: saved.path };
       })().then((result) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1209,6 +1221,107 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
       });
+      return;
+    }
+    // Device voice upload — a whole utterance of raw PCM16LE as one request
+    // body. Live streaming lost audio on both of the ips10's transports
+    // (115200-baud serial ceiling; hosted-C6 WS stalls overflowing the DRAM
+    // ring), and transcription only starts once the utterance is complete, so
+    // buffering on-device and letting TCP handle delivery loses nothing.
+    // Mirrors /esp32/photo, including replying on the board's own transport.
+    if (req.method === 'POST' && pathname === '/esp32/voice') {
+      const ip = req.socket.remoteAddress ?? '';
+      if (!isLocalConnection(ip)) {
+        const token = parsedUrl.searchParams.get('token') ?? '';
+        if (!validateToken(token)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+      }
+      (async () => {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        for await (const chunk of req) {
+          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buf.length;
+          // 16 kHz mono PCM16 for the firmware's 30 s runaway cap is 960 KB.
+          if (total > 2 * 1024 * 1024) throw new Error('utterance_too_large');
+          chunks.push(buf);
+        }
+        if (total === 0) throw new Error('empty_body');
+        const board = parsedUrl.searchParams.get('board') ?? 'esp32';
+        const saved = deviceVoice.saveDirect(Buffer.concat(chunks), {
+          board,
+          sessionId: parsedUrl.searchParams.get('sessionId') ?? '',
+          sampleRate: Number(parsedUrl.searchParams.get('rate') ?? 0) || 16000,
+          durationMs: Number(parsedUrl.searchParams.get('ms') ?? 0) || 0,
+        });
+        // The HTTP response only confirms receipt of the bytes; the
+        // transcript/outcome goes to the board as a voice_result frame.
+        await finishVoiceCapture(saved, boardResultSinkFor(board));
+        return { ok: true, bytes: total };
+      })().then((result) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      }).catch((err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+      });
+      return;
+    }
+    // Staged spoken reply for an `audio_http_pull` board — raw PCM16LE body.
+    // The board fetches at its own pace (TCP flow control), which is what
+    // keeps the hosted-C6 RX path from being burst-fed and asserting.
+    if (req.method === 'GET' && pathname === '/esp32/voice-reply') {
+      const ip = req.socket.remoteAddress ?? '';
+      if (!isLocalConnection(ip)) {
+        const token = parsedUrl.searchParams.get('token') ?? '';
+        if (!validateToken(token)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+      }
+      const board = parsedUrl.searchParams.get('board') ?? '';
+      const staged = board ? stagedVoiceReplies.get(board) : undefined;
+      if (!staged) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'no_staged_reply' }));
+        return;
+      }
+      // Kept until TTL rather than deleted here: an aborted download may retry.
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': staged.pcm.length,
+        'X-Sample-Rate': String(staged.sampleRate),
+      });
+      // Paced writes, NOT res.end(pcm): a single end() hands the whole body
+      // to the kernel, which blasts a TCP-initial-window-sized segment burst.
+      // TCP flow control lives in lwIP — it cannot protect the hosted C6→P4
+      // handoff underneath it, whose RX pool exhausted and ASSERTED the board
+      // one second into the first pull (`sdio_rx_get_buffer (*buf)`,
+      // 2026-07-31 12:06). 2 KB per 15 ms ≈ 133 KB/s keeps at most a couple
+      // of segments in flight while still beating playback rate 4x.
+      {
+        // 8 KB / 10 ms ≈ 800 KB/s — a 2 MB answer lands in ~2.5 s. The
+        // original 2 KB / 15 ms (~133 KB/s) predated the PSRAM-mempool core
+        // fix and made long replies take 15+ s to start, which read as "no
+        // playback"; with the hosted mempool in PSRAM the burst constraint is
+        // gone and only gentle pacing is kept as hygiene.
+        const CHUNK = 8192;
+        const GAP_MS = 10;
+        let off = 0;
+        const writeNext = (): void => {
+          if (res.destroyed) return;
+          if (off >= staged.pcm.length) { res.end(); return; }
+          const end = Math.min(off + CHUNK, staged.pcm.length);
+          res.write(staged.pcm.subarray(off, end));
+          off = end;
+          setTimeout(writeNext, GAP_MS).unref?.();
+        };
+        writeNext();
+      }
       return;
     }
     if (req.method === 'POST' && pathname === '/esp32/ota') {
@@ -1468,6 +1581,29 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         // codex/opencode *state* is owned by the passive observer's turn
         // semantics, not these hooks.
         const { boundary, agentType: hookAgentType } = classifyObservedHookEvent(eventName, mapped);
+        const earlyHookSid = typeof json.session_id === 'string' && json.session_id
+          ? json.session_id : 'daemon-hook';
+        const earlyHookCwd = (typeof json.cwd === 'string' ? json.cwd
+          : (typeof json.project_path === 'string' ? json.project_path : '')) || '';
+        const earlyHookProject = (typeof json.project_name === 'string' && json.project_name)
+          ? json.project_name
+          : (earlyHookCwd ? earlyHookCwd.split('/').filter(Boolean).pop() : undefined);
+        const childHook = subagentTimeline?.handle({
+          eventName,
+          payload: json,
+          sessionId: earlyHookSid,
+          agentType: hookAgentType,
+          projectName: earlyHookProject,
+        }).childOnly === true;
+        if (childHook) {
+          // Child activity is observation-only. Never let child PreToolUse
+          // reach the parent's approval, STOP, state, or APME paths.
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(eventName === 'PreToolUse' || eventName === 'Stop'
+            ? ''
+            : JSON.stringify({ received: true }));
+          return;
+        }
         // State machine
         if (mapped === 'session_start') core.stateMachine.handleHookEvent('SessionStart', json);
         else if (mapped === 'session_end') core.stateMachine.handleHookEvent('SessionEnd', json);
@@ -2140,6 +2276,9 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     projectName: 'AgentDeck',
     httpServer,
     isDaemon: true,
+  });
+  subagentTimeline = new SubagentTimelineTracker((entry) => {
+    core.bridgeTimeline.addEntry(entry, { bypassSuppression: true });
   });
   // Hooks resolve a fallback daemon port through daemon.json. Another process
   // can delete that file while this daemon remains healthy, which makes every
@@ -2956,7 +3095,22 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     if (msg.type === 'voice_end') {
       const captured = deviceVoice.end(sender, msg);
-      if (captured) void finishVoiceCapture(captured, stableSink(sender));
+      if (captured) {
+        void finishVoiceCapture(captured, stableSink(sender));
+      } else if ((msg as { cancel?: unknown }).cancel !== true) {
+        // Nothing was captured but the user did hold the button — answer
+        // anyway, or the board's "Sending…" state has nothing to resolve it.
+        try {
+          sender.send(JSON.stringify({ type: 'voice_result', text: '', error: 'empty_capture' }));
+        } catch { /* client disconnecting */ }
+      }
+      return true; // consumed
+    }
+    if (msg.type === 'voice_abort') {
+      // The board tried to upload an utterance over HTTP and failed; the
+      // reason would otherwise only exist on its serial console.
+      log(`[agentdeck] voice: device upload aborted (${String((msg as { reason?: unknown }).reason ?? 'unknown')}, `
+        + `${String((msg as { total?: unknown }).total ?? '?')} bytes)`);
       return true; // consumed
     }
     if (msg.type === 'photo_begin') {
@@ -3215,6 +3369,14 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       const { sessionId: rawSessionId, command } = cmd as any;
       if (!rawSessionId || !command) return;
       const sessionId = resolveDeviceSessionId(rawSessionId);
+      // The gateway session has no bridge port — the focus-relay path below
+      // would connect to nothing and silently drop the command. Hand it to
+      // the adapter, the same way the wake-word assistant does.
+      if (sessionId === 'openclaw-gateway') {
+        if (gatewayAdapter?.isAlive()) gatewayAdapter.handleCommand(command);
+        else debug('daemon', 'session_command for openclaw-gateway but gateway not alive');
+        return;
+      }
       // Observed Claude sessions have no bridge/PTY — route to the hook-based
       // steering primitives instead (soft STOP, turn-end directive queue,
       // gate approval). This replaces the old silent drop.
@@ -3348,22 +3510,46 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
    * drops the WebSocket it dictated over, and the answer must still arrive.
    * Serial first, mirroring the single-path dedup policy used elsewhere.
    */
+  /**
+   * Replies staged for `audio_http_pull` boards, keyed by device (board id) —
+   * the board fetches via GET /esp32/voice-reply at its own pace. Swept by
+   * TTL: a board that reboots before fetching must not hear a stale answer
+   * minutes later.
+   */
+  const stagedVoiceReplies = new Map<string, { pcm: Buffer; sampleRate: number; ts: number }>();
+  const STAGED_REPLY_TTL_MS = 2 * 60_000;
+  const stagedReplySweep = setInterval(() => {
+    const cutoff = Date.now() - STAGED_REPLY_TTL_MS;
+    for (const [key, entry] of stagedVoiceReplies) {
+      if (entry.ts < cutoff) stagedVoiceReplies.delete(key);
+    }
+  }, 30_000);
+  stagedReplySweep.unref?.();
+
   const voiceReply = new DeviceVoiceReplyRouter(
     () => Date.now(),
     (ms) => new Promise((r) => setTimeout(r, ms)),
     (deviceKey) => {
+      // This resolver serves the spoken-reply router only, so unlike the
+      // general serial-first dedup it prefers whichever live transport can
+      // actually PLAY audio (advertises audio_out): a CH340 serial link
+      // physically cannot carry PCM even when it is the primary state path.
+      const candidates: ReplySink[] = [];
       const serialPort = liveSerialPortForBoard(deviceKey);
-      if (serialPort) {
-        log(`[agentdeck] voice: routing reply for ${deviceKey} over serial ${serialPort}`);
-        return serialSinkFor(serialPort);
-      }
+      if (serialPort) candidates.push(serialSinkFor(serialPort));
       for (const [key, sock] of wifiEsp32Sockets) {
         if (sock.readyState !== WebSocket.OPEN) continue;
         const board = wifiEsp32Devices.get(key)?.board;
-        if (board === deviceKey || key === deviceKey) {
-          log(`[agentdeck] voice: routing reply for ${deviceKey} over ws ${key}`);
-          return stableSink(sock);
-        }
+        if (board === deviceKey || key === deviceKey) candidates.push(stableSink(sock));
+      }
+      const pick = candidates.find((s) => {
+        const caps = s.capabilities();
+        return caps.includes('audio_out') || caps.includes('audio_http_pull');
+      }) ?? candidates[0];
+      if (pick) {
+        log(`[agentdeck] voice: routing reply for ${deviceKey} via ${pick.describe()}`
+          + ` (caps=${pick.capabilities().join('|') || 'none'})`);
+        return pick;
       }
       log(`[agentdeck] voice: no live transport for ${deviceKey}`
         + ` (serial boards: ${serialBoardsAttached().join(',') || 'none'})`);
@@ -3441,6 +3627,31 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         await synthesizeWavWithHelper(spoken, out, locale ? { locale } : {});
         const wav = await readFile(out);
         for (const sink of targets) {
+          // Pull-capable boards fetch the audio themselves over HTTP — the WS
+          // push stream both stuttered and could crash the hosted-link RX
+          // path (pkt_rxbuff assert). Stage the PCM, send a tiny notify
+          // frame, and let TCP flow control pace the transfer.
+          if (sink.capabilities().includes('audio_http_pull')) {
+            const parsed = pcmFromWav(wav);
+            if (parsed) {
+              stagedVoiceReplies.set(sink.deviceKey(), {
+                pcm: parsed.pcm, sampleRate: parsed.sampleRate, ts: Date.now(),
+              });
+              try {
+                sink.send(JSON.stringify({
+                  type: 'audio_reply_ready',
+                  bytes: parsed.pcm.length,
+                  sampleRate: parsed.sampleRate,
+                  durationMs: Math.round((parsed.pcm.length / 2) / parsed.sampleRate * 1000),
+                  text: spoken.slice(0, 120),
+                }));
+                log(`[agentdeck] voice: staged reply for ${sink.deviceKey()}`
+                  + ` (${parsed.pcm.length}B pull, ${spoken.length} chars)`);
+              } catch { /* sink closing — TTL sweep reclaims the staging */ }
+              voiceReply.disarm(sink);
+              continue;
+            }
+          }
           const ok = await voiceReply.stream(sink, wav, spoken);
           log(`[agentdeck] voice: ${ok ? 'spoke' : 'FAILED to speak'} reply`
             + ` (${wav.length}B, ${spoken.length} chars)`);
@@ -3608,7 +3819,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
    * no socket to answer on, so resolve the board's live transport the same
    * way a queued voice reply does (serial first, then its WiFi socket).
    */
-  const photoResultSinkFor = (board: string): ReplySink => {
+  const boardResultSinkFor = (board: string): ReplySink => {
     const port = liveSerialPortForBoard(board);
     if (port) return serialSinkFor(port);
     for (const [key, sock] of wifiEsp32Sockets) {
@@ -3635,7 +3846,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       if (b64) deviceVoice.append(port, Buffer.from(b64, 'base64'));
     } else if (msg.type === 'voice_end') {
       const captured = deviceVoice.end(port, msg);
-      if (captured) void finishVoiceCapture(captured, serialSinkFor(port));
+      if (captured) {
+        void finishVoiceCapture(captured, serialSinkFor(port));
+      } else if ((msg as { cancel?: unknown }).cancel !== true) {
+        try {
+          serialSinkFor(port).send(JSON.stringify(
+            { type: 'voice_result', text: '', error: 'empty_capture' }));
+        } catch { /* port closing */ }
+      }
+    } else if (msg.type === 'voice_abort') {
+      log(`[agentdeck] voice: device upload aborted (${String((msg as { reason?: unknown }).reason ?? 'unknown')}, `
+        + `${String((msg as { total?: unknown }).total ?? '?')} bytes) [serial ${port}]`);
     } else if (msg.type === 'photo_begin') {
       // Photo over USB: the strip is a desk fixture and usually powered from
       // the host, which parks its radio — the camera must not go dead just
@@ -3667,11 +3888,45 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
    * like the same board on WiFi, which is only true if there is one
    * implementation.
    */
+  /**
+   * The sink to ARM for the spoken reply, which is not always the sink the
+   * result JSON goes to: an HTTP-uploaded utterance resolves its result sink
+   * serial-first (guaranteed delivery), but the ips10 advertises `audio_out`
+   * on its WiFi device_info only — its 115200-baud serial physically cannot
+   * carry PCM, so arming the serial sink would make voiceReply.arm() decline
+   * and the reply silently never play. Prefer the sink itself when it can
+   * play audio; otherwise find the board's live WS socket that can.
+   */
+  const canPlayReply = (s: ReplySink): boolean => {
+    const caps = s.capabilities();
+    return caps.includes('audio_out') || caps.includes('audio_http_pull');
+  };
+  const audioArmSinkFor = (sink: ReplySink, board: string): ReplySink => {
+    if (canPlayReply(sink)) return sink;
+    for (const [key, sock] of wifiEsp32Sockets) {
+      if (sock.readyState !== WebSocket.OPEN) continue;
+      if (wifiEsp32Devices.get(key)?.board === board || key === board) {
+        const s = stableSink(sock);
+        if (canPlayReply(s)) return s;
+      }
+    }
+    return sink;
+  };
+
   const finishVoiceCapture = async (
-    captured: { wavPath: string; sessionId: string; cleanup: () => void },
+    captured: {
+      wavPath: string;
+      sessionId: string;
+      board: string;
+      integrityError?: string;
+      cleanup: () => void;
+    },
     sink: ReplySink,
   ): Promise<void> => {
         try {
+          if (captured.integrityError) {
+            throw new Error(captured.integrityError);
+          }
           // Locale matters: the recognizer falls back to the system locale,
           // which mangles speech in another language. settings.json
           // `voice.locale` (BCP-47, e.g. "en-US") overrides it.
@@ -3688,7 +3943,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           let via: string | undefined;
           let deliverReason: string | undefined;
           if (text && sessionId) {
-            if (sessionId.startsWith('observed:')) {
+            if (sessionId === 'openclaw-gateway') {
+              // The gateway session has no bridge port: the generic
+              // session_command path focuses a relay that can never connect
+              // and silently drops the prompt while this function reported
+              // delivered=true (observed 2026-07-31 — "transcript showed,
+              // nothing answered"). Route straight to the adapter and report
+              // what actually happened.
+              delivered = !!(gatewayAdapter?.isAlive()
+                && gatewayAdapter.handleCommand({ type: 'send_prompt', text }));
+              via = 'gateway';
+              if (!delivered) deliverReason = 'gateway_unavailable';
+            } else if (sessionId.startsWith('observed:')) {
               // Any observed agent (claude, codex, …): type the dictated line
               // into the terminal that owns the session. session_command only
               // knew how to route observed *Claude*, so a Codex target was
@@ -3712,15 +3978,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             }
             // Only a delivered prompt earns a spoken reply: arming on a
             // dropped one would read out whatever that session happened to
-            // answer someone else.
-            const armed = delivered ? voiceReply.arm(sink, sessionId) : false;
+            // answer someone else. Armed on an audio-capable sink, which may
+            // differ from the result sink — see audioArmSinkFor.
+            const armSink = audioArmSinkFor(sink, captured.board);
+            const armed = delivered ? voiceReply.arm(armSink, sessionId) : false;
             // Logged at info level rather than debug: these are rare,
             // user-initiated events, and the silence made "the board said sent
             // but nothing happened" undiagnosable without a rebuild.
             log(`[agentdeck] voice: "${text.slice(0, 40)}" -> ${sessionId.slice(0, 32)}`
               + ` delivered=${delivered}${via ? ` via ${via}` : ''}`
               + `${deliverReason ? ` (${deliverReason})` : ''}`
-              + ` spokenReply=${armed ? `armed(${sink.describe()})` : 'no'}`
+              + ` spokenReply=${armed ? `armed(${armSink.describe()})` : 'no'}`
               + ` [${sink.describe()} key=${sink.deviceKey()}`
               + ` caps=${sink.capabilities().join('|') || 'none'}]`);
           }
@@ -3732,10 +4000,24 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             }));
           } catch { /* client disconnecting */ }
         } catch (err) {
-          const reason = String(err).slice(0, 160);
-          debug('voice', `transcription failed: ${reason}`);
+          const reason = String(err).slice(0, 300);
+          // Voice turns are rare and user-initiated. Keep failures at info
+          // level so a board's short "Voice error" banner can always be
+          // diagnosed after the temporary WAV has been cleaned up.
+          log(`[agentdeck] voice: transcription failed on ${sink.describe()}: ${reason}`);
+          // The board renders `error` on a one-line banner at glance distance —
+          // a short stable code it can translate beats 160 chars of
+          // NSError soup. The full reason still ships as `detail` and lives in
+          // the log above.
+          const code = /No speech detected|kAFAssistantErrorDomain Code=1110/.test(reason)
+            ? 'no_speech'
+            : /audio_transport_overflow/.test(reason) ? 'audio_lost'
+            : /audio_transport_incomplete/.test(reason) ? 'audio_incomplete'
+            : 'voice_failed';
           try {
-            sink.send(JSON.stringify({ type: 'voice_result', text: '', error: reason }));
+            sink.send(JSON.stringify({
+              type: 'voice_result', text: '', error: code, detail: reason.slice(0, 160),
+            }));
           } catch { /* client disconnecting */ }
         } finally {
           captured.cleanup();

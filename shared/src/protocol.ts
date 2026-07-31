@@ -534,6 +534,23 @@ export interface DeviceInfoMessage {
   wifiRadioParked?: boolean;
   /** Board uptime in seconds at the moment the info frame was emitted. */
   uptimeSec?: number;
+  /**
+   * Internal (DMA-capable) heap diagnostics in KB. Added for the ips10, whose
+   * ESP-Hosted WiFi glue asserts and reboots the board when an internal-heap
+   * allocation fails (`pkt_rxbuff` / `copy_buff`) — the low-watermark trend
+   * across successive device_info frames is what distinguishes a slow leak
+   * from a burst. Absent on firmware that predates the field.
+   */
+  freeHeapKb?: number;
+  /** Lowest internal-heap level since boot, in KB (esp_get_minimum_free_heap_size). */
+  minFreeHeapKb?: number;
+  /**
+   * Largest CONTIGUOUS free internal DMA-capable block, in KB. The hosted SDIO
+   * RX streaming mode allocates one buffer per coalesced burst, so this — not
+   * total free — is what its allocation actually needs; fragmentation shows as
+   * this value collapsing while freeHeapKb stays comfortable.
+   */
+  largestFreeBlockKb?: number;
   /** ESP-IDF reset reason as a stable diagnostic string, e.g. "brownout" or "panic". */
   resetReason?: string;
   /** Raw esp_reset_reason_t numeric code for cases not covered by resetReason. */

@@ -154,6 +154,10 @@ export interface SerialConnection {
     uptimeSec?: number;
     resetReason?: string;
     resetReasonCode?: number;
+    /** Internal-heap diagnostics (KB) — hosted-assert investigation trend. */
+    freeHeapKb?: number;
+    minFreeHeapKb?: number;
+    largestFreeBlockKb?: number;
     otaSupported?: boolean;
     otaSlotCount?: number;
     otaSlotSize?: number;
@@ -815,6 +819,9 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           uptimeSec: msg.uptimeSec,
           resetReason: msg.resetReason,
           resetReasonCode: msg.resetReasonCode,
+          freeHeapKb: (msg as any).freeHeapKb,
+          minFreeHeapKb: (msg as any).minFreeHeapKb,
+          largestFreeBlockKb: (msg as any).largestFreeBlockKb,
           otaSupported: msg.otaSupported,
           otaSlotCount: msg.otaSlotCount,
           otaSlotSize: msg.otaSlotSize,
@@ -847,7 +854,7 @@ export function handleSerialLine(conn: SerialConnection, line: string): void {
           persistDeviceInfoCache();
         }
       } else if (msg.type === 'voice_begin' || msg.type === 'voice_end' ||
-                 msg.type === 'audio_chunk' ||
+                 msg.type === 'audio_chunk' || msg.type === 'voice_abort' ||
                  msg.type === 'photo_begin' || msg.type === 'photo_end' ||
                  msg.type === 'photo_chunk') {
         // Voice/photo over USB. The serial transport is line-delimited JSON, so
