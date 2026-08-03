@@ -732,7 +732,7 @@ function hasChanges(run: ApmeRunRow): boolean {
   try {
     const status = execSync('git status --porcelain', {
       cwd: run.projectPath, encoding: 'utf-8', timeout: 3000,
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     });
     return status.trim().length > 0;
   } catch {
@@ -749,7 +749,7 @@ function runCommand(command: string, cwd: string, timeoutMs: number): Promise<Cm
     const child = spawn('sh', ['-c', command], {
       cwd,
       env: { ...process.env, CI: '1', APME_EVAL: '1' },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
     const chunks: Buffer[] = [];
     let done = false;
@@ -902,7 +902,7 @@ function collectDiff(run: ApmeRunRow): string {
       : ['diff', '--no-ext-diff', '--no-textconv', '--unified=2', 'HEAD'];
     const out = execSync(`git ${args.join(' ')}`, {
       cwd: run.projectPath, encoding: 'utf-8', timeout: 4000,
-      maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 8 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
     });
     return out.length > 12_000 ? out.slice(0, 12_000) + '\n...[truncated]' : out;
   } catch {
