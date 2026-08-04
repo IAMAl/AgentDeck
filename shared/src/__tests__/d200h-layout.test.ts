@@ -136,3 +136,96 @@ describe('buildSessionDeck — selected session isolation', () => {
     expect(svg).toContain('enhance-t');
   });
 });
+
+describe('buildSessionDeck — per-model scoped caps', () => {
+  // The usage region has 3 slots (USAGE_PREFERRED_POS), so 5h + 7d + the worst
+  // scoped cap[0] fit; the daemon sends scopedLimits worst-first, so the binding
+  // cap is the one that lands in the third slot (extra models overflow).
+  it('surfaces the worst ACTIVE scoped cap with the critical ramp', () => {
+    const deck = buildSessionDeck(
+      {
+        state: 'IDLE', allSessions: [], fiveHourPercent: 20, sevenDayPercent: 0,
+        scopedLimits: [{ kind: 'weekly_scoped', label: 'Fable', percent: 98, severity: 'critical', active: true }],
+      },
+      { mode: 'list', showUsage: true },
+      positions(15),
+    );
+    const svg = [...deck.values()].map((cell) => cell.svg).join('\n');
+    expect(svg).toContain('FABLE');       // label uppercased + capped
+    expect(svg).toContain('#ef4444');     // 98% active → red ramp (5h/7d are green)
+    expect(svg).not.toContain('#3ED6E8'); // not the inactive/informational cyan
+  });
+
+  it('renders an INACTIVE scoped cap muted (informational cyan), never the ramp', () => {
+    const deck = buildSessionDeck(
+      {
+        state: 'IDLE', allSessions: [], fiveHourPercent: 20, sevenDayPercent: 0,
+        scopedLimits: [{ kind: 'weekly_scoped', label: 'Opus', percent: 90, severity: 'normal', active: false }],
+      },
+      { mode: 'list', showUsage: true },
+      positions(15),
+    );
+    const svg = [...deck.values()].map((cell) => cell.svg).join('\n');
+    expect(svg).toContain('OPUS');
+    expect(svg).toContain('#3ED6E8');     // inactive 90% → cyan, not critical
+    expect(svg).not.toContain('#ef4444'); // never the red ramp
+  });
+
+  it('parseState carries scopedLimits through', () => {
+    const s = parseState({ state: 'IDLE', scopedLimits: [{ label: 'Fable', percent: 5, active: true }] });
+    expect(s.scopedLimits).toHaveLength(1);
+    expect(s.scopedLimits?.[0].label).toBe('Fable');
+  });
+});
+
+// ─── Scoped caps vs the three-key usage strip ──────────────────────────
+
+describe('usage tiles — scoped caps and the three-key strip budget', () => {
+  const codexRateLimits = {
+    primary: { usedPercent: 55, windowMinutes: 300 },
+    secondary: { usedPercent: 20, windowMinutes: 10080 },
+  };
+
+  /** All usage-strip SVG text for a state, joined. The strip is three keys wide
+   *  (USAGE_PREFERRED_POS) and buildSessionDeck drops tiles past it. */
+  function stripText(extra: Record<string, unknown>): string {
+    const deck = buildSessionDeck(
+      { state: 'IDLE', allSessions: [], fiveHourPercent: 32, sevenDayPercent: 64, codexRateLimits, ...extra },
+      { mode: 'list', showUsage: true } as any,
+      positions(15),
+    );
+    return [...deck.values()].map((c) => c?.svg ?? '').join('|');
+  }
+
+  it('emits at most ONE scoped tile, however many caps arrive', () => {
+    const text = stripText({ scopedLimits: [
+      { label: 'Fable', percent: 98, active: true },
+      { label: 'Opus', percent: 40, active: false },
+      { label: 'Sonnet', percent: 12, active: false },
+    ] });
+    expect(text).toContain('FABLE');
+    // Runners-up page on the SD+ encoder; a second tile here could never reach a
+    // key anyway, so it must not be built.
+    expect(text).not.toContain('OPUS');
+    expect(text).not.toContain('SONNET');
+  });
+
+  it('documents the cost: the scoped tile takes the slot Codex 5H used to hold', () => {
+    const withScoped = stripText({ scopedLimits: [{ label: 'Fable', percent: 98, active: true }] });
+    const withoutScoped = stripText({});
+    // 5H + 7D + scoped fills the three-key strip exactly.
+    expect(withScoped).toContain('FABLE');
+    // Codex's own 5H gauge rides the strip only when no scoped cap is present.
+    expect(withoutScoped.match(/>5H</g)?.length).toBe(2);
+    expect(withScoped.match(/>5H</g)?.length).toBe(1);
+  });
+
+  it('sanitizes and truncates the API label before it reaches SVG text', () => {
+    const text = stripText({ scopedLimits: [{ label: ' fa\nble x ', percent: 77, active: true }] });
+    expect(text).toContain('FA BLE');
+  });
+
+  it('renders no scoped tile when there are none', () => {
+    expect(stripText({})).not.toContain('MODEL');
+  });
+});

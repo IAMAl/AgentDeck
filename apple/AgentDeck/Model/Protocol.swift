@@ -594,6 +594,33 @@ struct StateUpdateEvent: Codable, Sendable {
     var moduleHealth: ModuleHealthState?
 }
 
+/// A per-model scoped usage limit (e.g. the Claude weekly cap for a specific
+/// model). Distinct from the account-wide 5h/7d windows: a scoped model can be
+/// the ACTIVE binding constraint while 5h/7d still read low. Mirrors the TS
+/// `ScopedUsageLimit` in shared/src/protocol.ts.
+struct ScopedUsageLimit: Codable, Sendable {
+    var kind: String?
+    var label: String
+    var percent: Double
+    var severity: String?
+    var resetsAt: String?
+    var active: Bool?
+
+    /// Sanitized + truncated label for a compact surface (topology rail chip,
+    /// menubar gauge row). The `limits[]` payload is undocumented, so drop control
+    /// characters and collapse whitespace before truncating — a raw `.prefix(n)`
+    /// would let a stray newline break the row layout. Swift counterpart of the
+    /// shared `formatScopedLabel`, minus the uppercasing (these surfaces render
+    /// the model name in its natural case).
+    func compactLabel(_ max: Int) -> String {
+        let collapsed = label
+            .components(separatedBy: CharacterSet.controlCharacters.union(.whitespacesAndNewlines))
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return collapsed.isEmpty ? "MODEL" : String(collapsed.prefix(max))
+    }
+}
+
 struct UsageEvent: Codable, Sendable {
     let type: String  // "usage_update"
     var sessionDurationSec: Int?
@@ -610,6 +637,7 @@ struct UsageEvent: Codable, Sendable {
     var fiveHourResetsAt: String?
     var sevenDayPercent: Double?
     var sevenDayResetsAt: String?
+    var scopedLimits: [ScopedUsageLimit]?
     var extraUsageEnabled: Bool?
     var extraUsageMonthlyLimit: Double?
     var extraUsageUsedCredits: Double?

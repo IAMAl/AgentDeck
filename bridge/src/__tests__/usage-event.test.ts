@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PermissionMode, State, type StateSnapshot, type UsageEvent } from '../types.js';
-import { buildUsageEvent } from '../usage-event.js';
+import { buildUsageEvent, mergeRelayedSessionUsage } from '../usage-event.js';
 import type { ApiUsageData } from '../usage-api.js';
 
 function snapshot(overrides: Partial<StateSnapshot> = {}): StateSnapshot {
@@ -44,6 +44,7 @@ function usage(overrides: Partial<ApiUsageData> = {}): ApiUsageData {
     extraUsageMonthlyLimit: 100,
     extraUsageUsedCredits: 12,
     extraUsageUtilization: 12,
+    scopedLimits: [],
     inferredBillingType: 'subscription',
     ...overrides,
   };
@@ -121,6 +122,50 @@ describe('buildUsageEvent subscription quota scoping', () => {
     expect(evt.fiveHourPercent).toBe(55);
     expect(evt.sevenDayPercent).toBe(44);
     expect(evt.extraUsageEnabled).toBe(true);
+  });
+});
+
+describe('buildUsageEvent scoped limits', () => {
+  const SCOPED = [
+    { kind: 'weekly_scoped', label: 'Fable', percent: 98, severity: 'critical', resetsAt: '2026-06-12T18:00:00Z', active: true },
+    { kind: 'weekly_scoped', label: 'Opus', percent: 40, severity: 'normal', resetsAt: '2026-06-12T18:00:00Z', active: false },
+  ];
+
+  it('forwards scopedLimits for a subscription Claude model', () => {
+    // opus-4.6 + preAdjusted (11th arg) = the subscription-quota-applies path.
+    const evt = buildUsageEvent(
+      snapshot({ modelName: 'opus-4.6', billingType: 'subscription' }),
+      usage({ scopedLimits: SCOPED }),
+      true,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      true,
+    ) as UsageEvent;
+
+    expect(evt.scopedLimits).toEqual(SCOPED);
+  });
+
+  it('omits scopedLimits for an API/GLM-backed model even when present', () => {
+    // Same gate as the 5h/7d quota: a non-Claude subscription model must not leak
+    // Anthropic scoped caps.
+    const evt = buildUsageEvent(
+      snapshot({ modelName: 'glm-5.1', billingType: 'subscription' }),
+      usage({ scopedLimits: SCOPED }),
+      true,
+    ) as UsageEvent;
+
+    expect(evt.scopedLimits).toBeUndefined();
+  });
+
+  it('omits scopedLimits when the scoped array is empty (no phantom key)', () => {
+    const evt = buildUsageEvent(
+      snapshot({ modelName: 'opus-4.6', billingType: 'subscription' }),
+      usage({ scopedLimits: [] }),
+      true,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      true,
+    ) as UsageEvent;
+
+    expect(evt.scopedLimits).toBeUndefined();
   });
 });
 
@@ -321,5 +366,67 @@ describe('buildUsageEvent Codex window normalization', () => {
 
     expect(evt.codexRateLimits!.primary).toBeUndefined();
     expect(evt.codexRateLimits!.secondary).toBeUndefined();
+  });
+});
+
+// ─── Relayed session usage: split by half, never dropped ───────────────
+
+describe('mergeRelayedSessionUsage', () => {
+  /** What the daemon knows: real account quota, but a zeroed session half — its
+   *  UsageTracker is never fed by a PTY. */
+  const own = {
+    type: 'usage_update',
+    sessionDurationSec: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    toolCalls: 0,
+    estimatedCostUsd: 0,
+    fiveHourPercent: 32,
+    sevenDayPercent: 64,
+    scopedLimits: [{ label: 'Fable', percent: 98, active: true }],
+    usageStale: false,
+  } as unknown as UsageEvent;
+
+  /** What a focused Codex session relays: real session counters, no Claude quota. */
+  const relayed = {
+    type: 'usage_update',
+    sessionDurationSec: 742,
+    inputTokens: 12_000,
+    outputTokens: 3_400,
+    toolCalls: 17,
+    estimatedCostUsd: 0.42,
+    usageStale: true,
+  };
+
+  it('keeps the relay session counters', () => {
+    const m = mergeRelayedSessionUsage(own, relayed) as any;
+    expect(m.sessionDurationSec).toBe(742);
+    expect(m.inputTokens).toBe(12_000);
+    expect(m.outputTokens).toBe(3_400);
+    expect(m.toolCalls).toBe(17);
+    expect(m.estimatedCostUsd).toBe(0.42);
+  });
+
+  it('keeps the daemon account half authoritative — a quota-less relay cannot blank the gauge', () => {
+    const m = mergeRelayedSessionUsage(own, relayed) as any;
+    expect(m.fiveHourPercent).toBe(32);
+    expect(m.sevenDayPercent).toBe(64);
+    expect(m.scopedLimits).toEqual([{ label: 'Fable', percent: 98, active: true }]);
+    // The session asserts staleness about quota it never had — the daemon's own
+    // explicit `false` must win, or the dashboard latches a "stale" badge over
+    // live percentages (CLAUDE.md wire-flag rule).
+    expect(m.usageStale).toBe(false);
+  });
+
+  it('leaves the daemon value in place for a session field the relay omits', () => {
+    const m = mergeRelayedSessionUsage(own, { type: 'usage_update' }) as any;
+    expect(m.inputTokens).toBe(0);
+    expect(m.fiveHourPercent).toBe(32);
+  });
+
+  it('does not mutate either input', () => {
+    mergeRelayedSessionUsage(own, relayed);
+    expect((own as any).inputTokens).toBe(0);
+    expect(relayed.inputTokens).toBe(12_000);
   });
 });

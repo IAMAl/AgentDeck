@@ -18,6 +18,22 @@
       "UUID": "bound.serendipity.agentdeck.session-slot"
     },
     {
+      "Icon": "static/imgs/limit",
+      "Name": "Claude Limit",
+      "States": [
+        {
+          "Image": "static/imgs/keys/limit",
+          "Name": "Claude Limit",
+          "ShowTitle": false
+        }
+      ],
+      "Controllers": [
+        "Keypad"
+      ],
+      "SupportedInMultiActions": true,
+      "UUID": "bound.serendipity.agentdeck.limit-key"
+    },
+    {
       "Icon": "static/imgs/option",
       "Name": "Claude Usage",
       "States": [
