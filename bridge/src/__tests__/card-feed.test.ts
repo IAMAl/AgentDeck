@@ -73,6 +73,15 @@ describe('buildCardFeed', () => {
     expect(modules[0]!.module!.module).toBe('thread');
   });
 
+  it('builds a module-only feed for an offline-first Pocket reader', () => {
+    const feed = buildCardFeed([session({ id: 'a', projectName: 'AgentDeck', state: 'processing' })], NOW, undefined, {
+      includeSessions: false,
+    });
+    expect(feed.cards.some((card) => card.session)).toBe(false);
+    expect(feed.cards.map((card) => card.cardId)).toEqual(['module:thread:open']);
+    expect(feed.nextPullSec).toBe(CARD_FEED_IDLE_PULL_SEC);
+  });
+
   it('pull cadence hint: idle roster → idle interval, active roster → active interval', () => {
     expect(buildCardFeed([session()], NOW).nextPullSec).toBe(CARD_FEED_IDLE_PULL_SEC);
     expect(buildCardFeed([session({ state: 'processing' })], NOW).nextPullSec).toBe(CARD_FEED_ACTIVE_PULL_SEC);

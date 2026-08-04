@@ -280,7 +280,11 @@ export class AutonomousPocketEngine {
     });
     this.state = this.load();
     this.cardModules = [
-      { id: 'pulse', build: (ctx) => this.buildFor('pulse', ctx) },
+      {
+        id: 'pulse',
+        build: (ctx) => this.buildFor('pulse', ctx),
+        apply: (decision, key, ctx) => this.applyChoice('pulse', decision, key, ctx.now),
+      },
       {
         id: 'nudge',
         build: (ctx) => this.buildFor('nudge', ctx),
@@ -568,7 +572,7 @@ export class AutonomousPocketEngine {
   }
 
   private applyChoice(
-    module: 'nudge' | 'quest',
+    module: 'pulse' | 'nudge' | 'quest',
     decision: OutboxDecision & { choiceId?: string },
     key: string,
     now: number,
@@ -578,6 +582,20 @@ export class AutonomousPocketEngine {
     const choice = decision.choiceId;
     const cardId = `module:${module}:${key}`;
     if (this.state.answered[cardId]) return { status: 'applied' };
+    // Later is a device-level reading action, not a producer-authored choice.
+    // It closes this exact card without rewarding or penalising its category;
+    // a new daily fingerprint may still surface when the underlying fact
+    // changes. Recording it here prevents an offline dismissal from returning
+    // immediately in the feed pulled after the outbox is drained.
+    if (choice === 'later') {
+      this.state.answered[cardId] = { choice, at: now };
+      this.state.pending = this.state.pending.filter((item) => item.cardId !== cardId);
+      this.schedulePersist();
+      return { status: 'applied' };
+    }
+    if (module === 'pulse') {
+      return { status: 'rejected', reason: 'read-only Pocket card only supports Later' };
+    }
     if (module === 'quest') {
       if (choice !== 'work' && choice !== 'day' && choice !== 'surprise') {
         return { status: 'rejected', reason: 'unknown Pocket preference' };

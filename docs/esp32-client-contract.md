@@ -148,6 +148,9 @@ and pull while on battery.
   RTCs), and `nextPullSec` — the daemon's suggested sleep interval (3600 idle /
   900 when any session is mid-turn or awaiting). Devices may clamp but should
   not poll faster on battery.
+- **Pocket-reader projection:** `GET /feed?surface=pocket-reader` omits live
+  session rows and returns only daemon-authored portable modules. Omitting the
+  parameter preserves the legacy feed for other clients.
 - **Per-card `actionClass`** decides offline behaviour: `live` (permission
   gates, awaiting prompts — grey out offline, `expiresAt` TTL, never answerable
   from a stale cache), `day` (M7 card modules — answers queue in the device
@@ -278,6 +281,10 @@ carries its own body in `FeedCard.module` (`ModuleCard`) instead of
   select what it displayed). The result is terminal like every other outbox
   status. Choices carry an optional `intent` (`affirm`/`deny`/`neutral`) that is
   a rendering hint only.
+- **Reading lifecycle:** XTeink sends the reserved `choiceId: "later"` for its
+  Later/Done action. The daemon suppresses that exact autonomous card without
+  treating the action as positive or negative feedback; a newly fingerprinted
+  card may still appear when the underlying fact changes.
 - **Read-only modules take no choices.** `thread` and `pulse` are `info`;
   `nudge` and `quest` are `day` — answerable offline and queued in the device
   outbox. XTeink owns slot 1 as *Later*; slots 2–4 map to stable choice IDs.

@@ -89,6 +89,47 @@ describe('AutonomousPocketEngine', () => {
     expect(engine.diagnostics().feedbackCount).toBe(1);
   });
 
+  it('treats Later as a neutral read-state and does not return the same card', () => {
+    const engine = new AutonomousPocketEngine({ persist: false, config: { maxCards: 2, exploration: 0 } });
+    const modules = engine.modules();
+    const first = buildModuleCards(context(), modules);
+    const card = first.find((item) => item.module?.module === 'nudge')!;
+    engine.observeDelivery(first, NOW);
+
+    expect(applyModuleChoice({
+      cardId: card.cardId,
+      action: 'card_choice',
+      choiceId: 'later',
+    } as OutboxDecision, context(), modules).status).toBe('applied');
+
+    const next = buildModuleCards(context(NOW + 60_000), modules);
+    expect(next.some((item) => item.cardId === card.cardId)).toBe(false);
+    expect(engine.diagnostics().feedbackCount).toBe(0);
+    expect(engine.diagnostics().arms.weather?.positive).toBe(0);
+    expect(engine.diagnostics().arms.weather?.negative).toBe(0);
+  });
+
+  it('lets a read-only pulse be marked Done through the reserved Later action', () => {
+    const engine = new AutonomousPocketEngine({ persist: false, config: { maxCards: 2, exploration: 0 } });
+    const modules = engine.modules();
+    const pulseContext: CardModuleContext = {
+      now: NOW,
+      sessions: [session({ currentTask: '', activity: '' })],
+    };
+    const first = buildModuleCards(pulseContext, modules);
+    const pulse = first.find((item) => item.module?.module === 'pulse')!;
+    engine.observeDelivery(first, NOW);
+
+    expect(applyModuleChoice({
+      cardId: pulse.cardId,
+      action: 'card_choice',
+      choiceId: 'later',
+    } as OutboxDecision, pulseContext, modules).status).toBe('applied');
+    expect(buildModuleCards({ ...pulseContext, now: NOW + 60_000 }, modules)
+      .some((item) => item.cardId === pulse.cardId)).toBe(false);
+    expect(engine.diagnostics().feedbackCount).toBe(0);
+  });
+
   it('persists only aggregate learning state and opaque fingerprints', () => {
     const dir = mkdtempSync(join(tmpdir(), 'agentdeck-pocket-'));
     scratch.push(dir);
@@ -141,4 +182,3 @@ describe('parsePocketAutonomyConfig', () => {
       .toEqual({ enabled: false, maxCards: 3, exploration: 0 });
   });
 });
-

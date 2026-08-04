@@ -1005,6 +1005,8 @@ export interface CardFeedResponse {
 // `GET /feed` query parameters (a sleeping client's whole visit is this one
 // bodyless request, so telemetry rides the query string):
 //   sig  — deckSig echo for the conditional pull above.
+//   surface=pocket-reader — omit live session projections; return only
+//                           daemon-authored portable module cards.
 //   batt — battery percent 0–100.   mv — battery millivolts.
 //   rssi — WiFi RSSI dBm (negative).
 // All optional; the daemon records them per-client (FeedPullTracker) as the
@@ -1023,7 +1025,9 @@ export interface OutboxDecision {
   requestId?: string;
   action: 'permission_decision' | 'select_option' | 'respond' | 'send_prompt' | 'dismiss' | 'card_choice';
   /** action=card_choice — the `CardChoice.id` the user pressed on a module
-   *  card. Routed back to the authoring module, which owns what it means. */
+   *  card. Routed back to the authoring module, which owns what it means.
+   *  `later` is reserved as a device reading-state action: it suppresses that
+   *  exact card without positive or negative learning feedback. */
   choiceId?: string;
   /** action=permission_decision */
   decision?: 'allow' | 'deny';

@@ -212,6 +212,10 @@ export interface BuildCardFeedOpts {
   /** `?sig=` echo from the device — when it matches the current signature the
    *  response short-circuits to `unchanged: true` with empty cards. */
   echoSig?: string;
+  /** Pocket-reader clients consume daemon-authored module cards, not live
+   *  session projections. Omitting those rows keeps the portable feed small
+   *  and makes AgentDeck one content source rather than the product shell. */
+  includeSessions?: boolean;
 }
 
 export function buildCardFeed(
@@ -220,16 +224,20 @@ export function buildCardFeed(
   modules: CardModule[] = DEFAULT_CARD_MODULES,
   opts: BuildCardFeedOpts = {},
 ): CardFeedResponse {
-  const cards: FeedCard[] = sessions.map((s) => ({
+  const cards: FeedCard[] = opts.includeSessions === false ? [] : sessions.map((s) => ({
     cardId: `session:${s.id}`,
     ...classifySessionCard(s, now),
     session: s,
   }));
-  // Module cards (M7) come after the session projections: what is happening
-  // outranks what the daemon wants to say about it. A client that predates
-  // modules skips bodies it doesn't recognise.
+  // Module cards remain daemon-authored and may derive from the live roster,
+  // but Pocket-reader clients receive them as portable reading material rather
+  // than inheriting the daemon's session-oriented information architecture.
   cards.push(...buildModuleCards({ sessions, now, glance: opts.glance }, modules));
-  const active = sessions.some((s) => s.state === 'processing' || isAwaitingState(s));
+  // A portable reader does not wake more often merely because a workstation
+  // session is busy. Its background cadence follows the bounded Pocket cycle.
+  const active = opts.includeSessions === false
+    ? false
+    : sessions.some((s) => s.state === 'processing' || isAwaitingState(s));
   const d = new Date(now);
   const serverHm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   const deckSig = computeDeckSig(cards, opts.glance);

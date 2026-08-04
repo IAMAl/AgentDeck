@@ -253,6 +253,10 @@ const feedPulls = new FeedPullTracker();
  *  card copy, session names, calendar titles or weather locations. */
 const pocketAutonomy = new AutonomousPocketEngine({ onError: (message) => log(`[agentdeck] ${message}`) });
 const pocketCardModules = [threadModule, ...createAutonomousPocketModules(pocketAutonomy)];
+// THREAD is a live AgentDeck session digest. It remains available to legacy
+// feed consumers, while the dedicated Pocket surface receives only portable,
+// daemon-authored reading cards.
+const pocketReaderModules = pocketCardModules.filter((module) => module.id !== 'thread');
 
 /** Glance weather for the card-feed sleep dashboard. Config is read from
  *  settings.json per pull (cheap; honors edits without a restart); the
@@ -1604,9 +1608,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
             events: await glanceCalendar.get(parseCalendarSettings(settings)),
           });
           const now = Date.now();
-          const feed = buildCardFeed(sessions as unknown as SessionInfo[], now, pocketCardModules, {
+          const pocketReader = parsedUrl.searchParams.get('surface') === 'pocket-reader';
+          const feed = buildCardFeed(sessions as unknown as SessionInfo[], now,
+            pocketReader ? pocketReaderModules : pocketCardModules, {
             glance,
             echoSig: parsedUrl.searchParams.get('sig') ?? undefined,
+            includeSessions: !pocketReader,
           }) as CardFeedResponse & { fw?: { size: number; md5: string } };
           // Pull-OTA advert: rides full AND `unchanged` responses, so a
           // sleeping board learns about a staged build on any pull. Board
