@@ -426,6 +426,10 @@ struct CodexRateLimitWindow: Codable, Sendable {
     var resetsAt: String?
     /// True when this window's snapshot has expired (set centrally by the daemon).
     /// Renderers dim the gauge and show a "stale" marker instead of "now".
+    ///
+    /// The HARD signal — some consumers drop the gauge entirely on it. A merely
+    /// OLD snapshot of a still-live window must never set it; that rides
+    /// `CodexRateLimits.capturedAt`.
     var stale: Bool?
 }
 
@@ -446,6 +450,28 @@ struct CodexRateLimits: Codable, Sendable {
     var planType: String?
     var limitId: String?
     var credits: CodexCredits?
+    /// ISO-8601 instant this snapshot was WRITTEN by Codex (the rate-limit line's
+    /// own timestamp, else the rollout file's mtime).
+    ///
+    /// The only field that separates "94% right now" from "94% four hours ago":
+    /// Codex usage is read passively from rollout files, so the numbers freeze
+    /// when Codex stops being used, and `stale` cannot expose that — it fires only
+    /// once the window has ENDED, which for the weekly window is up to 7 days out.
+    var capturedAt: String?
+}
+
+/// Convenience over the generated `CodexUsageFreshness` (see
+/// `CodexFreshnessRules.generated.swift`, SSOT `shared/src/format-utils.ts`):
+/// unwraps the window's `stale` flag so call sites can pass the window itself.
+extension CodexUsageFreshness {
+    static func footnote(
+        window: CodexRateLimitWindow?,
+        capturedAt: String?,
+        now: Date = Date()
+    ) -> String? {
+        guard let window else { return nil }
+        return footnote(stale: window.stale == true, capturedAt: capturedAt, now: now)
+    }
 }
 
 // MARK: - Button / Encoder State (Bridge → Client)

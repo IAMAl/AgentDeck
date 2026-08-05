@@ -84,6 +84,11 @@ data class ProviderLimitRow(
     val percent: Double,
     val resetIso: String?,
     val stale: Boolean,
+    /** Codex freshness note ("stale" / "3h ago") from [CodexFreshnessRules.footnote]. When
+     *  present it takes the reset slot and the row renders dimmed: a passively-read
+     *  snapshot of a still-live window keeps its last true percent, but a weekly
+     *  window's countdown says nothing about when that percent was measured. */
+    val footnote: String? = null,
 )
 
 /**
@@ -107,23 +112,34 @@ fun windowLabel(minutes: Int?): String {
  * flag — Codex usage is NOT gated by Claude's `usageStale`. Returns an empty
  * list when no Codex limit data is present, so callers can simply append it.
  */
-fun codexLimitRows(limits: CodexRateLimits?): List<ProviderLimitRow> {
+fun codexLimitRows(limits: CodexRateLimits?, nowMs: Long = System.currentTimeMillis()): List<ProviderLimitRow> {
     if (limits == null) return emptyList()
     return buildList {
         limits.primary?.let { p ->
             val pct = p.usedPercent
             if (pct != null) {
-                add(ProviderLimitRow("codex", windowLabel(p.windowMinutes), pct, p.resetsAt, p.stale == true))
+                add(
+                    ProviderLimitRow(
+                        "codex", windowLabel(p.windowMinutes), pct, p.resetsAt, p.stale == true,
+                        CodexFreshnessRules.footnote(p.stale == true, limits.capturedAt, nowMs),
+                    ),
+                )
             }
         }
         limits.secondary?.let { s ->
             val pct = s.usedPercent
             if (pct != null) {
-                add(ProviderLimitRow("codex", windowLabel(s.windowMinutes), pct, s.resetsAt, s.stale == true))
+                add(
+                    ProviderLimitRow(
+                        "codex", windowLabel(s.windowMinutes), pct, s.resetsAt, s.stale == true,
+                        CodexFreshnessRules.footnote(s.stale == true, limits.capturedAt, nowMs),
+                    ),
+                )
             }
         }
     }
 }
+
 
 /** Format duration from epoch millis to "H:MM" or "D:HH:MM" */
 fun formatUptime(connectedSinceMs: Long): String {
