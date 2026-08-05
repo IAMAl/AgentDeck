@@ -1,11 +1,5 @@
 {
-  "bridgePort": 9120,
-  "autoRestart": false,
-  "voiceLanguage": "ko",
-  "voiceAutoSend": true,
-  "whisperModel": "large-v3-turbo",
-  "stuckTimeoutMs": 300000,
-  "reconnectIntervalMs": 3000,
+  "_comment": "Reference copy of the defaults AgentDeck applies to ~/.agentdeck/settings.json (App Store macOS: the sandbox container path). Nothing copies this file at install time — every loader merges its own built-in defaults and a missing settings.json is the normal case. Values here MUST equal those built-in defaults; bridge/src/__tests__/default-settings-drift.test.ts fails otherwise. Keys the code never reads do not belong here — the full optional surface (wakeWord, voice.locale, weather, calendar, peripheralMappings, idotmatrixNamePrefixes) is documented in docs/configuration.md.",
   "llm": {
     "mlx": {
       "endpoint": "http://127.0.0.1:8800",
@@ -14,17 +8,17 @@
   },
   "apme": {
     "enabled": true,
-    "autoTune": true,
     "deterministic": {
       "enabled": true,
       "timeoutSec": 180,
       "commands": {}
     },
     "judge": {
-      "backend": "mlx",
+      "backend": "foundationModels",
       "model": "qwen3-30b",
       "sampleRate": 1.0,
-      "onlyWhenDisagreement": false
+      "onlyWhenDisagreement": false,
+      "fallbackToMlx": true
     },
     "availableModels": []
   }

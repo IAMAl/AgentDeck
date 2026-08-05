@@ -4,19 +4,34 @@ What you can change, and where the file lives.
 
 ## Settings
 
-Defaults ship in `config/default-settings.json` and are copied into your user
-data directory on first run (`~/.agentdeck/settings.json`; the App Store macOS
-app uses its container path — see CLAUDE.md → User data dir).
+Settings live in `~/.agentdeck/settings.json` (the App Store macOS app uses its
+container path — see CLAUDE.md → User data dir). **The file is optional and
+nothing creates it for you**: every loader merges its own built-in defaults, so
+a missing file is the normal case and you only write the keys you want to
+change. `config/default-settings.json` is a reference copy of those built-in
+defaults — it is never copied anywhere, and a test
+(`bridge/src/__tests__/default-settings-drift.test.ts`) fails the build if it
+stops matching the code or grows a key no loader reads.
 
 | Key | Default | Effect |
 |-----|---------|--------|
-| `bridgePort` | `9120` | Daemon hub port. Session bridges take 9121-9139. |
-| `autoRestart` | `false` | Restart a session bridge when its agent exits. |
-| `stuckTimeoutMs` | `300000` | How long PROCESSING may last before the session reads as stalled. |
-| `reconnectIntervalMs` | `3000` | Client reconnect backoff. |
-| `voiceLanguage` · `voiceAutoSend` · `whisperModel` | `ko` · `true` · `large-v3-turbo` | Dictation on the Apple app. See [Voice setup](voice-setup.md). |
-| `llm.mlx.endpoint` · `llm.mlx.model` | `http://127.0.0.1:8800` · `null` | Local MLX server used by APME's judge. |
-| `apme.*` | enabled, auto-tuning | Evaluation module — schema and semantics in [APME](apme.md). |
+| `llm.mlx.endpoint` · `llm.mlx.model` | `http://127.0.0.1:8800` · `null` | Local MLX server used by the APME judge and the timeline summarizer. `null` model = take whatever the server advertises. |
+| `apme.*` | enabled, on-device judge | Evaluation module — schema and semantics in [APME](apme.md). `apme.judge.backend` defaults to `foundationModels` with `fallbackToMlx`. |
+| `wakeWord` | *(unset)* | `true` starts the Porcupine listener with the daemon (same as `--wake-word`). |
+| `wakeWordMic` · `wakeWordSensitivity` | *(unset)* · `0.5` | Mic name substring and detection sensitivity. See [Wake word](wake-word.md). |
+| `voice.locale` | *(system locale)* | BCP-47 tag (e.g. `"en-US"`) for on-device transcription. See [Voice setup](voice-setup.md). |
+| `weather.lat` · `weather.lon` · `weather.place` | *(unset)* | Glance weather. No config → no weather card, never an IP-geolocation guess. |
+| `calendar.ics` | *(unset)* | Secret-address ICS URL, or a list of them, for the glance schedule. |
+| `peripheralMappings` | `[]` | NFC tag uid → steering action mapping. |
+| `idotmatrixNamePrefixes` | *(built-in list)* | Widens BLE discovery for iDotMatrix-family displays. |
+
+Keys not in this table are not read. `bridgePort`, `autoRestart`,
+`stuckTimeoutMs`, `reconnectIntervalMs`, `voiceLanguage`, `voiceAutoSend`,
+`whisperModel` and `apme.autoTune` all appeared in older copies of this page
+and of `config/default-settings.json`, but no loader has ever read them from
+settings.json — the port comes from the CLI/daemon allocator, the timeouts are
+compile-time constants, and `whisperModel` outlived the whisper.cpp path that
+was removed in favour of Apple's on-device recognizer.
 
 ## Stream Deck Property Inspector
 
