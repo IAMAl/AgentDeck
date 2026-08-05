@@ -34,6 +34,8 @@
 // Audio: NO hardware — MEMS mic/codec chip not populated on this board.
 // GPIOs 45/46 are exposed on header but no I2S peripheral is connected.
 // 3.5mm jack (if present) is for antenna/serial debug, NOT audio.
-// #define BOARD_HAS_AUDIO      1
-// #define BOARD_PIN_I2S_LRCLK  45
-// #define BOARD_PIN_I2S_DIN    46
+//
+// The commented-out BOARD_HAS_AUDIO / I2S PDM pins that used to sit here were
+// the intended home of the on-board microWakeWord listener. That firmware was
+// removed on 2026-08-05 (it only ever ran an RMS VAD, never the model, and no
+// board started its task) — see docs/wake-word.md § 2.

@@ -655,8 +655,8 @@ static bool touch_read_gsl3680(uint16_t* x, uint16_t* y) {
 
 // ===== Audio-codec hardware probe (ES8311 hunt) =====
 // The vendor sheet claims 2 mics + a speaker behind an ES8311 on this panel,
-// but nothing in this repo has ever measured it — board_jc8012p4a1c.h carries
-// a bare comment and BOARD_HAS_AUDIO 0. This probe answers "is it there, on
+// but nothing in this repo had ever measured it — board_jc8012p4a1c.h carried
+// a bare comment and no audio flags. This probe answers "is it there, on
 // which bus, at which address" and captures enough context in the same round
 // trip (full hit list, register dump, pin levels) that the follow-up playback
 // work does not need a second hardware session. That is the 2026-03-21 lesson

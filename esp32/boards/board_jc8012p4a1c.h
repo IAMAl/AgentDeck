@@ -31,9 +31,10 @@
 // ({"type":"i2c_diag"}); the same sweep also found unidentified devices at
 // 0x32 and 0x36.
 //
-// BOARD_HAS_AUDIO gates the dormant wake-word path only, which is separate
-// from the verified push-to-talk capture and playback paths below.
-#define BOARD_HAS_AUDIO      0
+// There is no BOARD_HAS_AUDIO here any more: it gated only the dormant
+// on-board wake-word path, removed 2026-08-05 (docs/wake-word.md § 2). The
+// verified push-to-talk capture and playback paths below are a different
+// feature and have always been gated by their own flags.
 
 // ---- Speaker playback via the ES8311 -------------------------------------
 // Pins from the board's own ESP-IDF BSP (`bsp_jc8012p4a1c`,
@@ -57,8 +58,7 @@
 #define BOARD_PIN_SPK_PA_EN      20     // power-amp enable
 #define BOARD_PIN_MIC_DIN        11     // codec ASDOUT → ESP32 (RX verified 2026-07-28)
 // Capture rides the same full-duplex I2S as playback, so it is the codec's ADC
-// rather than a separate PDM peripheral. BOARD_HAS_AUDIO stays 0 — that gates
-// the dormant wake-word path, which is a different feature.
+// rather than a separate PDM peripheral.
 #define BOARD_HAS_VOICE_CAPTURE  1
 // Utterances buffer whole in PSRAM and POST once to /esp32/voice. Both
 // live-streaming transports lost audio on this board: 115200-baud serial is a
