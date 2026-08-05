@@ -51,9 +51,9 @@ validators: [pnpm test]
        │                │                  │              │
        ▼                ▼                  ▼              ▼
   ┌─────────┐    ┌──────────────┐   ┌────────────┐  ┌────────────┐
-  │Classifier│   │   Runner     │   │   Tuner    │  │Recommender │
+  │Classifier│   │   Runner     │   │Tuner(미구현)│  │Recommender │
   │rules+MLX │   │ det+judge    │   │ OPRO loop  │  │ scorecard  │
-  │10 cats   │   │ category-    │   │ vibe-based │  │ cost/qual  │
+  │10 cats   │   │ category-    │   │ 설계만 존재 │  │ cost/qual  │
   │          │   │ aware        │   │            │  │            │
   └─────────┘    └──────┬───────┘   └────────────┘  └────────────┘
                         │
@@ -158,7 +158,7 @@ Store 초기화 시:
 - `version=1` 로 `purpose='general'` (코딩 루브릭) seed
 - 그 후 `CATEGORY_RUBRICS`의 6종(conversation/planning/research/debugging/refactoring/review)을 **version 자동 할당**으로 seed
 - `getCurrentRubric(purpose)`는 해당 purpose의 최신 version 반환
-- Tuner가 새 버전을 `appendRubric()`로 추가 (parent_ver 링크)
+- `appendRubric()` 가 새 버전을 추가한다 (parent_ver 링크). 이 API 를 부를 튜너는 아직 없다 — 아래 **Rubric auto-tuning** 절 참고
 
 ### vibe_feedback — 사용자 승인/거절
 
