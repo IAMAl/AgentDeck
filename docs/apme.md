@@ -14,7 +14,7 @@ validators: [pnpm test]
 ---
 # APME — Agent Performance Monitoring & Evaluation
 
-에이전트 세션(Claude Code, OpenClaw, OpenCode, Codex CLI)의 작업 결과를 **데이터셋화**하고, 결정론적 검증 + LLM judge로 **자동 평가**하며, 사용자 피드백(vibe check)으로 judge 루브릭을 **자동 튜닝**하는 모듈.
+에이전트 세션(Claude Code, OpenClaw, OpenCode, Codex CLI)의 작업 결과를 **데이터셋화**하고, 결정론적 검증 + LLM judge로 **자동 평가**하며, 사용자 피드백(vibe check)을 함께 축적하는 모듈. 그 피드백으로 루브릭을 자동 튜닝하는 층은 설계만 있고 아직 구현되지 않았다 — 아래 **Rubric auto-tuning** 절 참고.
 
 평가는 **카테고리별로 방법이 다르다** — 코딩 태스크는 run-level + git diff + 결정론 레이어, 비코딩 태스크는 turn-level + judge only. 모든 데이터는 `~/.agentdeck/apme.sqlite`에 저장되고, daemon HTTP API + WS 프로토콜로 Apple/Android/Stream Deck/ESP32 UI에 실시간 노출된다.
 
@@ -89,7 +89,6 @@ daemon 없이 session bridge 단독 사용 시 데이터만 축적되고 coding 
 | `bridge/src/foundation-models-helper.ts` | CLI-only Foundation Models Swift helper resolver / JSONL process manager |
 | `bridge/fm-helper/AgentDeckFMHelper.swift` | macOS 26+ Swift helper source bundled with the CLI package |
 | `bridge/src/apme/outcome.ts` | Outcome 판정 (committed/iterated/abandoned 등) + composite score |
-| `bridge/src/apme/tuner.ts` | 루브릭 자동 튜닝 — disagreement 감지, shadow-eval, rubric append |
 | `bridge/src/apme/recommend.ts` | 모델 추천 — scorecard 기반 |
 | `bridge/src/apme/hw-sampler.ts` | macOS HW 스냅샷 — `vm_stat`, `sysctl`, `uptime` |
 | `bridge/src/apme/http.ts` | Daemon HTTP routes (`/apme/*`) |
@@ -351,9 +350,15 @@ composite = 0.40 × outcomeScore
 
 `efficiencyScore`는 `tokensPerChange`, `costPerChange`, `timeToCompleteSec`, `toolEfficiency`로 산출.
 
-## Rubric auto-tuning
+## Rubric auto-tuning — 설계만 있고 **미구현** (2026-08-06 확인)
 
-`ApmeTuner.tune()` in `tuner.ts` — OPRO(Optimization by PROmpting) 스타일:
+> **경고**: 이 절은 오랫동안 구현된 기능처럼 서술돼 있었으나, `bridge/src/apme/tuner.ts` 도 `ApmeTuner` 도 `shouldRetune()` 도 `POST /apme/tune` 도 저장소에 존재하지 않는다. 설계 스케치로만 읽을 것.
+>
+> **실제로 있는 것**: `rubrics` 테이블의 버전 관리(`parentVer` 링크 포함)와 카테고리별 루브릭 seed, `vibe_feedback` 수집(`POST /apme/vibe`), 현재 루브릭 조회(`GET /apme/rubric/current`). 즉 튜너가 읽고 쓸 **저장 구조는 준비돼 있고, 튜너 루프만 없다.**
+>
+> **없는 것**: disagreement 감지, meta-prompt 제안, shadow-eval, 자동 accept/reject, 자동 실행 트리거, 그리고 그것을 켜고 끄는 `apme.autoTune` 설정(어떤 로더도 읽지 않는다).
+
+구현한다면 이런 모양이었다 — OPRO(Optimization by PROmpting) 스타일:
 
 1. **Disagreement detector**: 최근 30개 run에서
    - `tests_pass=1 ∧ judge.overall<0.5` (false negative)
@@ -365,7 +370,7 @@ composite = 0.40 × outcomeScore
 4. **Shadow-eval**: 제안된 루브릭으로 같은 샘플을 재채점, vibe와의 상관이 개선되었는지 비교
 5. **Accept/reject**: 상관 개선 > 0.05 시 `rubrics` 테이블에 새 버전 append (`parentVer` 링크). 미개선 시 폐기 + 로그
 
-자동 실행: `shouldRetune()` — vibe correlation < 0.4 이면 true. `autoTune: true`가 기본값이지만 disagreement 샘플 최소 3개 필요 — 그전까지는 no-op.
+자동 실행 조건도 같은 설계의 일부였다: vibe correlation < 0.4 이면 재튜닝, 단 disagreement 샘플 최소 3개. 위 경고대로 이 트리거 역시 코드에 없다.
 
 ## Daemon HTTP API
 
@@ -374,12 +379,17 @@ composite = 0.40 × outcomeScore
 | GET | `/apme` | 대시보드 HTML (inline SPA) |
 | GET | `/apme/runs?limit=&agent=&model=` | 최근 runs + evals + overallScore |
 | GET | `/apme/run/:id` | 단일 run 상세 (steps, turns, per-turn evals, vibe) |
+| GET | `/apme/tasks/:id` | run 의 task 목록 + task별 rollup |
 | GET | `/apme/scorecard` | `v_model_scorecard` |
 | GET | `/apme/categories` | `v_category_scorecard` |
+| GET | `/apme/samples` | sample-granularity 스코어카드 (Pareto 입력) |
+| GET | `/apme/pareto` | (quality, cost) frontier + dominated 분할 |
+| GET | `/apme/judge/detect` | 로컬 추론 서버 자동 탐지 (Ollama / LM Studio / MLX) |
 | GET | `/apme/rubric/current` | 현재 활성 루브릭 (general) |
 | POST | `/apme/vibe` | `{ runId, verdict, note? }` |
 | POST | `/apme/recommend` | `{ taskKind?, budgetUsd?, preferLocal? }` → top-3 후보 |
-| POST | `/apme/tune` | 수동 루브릭 튜닝 트리거 |
+
+라우트 표는 `bridge/src/apme/http.ts` 의 실제 분기와 1:1이다. 예전에 실려 있던 `POST /apme/tune` 은 구현된 적이 없어 삭제했다(위 auto-tuning 절 참고).
 
 모든 응답은 JSON + `Access-Control-Allow-Origin: *`. APME 미초기화 시 503.
 
@@ -435,7 +445,6 @@ TUI `renderer.ts`. 글랜스 표면(ESP32 카드/티커, 양 데몬의
 {
   "apme": {
     "enabled": true,
-    "autoTune": true,
     "deterministic": {
       "enabled": true,
       "timeoutSec": 180,
@@ -463,7 +472,6 @@ TUI `renderer.ts`. 글랜스 표면(ESP32 카드/티커, 양 데몬의
 | Key | Default | Description |
 |---|---|---|
 | `enabled` | `true` | APME 전체 on/off |
-| `autoTune` | `true` | 루브릭 자동 튜닝 활성화 |
 | `deterministic.enabled` | `true` | Layer 1 (lint/build/test) 실행 여부 |
 | `deterministic.timeoutSec` | `180` | 단계별 하드 타임아웃 (초) |
 | `deterministic.commands` | `{}` | 언어별 명령 override |
