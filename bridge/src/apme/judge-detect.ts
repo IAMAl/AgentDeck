@@ -36,6 +36,23 @@ const CANDIDATES: Candidate[] = [
 
 const NANO = 'nanollava';
 
+/**
+ * True when an Ollama catalog entry can actually answer a chat completion.
+ *
+ * Ollama advertises `capabilities` per model (`["completion","tools",…]` for
+ * chat models, `["embedding"]` for embedders like `bge-m3`). Offering an
+ * embedding-only model as a judge candidate is a trap: the picker looks fine
+ * and the first real judge call fails with a 400 from the server.
+ *
+ * Absence of the field is "no information", NOT "unusable" — older Ollama
+ * builds omit `capabilities` entirely, and dropping those would empty the
+ * catalog on exactly the servers we can least afford to mis-report.
+ */
+function ollamaChatCapable(m: { capabilities?: unknown }): boolean {
+  if (!Array.isArray(m.capabilities)) return true;
+  return m.capabilities.some((c) => typeof c === 'string' && c.toLowerCase() === 'completion');
+}
+
 async function modelsFor(c: Candidate, timeoutMs: number): Promise<string[] | null> {
   // Ollama's canonical list is /api/tags; every OpenAI-compatible server
   // (LM Studio, MLX, vLLM, Ollama's compat shim) exposes /v1/models.
@@ -43,9 +60,16 @@ async function modelsFor(c: Candidate, timeoutMs: number): Promise<string[] | nu
     try {
       const r = await fetch(`${c.base}/api/tags`, { signal: AbortSignal.timeout(timeoutMs) }).catch(() => null);
       if (r?.ok) {
-        const j = await r.json() as { models?: Array<{ name?: string }> };
-        const names = (j.models ?? []).map((m) => m.name).filter((n): n is string => !!n);
-        if (names.length) return names;
+        const j = await r.json() as { models?: Array<{ name?: string; capabilities?: unknown }> };
+        const catalog = j.models ?? [];
+        const names = catalog
+          .filter(ollamaChatCapable)
+          .map((m) => m.name)
+          .filter((n): n is string => !!n);
+        // Once /api/tags answered, its verdict is final: falling through to
+        // /v1/models would re-add the embedding-only models we just filtered
+        // out, since the OpenAI-compatible shim reports no capabilities.
+        if (catalog.length) return names;
       }
     } catch { /* fall through to /v1/models */ }
   }

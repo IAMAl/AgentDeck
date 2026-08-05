@@ -34,6 +34,19 @@ enum ApmeJudgeDetect {
         .init(provider: "mlx", label: "Local MLX server", base: "http://127.0.0.1:8080", endpoint: "http://127.0.0.1:8080/v1", tags: false),
     ]
 
+    /// True when an Ollama catalog entry can answer a chat completion.
+    ///
+    /// Mirror of `ollamaChatCapable` in bridge/src/apme/judge-detect.ts.
+    /// Ollama tags carry `capabilities` (`["completion", …]` for chat models,
+    /// `["embedding"]` for embedders such as `bge-m3`); offering an embedder as
+    /// a judge candidate only fails once the user has already picked it.
+    /// A missing field is "no information", not "unusable" — older Ollama
+    /// builds omit it entirely.
+    private static func ollamaChatCapable(_ entry: [String: Any]) -> Bool {
+        guard let caps = entry["capabilities"] as? [Any] else { return true }
+        return caps.contains { ($0 as? String)?.lowercased() == "completion" }
+    }
+
     private static func models(for c: Candidate, timeout: TimeInterval) async -> [String]? {
         if c.tags, let url = URL(string: c.base + "/api/tags") {
             var r = URLRequest(url: url); r.timeoutInterval = timeout
@@ -41,8 +54,12 @@ enum ApmeJudgeDetect {
                (resp as? HTTPURLResponse)?.statusCode == 200,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let arr = json["models"] as? [[String: Any]] {
-                let names = arr.compactMap { $0["name"] as? String }
-                if !names.isEmpty { return names }
+                // Once /api/tags answered, its verdict is final: falling through
+                // to /v1/models would re-add the embedding-only models just
+                // filtered out (the compat shim reports no capabilities).
+                if !arr.isEmpty {
+                    return arr.filter(ollamaChatCapable).compactMap { $0["name"] as? String }
+                }
             }
         }
         if let url = URL(string: c.base + "/v1/models") {
