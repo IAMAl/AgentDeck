@@ -15,7 +15,10 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
-const DEFAULT_ENDPOINT = 'http://127.0.0.1:8800';
+/** Base URL used when settings.json pins no `llm.mlx.endpoint`. Exported so
+ *  docs/config mirrors can be gated against it instead of restating it. */
+export const DEFAULT_MLX_ENDPOINT = 'http://127.0.0.1:8800';
+const DEFAULT_ENDPOINT = DEFAULT_MLX_ENDPOINT;
 
 /** Final fallback when neither settings nor probe yield a model id. */
 export const MLX_FALLBACK_MODEL = 'mlx-community/Qwen3-1.7B-4bit';

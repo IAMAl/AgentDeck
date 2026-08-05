@@ -64,18 +64,35 @@ export function setPricingOverrides(table: Record<string, ModelPrice> | null | u
 export function normalizeModelId(model: string): string {
   let m = model.trim().toLowerCase();
   // provider prefix: "anthropic/claude-…", "openai/gpt-…", "openrouter:…"
+  // Local ids keep their org segment — "mlx-community/qwen3…" is not the same
+  // thing as a hosted "qwen3…", and isLocalModel() keys off the whole string.
   const slash = m.lastIndexOf('/');
-  if (slash >= 0 && !m.startsWith('mlx:') && !m.startsWith('local:')) m = m.slice(slash + 1);
+  if (slash >= 0 && !isLocalModel(m)) m = m.slice(slash + 1);
   // date suffix: "-20260101" or "-2026-01-01"
   m = m.replace(/-\d{8}$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
   return m;
 }
 
+/** Prefixes that mark a model id as running on this machine.
+ *  `foundationmodels:` matters because that is the exact shape this codebase
+ *  emits: `effectiveJudgeModelTag()` returns `foundationModels:apple-intelligence`
+ *  (and `ApmeJudgeFoundationModels.judgeModelLabel` mirrors it byte-for-byte).
+ *  Matching only the bare word left that tag priced as "unknown" — which reads
+ *  as *unpriced*, not free, everywhere `isPricedModel()` gates a cost display. */
+const LOCAL_PREFIXES = [
+  'mlx:', 'local:', 'ollama:', 'lmstudio:',
+  'foundationmodels:', 'foundation-models:', 'apple-fm:',
+  // Hugging Face orgs whose ids arrive verbatim from a local server's
+  // /v1/models — e.g. "mlx-community/Qwen3.6-35B-A3B-4bit", which is what an
+  // MLX server actually advertises and what resolveMlxModel() hands back.
+  'mlx-community/', 'lmstudio-community/',
+];
+
 /** Local models (MLX, Foundation Models, Ollama, any explicit local: prefix). */
 export function isLocalModel(model: string): boolean {
   const m = model.trim().toLowerCase();
-  return m.startsWith('mlx:') || m.startsWith('local:') || m.startsWith('ollama:')
-    || m === 'foundationmodels' || m === 'foundation-models' || m === 'apple-fm';
+  if (LOCAL_PREFIXES.some((p) => m.startsWith(p))) return true;
+  return m === 'foundationmodels' || m === 'foundation-models' || m === 'apple-fm';
 }
 
 /** Look up the price record for a model (override → default → local → unknown). */
