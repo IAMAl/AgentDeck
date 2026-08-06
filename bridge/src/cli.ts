@@ -617,7 +617,7 @@ daemon
   .option('-f, --foreground', 'Run in foreground (default: background fork)')
   .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
   .action(async (opts) => {
-    const { findExistingDaemon, probeDaemonHealth, readDaemonInfo, removeDaemonInfo, removeDaemonSession, requestDaemonStandDown, requestDaemonShutdown, waitForDaemonExit } = await import('./session-registry.js');
+    const { findExistingDaemon, probeDaemonHealth, readDaemonInfo, removeDaemonInfo, removeDaemonSession, requestDaemonStandDown, requestDaemonShutdown, waitForDaemonExit, waitForPortBindable } = await import('./session-registry.js');
 
     // Reverse two-tier upgrade path: the macOS app may already own the canonical
     // port with its in-process Swift daemon (Tier 1 — limited: no ADB devices,
@@ -639,12 +639,44 @@ daemon
           await requestDaemonShutdown(targetPort);
           acked = true; // shutdown is best-effort (no ack body); rely on the exit wait
         }
-        if (acked && await waitForDaemonExit(targetPort, 12000)) {
+        // Two conditions, not one. `waitForDaemonExit` proves the app stopped
+        // answering; `waitForPortBindable` proves the socket is actually gone.
+        // The app releases the port with NWListener.cancel(), which returns
+        // before the teardown completes — binding on the first signal alone is
+        // what silently demoted this daemon to the 9121 fallback and left the
+        // canonical port ownerless.
+        if (acked
+          && await waitForDaemonExit(targetPort, 12000)
+          // 30s, and that is not padding. Cancelling the app's NWListener does
+          // not free the port: macOS keeps a NECP reservation on it for ~14s
+          // afterwards, during which `lsof` shows no sockets at all and bind()
+          // still returns EADDRINUSE (measured 2026-08-06 — bindable at ~17s).
+          // Anything shorter gives up while the kernel, not the app, is holding
+          // the port. The app's takeover-yield window is longer still (45s), so
+          // it stays off the port until well after this wait has claimed it.
+          && await waitForPortBindable(targetPort, 30000)) {
           log(`App daemon yielded port ${targetPort}. Starting CLI daemon…`);
           // fall through — port is clear, proceed to bind below
         } else {
-          log(`The AgentDeck app did not yield port ${targetPort} in time. Quit the app and retry 'agentdeck daemon start', or start on a different port with -p.`);
-          process.exit(1);
+          // The app yielded but the PORT did not come back, and that is often
+          // not the app's doing: a WiFi device that has gone to sleep with bytes
+          // still queued to it leaves its socket in LAST_ACK on this port, and
+          // TCP holds that until it exhausts retransmits — minutes, sometimes.
+          // Network.framework exposes no SO_LINGER, so the app cannot RST out of
+          // it (measured 2026-08-06: two sleeping ESP32 boards, 11901 and 4
+          // bytes queued, were the only things left on 9120).
+          //
+          // Carry on rather than exiting. The daemon binds a fallback port and
+          // writes it to daemon.json, which is what every client resolves
+          // through and what the app itself re-reads when its yield window ends
+          // — so the deck keeps working. What must NOT happen is this being
+          // silent, which is how the canonical port ended up owned by nobody
+          // with the CLI reporting success.
+          log(`The AgentDeck app yielded port ${targetPort} but the port has not been released `
+            + `(usually a sleeping WiFi device holding a half-closed socket on it).`);
+          log(`Starting on a fallback port instead — clients resolve it from daemon.json. `
+            + `For the canonical port, quit the AgentDeck app and retry, or pass -p.`);
+          // fall through to normal port selection
         }
       } else {
         log(`Daemon already running on port ${targetPort}. Use 'agentdeck daemon stop' first.`);

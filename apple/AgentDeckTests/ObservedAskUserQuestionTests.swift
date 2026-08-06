@@ -159,5 +159,50 @@ final class ObservedAskUserQuestionTests: XCTestCase {
             "tool_failure"
         )
     }
+
+    // MARK: - askEchoMatches (mirror of bridge/src/ask-gate.ts)
+
+    func testAcceptsAnEchoTruncatedByAByteSizedDeviceBuffer() {
+        // The regression this exists for: a question is capped at 120
+        // CHARACTERS, but a firmware surface holds it in a 160-BYTE buffer — so
+        // a Korean one arrives cut short. Under an exact-match gate every
+        // answer to a Korean question was refused while English ones went
+        // through, which reads as a flaky device rather than as a rule.
+        let question = "이번 세션 저장소 마이그레이션 작업을 어떤 순서로 진행하는 것이 좋을지, "
+            + "되돌리기 비용과 위험을 함께 고려해서 알려주세요"
+        var bytes = Array(question.utf8.prefix(159))
+        // utf8TrimEnd: drop the sequence the byte cut landed inside.
+        while !bytes.isEmpty, String(bytes: bytes, encoding: .utf8) == nil { bytes.removeLast() }
+        let truncated = String(bytes: bytes, encoding: .utf8)!
+
+        XCTAssertNotEqual(truncated, question)
+        XCTAssertTrue(ObservedSteering.askEchoMatches(truncated, question))
+    }
+
+    func testRefusesAnEchoTooShortToIdentifyItsQuestion() {
+        let question = "Which migration strategy should we use for the session store rewrite?"
+        let stub = String(question.prefix(ObservedSteering.askEchoMinPrefix - 1))
+        XCTAssertFalse(ObservedSteering.askEchoMatches(stub, question))
+    }
+
+    func testRefusesASupersededQuestionSharingALongPrefix() {
+        // What the guard is actually for: a grouped prompt advances, and a
+        // press aimed at the previous question must not land in the new list.
+        let q1 = "Which migration strategy should we use for the session store?"
+        let q2 = "Which migration strategy should we use for the timeline store?"
+        XCTAssertFalse(ObservedSteering.askEchoMatches(q1, q2))
+    }
+
+    func testRefusesAnEchoLongerThanTheLiveQuestion() {
+        // Truncation only ever shortens; an echo that extends past the live
+        // question is a different, longer one.
+        let question = "Which colour do you prefer?"
+        XCTAssertFalse(ObservedSteering.askEchoMatches("\(question) And why exactly?", question))
+    }
+
+    func testAcceptsAnExactEcho() {
+        let question = "Which colour do you prefer?"
+        XCTAssertTrue(ObservedSteering.askEchoMatches(question, question))
+    }
 }
 #endif

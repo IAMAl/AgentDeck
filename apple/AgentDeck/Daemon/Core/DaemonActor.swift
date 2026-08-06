@@ -1,4 +1,6 @@
 #if os(macOS)
+import Foundation
+
 // DaemonActor.swift — the executor the in-process daemon runs on.
 //
 // The daemon used to be `@MainActor`, which meant SwiftUI rendering and daemon
@@ -38,5 +40,56 @@ actor DaemonActor {
     ) async rethrows -> T {
         try body()
     }
+}
+
+/// One-way "it finished" flag. Separate from the waiter on purpose: the waiter
+/// polls it and may walk away, which a continuation-based signal cannot express
+/// without risking a resume-after-abandon.
+private actor CompletionFlag {
+    private var done = false
+    func mark() { done = true }
+    var isDone: Bool { done }
+}
+
+/// Run `work` under a wall-clock budget, ABANDONING it if the budget is blown.
+///
+/// Teardown needs its caller to make progress even when a stage never will, and
+/// the two obvious tools both fail at exactly that:
+///
+///   - `withTaskGroup` awaits *every* child at scope exit, so one wedged child
+///     hangs the caller anyway — this is precisely how `ModuleManager.stopAll()`
+///     (a task group over module `stop()`s) stalled the whole daemon shutdown.
+///   - Cancellation is cooperative, and a subsystem parked on a continuation
+///     that will never resume — a BLE reply that never arrives — never observes
+///     it.
+///
+/// So the stage is left running and forgotten. That is a deliberate trade: an
+/// abandoned stage may still hold a transport that the next start() re-opens,
+/// which is why blowing the budget logs at ERROR. Hanging forever is strictly
+/// worse — it stranded this daemon on a fallback port for the rest of its life
+/// (2026-08-06), with the reclaim guard latched so nothing ever retried.
+///
+/// Returns true when `work` finished inside the budget.
+@discardableResult
+func withBudget(
+    seconds: Double,
+    _ label: String,
+    poll: Double = 0.02,
+    _ work: @escaping @Sendable () async -> Void
+) async -> Bool {
+    let flag = CompletionFlag()
+    Task.detached(priority: .high) {
+        await work()
+        await flag.mark()
+    }
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+        if await flag.isDone { return true }
+        try? await Task.sleep(nanoseconds: UInt64(poll * 1_000_000_000))
+    }
+    if await flag.isDone { return true }
+    DaemonLogger.shared.error(
+        "Teardown stage '\(label)' exceeded \(seconds)s — abandoning it so shutdown can finish")
+    return false
 }
 #endif

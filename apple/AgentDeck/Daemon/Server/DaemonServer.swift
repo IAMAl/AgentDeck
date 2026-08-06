@@ -5825,7 +5825,8 @@ final class DaemonServer {
             // option in the new list. Devices that echo what they showed get
             // validated; re-broadcasting re-syncs them to the live question.
             if let echo = command["question"] as? String, !echo.isEmpty,
-               let shown = pushedSessionsById[sessionId]?.question, echo != shown {
+               let shown = pushedSessionsById[sessionId]?.question,
+               !ObservedSteering.askEchoMatches(echo, shown) {
                 DaemonLogger.shared.debug(
                     "Daemon", "observed \(type) dropped: answers a stale question (\(sessionId.prefix(8)))")
                 broadcastSessionsList()
@@ -5853,7 +5854,8 @@ final class DaemonServer {
                         "Daemon", "ask-gate press dropped: answer did not name its question (\(sessionId.prefix(8)))")
                     return
                 }
-                guard echo == ask.activeGroup?.question else {
+                guard let live = ask.activeGroup?.question,
+                      ObservedSteering.askEchoMatches(echo, live) else {
                     DaemonLogger.shared.debug(
                         "Daemon", "ask-gate press dropped: answers a superseded question (\(sessionId.prefix(8)))")
                     broadcastSessionsList()
@@ -8068,11 +8070,31 @@ final class DaemonServer {
 
         Task { @MainActor in self.voiceAssistant?.stop() }
         openCodeObserver.stop()
-        await focusRelay.stop()
-        await timelineRelay.stop()
-        await logStream.stop()
-        await gatewayProbe.stop()
-        await displayMonitor.stop()
+
+        // Everything from here to the listener release below talks to something
+        // that can stop answering: BLE peripherals, a serial TTY, the OpenClaw
+        // gateway, a Pixoo over HTTP. None of it may gate the PORT.
+        //
+        // It used to. `stopAll()` is a task group over every module's stop(),
+        // and a task group waits for all of its children — so one wedged module
+        // meant `shutdown()` never reached `wsServer.stop()`. The quit path
+        // survived that because AppDelegate arms a 3s watchdog and force-exits;
+        // the reclaim and stand-down paths have no such backstop, so they simply
+        // hung. On 2026-08-06 that left this daemon serving from fallback port
+        // 9121 forever, having already announced it was reclaiming 9120.
+        //
+        // The budget is generous enough for the farewell frames these stops
+        // exist to send (D200H / Pixoo / iDotMatrix paint an OFFLINE scene) and
+        // finite enough that the port always comes back.
+        await withBudget(seconds: 4, "module + relay teardown") { @DaemonActor [self] in
+            await focusRelay.stop()
+            await timelineRelay.stop()
+            await logStream.stop()
+            await gatewayProbe.stop()
+            await displayMonitor.stop()
+            await moduleManager.stopAll()
+            if let gw = gatewayAdapter { await gw.stop() }
+        }
         if let observer = pixooSettingsObserver {
             NotificationCenter.default.removeObserver(observer)
             pixooSettingsObserver = nil
@@ -8085,12 +8107,10 @@ final class DaemonServer {
             NotificationCenter.default.removeObserver(observer)
             displaySettingsObserver = nil
         }
-        await moduleManager.stopAll()
-        if let gw = gatewayAdapter { await gw.stop() }
-
         registry.deregister(sessionId)
         registry.removeDaemonInfo()
 
+        // Reached unconditionally now — see the budget above.
         await wsServer.stop()
         await httpServer.stop()
 
@@ -9844,7 +9864,13 @@ struct SendableDict: @unchecked Sendable {
 
 extension [String: Any] {
     var jsonData: Data? {
-        try? JSONSerialization.data(withJSONObject: self)
+        // A `[String: Any]` is structurally a JSON object but its LEAVES are
+        // unchecked, and one non-JSON leaf (a Date, a URL, a NaN) makes
+        // `data(withJSONObject:)` raise an ObjC exception that `try?` cannot
+        // catch — a crash, not a nil. `isValidJSONObject` validates recursively,
+        // which is the whole guard.
+        guard JSONSerialization.isValidJSONObject(self) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: self)
     }
 }
 

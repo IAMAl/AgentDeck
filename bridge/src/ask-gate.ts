@@ -54,6 +54,41 @@ export function askGateDecision(opts: {
   return { hold: true, reason: 'no way to type into this session' };
 }
 
+/**
+ * Shortest echo that may be accepted as a device-truncated prefix.
+ *
+ * Only a bound on the collision risk below — not a device buffer size, which
+ * this side cannot know. The smallest real echo comes from the ESP32 knob:
+ * `SessionInfo.question` is 160 BYTES and the outbound frame budget trims it
+ * further, so ~38 characters of Hangul survive in the worst case. 24 sits under
+ * that with room to spare, and well above any question two groups could share.
+ */
+export const ASK_ECHO_MIN_PREFIX = 24;
+
+/**
+ * Does this echo name the question that is live?
+ *
+ * Exact match is the normal answer. The exception is structural, not sloppy:
+ * `MAX_QUESTION_LEN` caps a question at 120 CHARACTERS, which is up to 360
+ * bytes of Hangul/CJK, while a firmware surface holds it in a fixed BYTE
+ * buffer — so a Korean question reaches the device already cut short, and an
+ * `===` gate would reject every answer to one while passing every answer to an
+ * English one. A length-dependent failure is worse than no feature: it looks
+ * like a flaky device, not a contract.
+ *
+ * A prefix is safe here because of what the guard is for — catching a press
+ * aimed at the question a grouped prompt has already moved past. Two groups in
+ * one AskUserQuestion call would have to share `ASK_ECHO_MIN_PREFIX` leading
+ * characters AND differ only after the cut to slip through. Same reasoning as
+ * `resolveSessionIdPrefix` for the 31-char session ids devices report.
+ */
+export function askEchoMatches(echo: string, question: string): boolean {
+  if (echo === question) return true;
+  return echo.length >= ASK_ECHO_MIN_PREFIX
+    && echo.length < question.length
+    && question.startsWith(echo);
+}
+
 export type AskPressVerdict =
   | { ok: true; label: string }
   | { ok: false; reason: string; resync: boolean };
@@ -106,7 +141,7 @@ export function askPressVerdict(opts: {
   if (!echo) {
     return { ok: false, reason: 'answer did not name its question', resync: false };
   }
-  if (echo !== overlay.question) {
+  if (!askEchoMatches(echo, overlay.question)) {
     return { ok: false, reason: 'answers a question the prompt has moved past', resync: true };
   }
   if (typeof command.index !== 'number') {

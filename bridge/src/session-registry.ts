@@ -426,6 +426,41 @@ export async function waitForDaemonExit(port: number, timeoutMs = 5000): Promise
   }
 }
 
+/** One bind attempt. Resolves true when the port accepted a listener. */
+function probePortBindable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => probe.close(() => resolve(true)));
+    // Match the daemon's own bind (IPv4 loopback-reachable, not ::1) so the
+    // probe answers the question the daemon will actually ask.
+    probe.listen(port, '0.0.0.0');
+  });
+}
+
+/**
+ * Poll until `port` can actually be bound, or the timeout expires.
+ *
+ * `waitForDaemonExit` proves something different and weaker: that the daemon
+ * stopped ANSWERING. Between "stopped answering" and "port is free" sits the
+ * socket close, and on the Swift side that gap is real — its servers release
+ * the port with `NWListener.cancel()`, which returns immediately and tears down
+ * asynchronously. Binding into that gap is not a hypothetical: on 2026-08-06
+ * `agentdeck daemon start` reported "App daemon yielded port 9120", bound
+ * ~300ms later, hit EADDRINUSE, and fell back to 9121 — leaving the canonical
+ * port owned by nobody and every client that resolves 9120 blind.
+ *
+ * Returns true once a bind succeeded.
+ */
+export async function waitForPortBindable(port: number, timeoutMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await probePortBindable(port)) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+}
+
 /**
  * Request another daemon to shutdown (used to clear Swift daemon when CLI starts)
  */

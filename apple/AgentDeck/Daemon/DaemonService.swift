@@ -93,7 +93,23 @@ final class DaemonService: ObservableObject {
     /// suppressed so an incoming CLI (Node) daemon that asked us to stand down
     /// (POST /stand-down) can bind the canonical port without us racing it back.
     private var yieldUntil: Date?
-    private static let takeoverYieldSeconds: TimeInterval = 15
+    /// How long to keep hands off the canonical port after yielding it.
+    ///
+    /// Sized against a MEASURED platform behaviour, not a guess. Cancelling an
+    /// NWListener does not make its port bindable again: macOS holds a NECP
+    /// reservation on it for ~14s afterwards, during which `lsof` shows *zero*
+    /// sockets on the port and `bind()` still returns EADDRINUSE (measured
+    /// 2026-08-06 — free at ~17s from stand-down, with every connection already
+    /// gone by 3s). This is the same NECP quirk `failedBindPortsAt` exists for,
+    /// seen from the other side.
+    ///
+    /// At the old 15s this window expired at almost exactly the moment the port
+    /// came back, so this app's own retry re-grabbed it a heartbeat before the
+    /// CLI daemon could — `agentdeck daemon start` then reported "the app did
+    /// not yield port 9120 in time" while the app sat on 9120, three runs in a
+    /// row. The window must comfortably OUTLAST the reservation and the CLI's
+    /// own wait for it, so the incoming daemon wins the port uncontested.
+    private static let takeoverYieldSeconds: TimeInterval = 45
     private var signalSource: DispatchSourceSignal?
     private var sigintSource: DispatchSourceSignal?
     private var listenerFailureRetries = 0
@@ -339,17 +355,35 @@ final class DaemonService: ObservableObject {
             return
         }
 
-        let maxAttempts = knownPort != nil ? 12 : 3
+        // How long to wait for the daemon on `resolvedPort` to answer.
+        //
+        // The base budget matches the old fixed attempt counts (12 × 300ms with
+        // a known port, 3 × 200ms without). What it did NOT account for is a
+        // takeover: `standDownForTakeover` sets `yieldUntil` precisely to say "a
+        // CLI daemon asked for this port and is on its way", and 3.6s is shorter
+        // than that handover actually takes — the incoming daemon has to wait
+        // out our teardown AND the OS releasing a listener that had a dozen
+        // device connections on it (measured at ~6s on 2026-08-06).
+        //
+        // Falling through early is not a harmless "give up waiting": the branch
+        // below RE-BINDS the port, stealing it back from the daemon we just
+        // yielded to. That is what made `agentdeck daemon start` report "the app
+        // did not yield port 9120 in time" while the app sat happily on 9120. So
+        // while the yield window this app itself opened is still open, keep
+        // waiting — and past it, behave exactly as before so a crashed CLI still
+        // leaves us self-healing.
+        let baseBudget: TimeInterval = knownPort != nil ? 3.6 : 0.6
+        let deadline = max(yieldUntil ?? .distantPast, Date().addingTimeInterval(baseBudget))
         var health: [String: Any]?
-        for attempt in 0..<maxAttempts {
+        while true {
             health = await registry.probeDaemonHealth(port: resolvedPort)
-            if health?["mode"] as? String == "daemon" {
-                break
-            }
-            if attempt < maxAttempts - 1 {
-                try? await Task.sleep(for: .milliseconds(knownPort != nil ? 300 : 200))
-            }
+            if health?["mode"] as? String == "daemon" { break }
+            if Date() >= deadline { break }
+            try? await Task.sleep(for: .milliseconds(knownPort != nil ? 300 : 200))
         }
+        // Consumed: a takeover that has been answered must not lengthen an
+        // unrelated reconnect later.
+        if health?["mode"] as? String == "daemon" { yieldUntil = nil }
 
         guard let health, health["mode"] as? String == "daemon" else {
             // External daemon never responded — stale registry. Clean up and start our own.
@@ -688,7 +722,11 @@ final class DaemonService: ObservableObject {
         }
         DaemonLogger.shared.info("Canonical port \(canonical) is free — reclaiming it from fallback port \(port)")
         await standDownServer(current)
-        start()
+        // Scheduled, not called inline: `start()` guards re-entry with
+        // `isStarting` and clears it in its Task's `defer`, so a start() reached
+        // from inside that Task is swallowed with no log and no retry. Hopping
+        // first lets the defer run. (Same rule as the three other call sites.)
+        Task { @MainActor [weak self] in self?.start() }
     }
 
     /// Yield the canonical port to an incoming CLI (Node) daemon that requested
@@ -736,7 +774,13 @@ final class DaemonService: ObservableObject {
         isOnFallbackPort = false
         bindFailureReason = nil
         blockingProcesses = []
-        await current.shutdown()
+        // Backstop. `shutdown()` bounds its own slow stages, so this should
+        // never fire — but every caller of this function goes on to rebind a
+        // port or hand one over, and `reclaimCanonicalPortIfNeeded` clears its
+        // `isReclaimingPort` guard through a `defer` that a suspended await can
+        // never reach. An unbounded wait here does not just delay the reclaim,
+        // it permanently disables the retry that would have caught it.
+        await withBudget(seconds: 8, "daemon shutdown") { await current.shutdown() }
     }
 
     // MARK: - Signal Handling

@@ -43,7 +43,7 @@ static char savedToken[40] = {0};
 // driven from CORE_NETWORK. arduinoWebSockets is not thread-safe, so UI-side
 // senders enqueue here and the network task drains via pumpOutbound().
 static constexpr int OUTBOX_MAX = 6;
-static constexpr int OUTBOX_LEN = 200;
+static constexpr int OUTBOX_LEN = (int)Net::OUTBOUND_MAX_LEN;
 static char outbox[OUTBOX_MAX][OUTBOX_LEN];
 static int outboxHead = 0;
 static int outboxCount = 0;

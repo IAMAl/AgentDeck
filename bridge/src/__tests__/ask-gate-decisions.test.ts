@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { askGateDecision, askPressVerdict } from '../ask-gate.js';
+import { ASK_ECHO_MIN_PREFIX, askEchoMatches, askGateDecision, askPressVerdict } from '../ask-gate.js';
 
 /**
  * The two decisions that make the ask-gate safe. Both fail silently in the
@@ -104,5 +104,59 @@ describe('askPressVerdict — what may commit an answer', () => {
     expect(askPressVerdict({
       overlay: undefined, gateToolUseId: 't', command: { type: 'select_option', index: 0, question: 'Q' },
     }).ok).toBe(false);
+  });
+
+  it('accepts an answer from a device that could only hold part of the question', () => {
+    // The regression this exists for: a Korean question is capped at 120
+    // CHARACTERS by the daemon but held in a 160-BYTE firmware buffer, so it
+    // reaches the device cut short. Under an exact-match gate every answer to a
+    // Korean question was refused while English ones went through — a
+    // length-dependent failure that reads as a flaky device, not a rule.
+    const question = '이 변경을 어떤 방식으로 적용할까요? 기존 동작을 유지하면서 점진적으로 옮기는 쪽과 한 번에 교체하는 쪽 중에서 선택해 주세요. 되돌리기 비용도 함께 고려해야 합니다.';
+    // Emulate the device's byte-sized buffer: strncpy to 159 bytes, then
+    // utf8TrimEnd() drops the sequence the cut landed inside.
+    const bytes = new TextEncoder().encode(question).slice(0, 159);
+    const truncated = new TextDecoder('utf-8').decode(bytes).replace(/�$/, '');
+    expect(truncated).not.toBe(question);
+    expect(askPressVerdict({
+      overlay: { question, options: [{ index: 0, label: '점진적으로' }], toolUseId: 't' },
+      gateToolUseId: 't',
+      command: { type: 'select_option', index: 0, question: truncated },
+    })).toEqual({ ok: true, label: '점진적으로' });
+  });
+});
+
+describe('askEchoMatches — a truncated echo still names its question', () => {
+  const long = 'Which migration strategy should we use for the session store rewrite?';
+
+  it('accepts an exact echo', () => {
+    expect(askEchoMatches(long, long)).toBe(true);
+  });
+
+  it('accepts a long enough prefix', () => {
+    expect(askEchoMatches(long.slice(0, 40), long)).toBe(true);
+  });
+
+  it('refuses a prefix too short to identify the question', () => {
+    // A few shared leading characters are common between sibling questions
+    // ("Which one…"), so a short echo is not evidence of anything.
+    expect(askEchoMatches(long.slice(0, ASK_ECHO_MIN_PREFIX - 1), long)).toBe(false);
+  });
+
+  it('refuses an echo that diverges from the live question', () => {
+    expect(askEchoMatches(`${long.slice(0, 40)}x`, long)).toBe(false);
+  });
+
+  it('refuses an echo LONGER than the live question', () => {
+    // Direction matters: truncation only ever shortens. An echo that extends
+    // past the live question is a different, longer question — typically the
+    // one a grouped prompt just moved past.
+    expect(askEchoMatches(`${long} And why?`, long)).toBe(false);
+  });
+
+  it('refuses a superseded question that shares a long prefix', () => {
+    const q1 = 'Which migration strategy should we use for the session store?';
+    const q2 = 'Which migration strategy should we use for the timeline store?';
+    expect(askEchoMatches(q1, q2)).toBe(false);
   });
 });

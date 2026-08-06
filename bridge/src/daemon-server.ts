@@ -42,7 +42,7 @@ import {
   isPermissionNotification,
   applyAwaitingOverlayToObserved,
 } from './awaiting-overlay.js';
-import { askGateDecision, askPressVerdict } from './ask-gate.js';
+import { askEchoMatches, askGateDecision, askPressVerdict } from './ask-gate.js';
 import {
   registerPending, resolvePending, resolvePendingWithReason,
   sweepStalePending, drainAllPending, isPendingRequest,
@@ -117,6 +117,7 @@ import {
   scanDaemonPortWindow,
   shouldConcedePortToOccupant,
   waitForDaemonExit,
+  waitForPortBindable,
   writeDaemonInfo,
   ensureDaemonInfo,
   removeDaemonInfo,
@@ -1072,6 +1073,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         log(`[agentdeck] Swift daemon detected on port ${probePort}. Requesting shutdown to take over...`);
         await requestDaemonShutdown(probePort);
         await waitForDaemonExit(probePort);
+        // …and until the socket is actually released. NWListener.cancel()
+        // returns before the port is free, so "stopped answering" alone would
+        // let the bind below land on a fallback port.
+        await waitForPortBindable(probePort);
         removeDaemonInfo();
       } else {
         log(`[agentdeck] Daemon already running on port ${existingInfo.port} (PID ${existingInfo.pid}).`);
@@ -1114,6 +1119,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           log(`[agentdeck] Swift daemon detected on port ${requestedPort} via /health. Requesting shutdown to take over...`);
           await requestDaemonShutdown(requestedPort);
           await waitForDaemonExit(requestedPort);
+          await waitForPortBindable(requestedPort);
         } else {
           // Daemon alive but not in our registry — race condition or stale state
           log(`[agentdeck] Daemon already running on port ${requestedPort} (detected via /health).`);
@@ -3705,7 +3711,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       // in the new list. Devices that echo what they showed get validated;
       // re-broadcasting re-syncs them to the live question.
       const echo = typeof command.question === 'string' ? command.question : undefined;
-      if (ov?.kind === 'option' && echo && ov.question && echo !== ov.question) {
+      if (ov?.kind === 'option' && echo && ov.question && !askEchoMatches(echo, ov.question)) {
         debug('daemon', `observed ${type} dropped: answers a stale question (${uuid.slice(0, 8)})`);
         core.broadcastSessionsList().catch(() => {});
         return;

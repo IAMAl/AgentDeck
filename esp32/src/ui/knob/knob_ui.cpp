@@ -11,6 +11,7 @@
 #include "../agent_label.h"
 #include "../terrarium/creature_glyphs_generated.h"
 #include "../../util/utf8.h"
+#include "../../util/json.h"
 
 #include <Arduino.h>
 #include <lvgl.h>
@@ -145,11 +146,33 @@ static const lv_image_dsc_t* glyphForAgent(const char* agentType) {
 
 // ── outbound commands (thread-safe queue; drained on the network core) ──────
 
-static void sendSelectOption(const char* sid, int index) {
-    char buf[96];
-    snprintf(buf, sizeof(buf),
-             "{\"type\":\"select_option\",\"index\":%d,\"sessionId\":\"%s\"}",
-             index, sid);
+// `question` NAMES the question this press answers, and the daemon's ask-gate
+// requires it before it will commit an answer on the user's behalf: several
+// surfaces map a hardware approve key to select_option(0) as a yes/no stand-in,
+// which against a four-way question is a guess, not an answer. The knob's
+// detail menu is built from the live option list, so it is the one ESP32
+// surface that can say what it is answering — pass nullptr from the approve
+// path so it stays on the refused side of that line.
+//
+// The text must be the RAW daemon string (see rawSessionQuestion): the display
+// snapshot is sanitized in place for LVGL's font coverage, which rewrites
+// punctuation and blanks non-Hangul CJK, and an echo of that matches nothing.
+static void sendSelectOption(const char* sid, int index, const char* question) {
+    char buf[Net::OUTBOUND_MAX_LEN];
+    int n = snprintf(buf, sizeof(buf),
+                     "{\"type\":\"select_option\",\"index\":%d,\"sessionId\":\"%s\"",
+                     index, sid);
+    if (n < 0 || (size_t)n >= sizeof(buf)) return;
+    if (question && question[0]) {
+        // A question longer than this device's 160-byte buffer (any CJK one —
+        // the daemon caps at 120 CHARACTERS) already arrived truncated, and may
+        // truncate again here. That is expected and safe: the daemon accepts a
+        // device-truncated echo as a prefix (askEchoMatches, bridge/src/ask-gate.ts).
+        strncat(buf, ",\"question\":\"", sizeof(buf) - strlen(buf) - 1);
+        Json::escapeAppend(buf, sizeof(buf) - 2, question);  // -2 reserves `"}`
+        strncat(buf, "\"", sizeof(buf) - strlen(buf) - 1);
+    }
+    strncat(buf, "}", sizeof(buf) - strlen(buf) - 1);
     Net::queueOutbound(buf);
 }
 
@@ -245,6 +268,25 @@ static int findSessionById(const char* sid) {
     }
     unlockState();
     return found;
+}
+
+// The question exactly as the daemon sent it — NOT SessionSnap.question, which
+// snapshotSession() has already run through sanitizeLvglText() so no render
+// path draws a tofu box. That rewrite is right for the screen and wrong for the
+// wire: it maps · … " → to ASCII and blanks every non-Hangul CJK character, so
+// an echo built from it names a question the daemon never asked.
+static void rawSessionQuestion(const char* sid, char* out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    lockState();
+    for (uint8_t i = 0; i < g_state.sessionCount; i++) {
+        if (strcmp(g_state.sessions[i].id, sid) == 0) {
+            strncpy(out, g_state.sessions[i].question, cap - 1);
+            out[cap - 1] = '\0';
+            break;
+        }
+    }
+    unlockState();
 }
 
 static uint32_t agentColor(const char* agentType) {
@@ -356,17 +398,26 @@ static void buildMenu(const SessionSnap& s) {
 
 static void executeMenuItem(const SessionSnap& s, const MenuItem& m) {
     switch (m.kind) {
-        case MI_OPTION:
-            sendSelectOption(s.id, m.optIndex);
+        case MI_OPTION: {
+            // This item came from the live option list, so the press can name
+            // the question it answers — which is what lets a held ask-gate
+            // accept it instead of refusing an unattributed index.
+            char q[sizeof(SessionSnap::question)];
+            rawSessionQuestion(s.id, q, sizeof(q));
+            sendSelectOption(s.id, m.optIndex, q);
             flash("sent: option");
             s_mode = Mode::LIST;
             break;
+        }
         case MI_APPROVE:
             // Observed gate carries a requestId → resolve it; managed PTY
             // session drives the live prompt (same fallback as the IPS10
-            // mosaic: select_option(0) is the affirmative).
+            // mosaic: select_option(0) is the affirmative). No question echo:
+            // this item exists only when the session parsed NO options, so
+            // "option 0" here is a yes/no stand-in, not a chosen answer — a
+            // held ask-gate must keep refusing it.
             if (s.requestId[0]) sendPermissionDecision(s.requestId, true);
-            else sendSelectOption(s.id, 0);
+            else sendSelectOption(s.id, 0, nullptr);
             flash("sent: approve");
             s_mode = Mode::LIST;
             break;

@@ -150,4 +150,47 @@ final class DaemonPortFallbackTests: XCTestCase {
         XCTAssertEqual(active, [9120])
     }
 }
+
+// MARK: - withBudget
+
+/// Teardown must survive a subsystem that never finishes.
+///
+/// Observed 2026-08-06: the daemon logged "Canonical port 9120 is free —
+/// reclaiming it from fallback port 9121", entered `shutdown()`, and never came
+/// out. `ModuleManager.stopAll()` is a task group over every module's `stop()`,
+/// and a task group awaits ALL of its children — so one wedged module (a BLE
+/// stop parked on a reply that never came) meant the listener release below it
+/// was never reached. The daemon served from the fallback port for the rest of
+/// its life, and `isReclaimingPort` — cleared only by a `defer` in that
+/// suspended call — latched, so no later health tick ever retried.
+final class WithBudgetTests: XCTestCase {
+    func testReturnsTrueWhenWorkFinishesInsideTheBudget() async {
+        let finished = await withBudget(seconds: 2, "fast") {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(finished)
+    }
+
+    func testReturnsFalseWithoutHangingWhenWorkNeverFinishes() async {
+        // The regression gate. Before the fix this call site was a bare
+        // `await`, and this test would never return at all — the assertion is
+        // secondary to the fact that control comes back.
+        let started = Date()
+        let finished = await withBudget(seconds: 0.3, "wedged") {
+            // Not merely slow: unresponsive to cancellation too, which is what
+            // a continuation awaiting a reply that never arrives looks like.
+            while true { try? await Task.sleep(nanoseconds: 50_000_000) }
+        }
+        XCTAssertFalse(finished)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3.0)
+    }
+
+    func testDoesNotWaitOutTheWholeBudgetForFastWork() async {
+        // A budget is a ceiling, not a delay — teardown runs on the quit path
+        // too, where 4s of dead time would be user-visible.
+        let started = Date()
+        _ = await withBudget(seconds: 5, "fast") { }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0)
+    }
+}
 #endif

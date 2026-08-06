@@ -52,6 +52,18 @@ void wsSend(const char* json);
 void queueOutbound(const char* json);
 
 /**
+ * Size (including NUL) of one queued outbound frame.
+ *
+ * `queueOutbound` hard-truncates past this, and a JSON frame cut mid-string is
+ * unparseable — the daemon drops it with no diagnostic on either side. So a
+ * sender carrying variable-length text must compose against THIS cap, not a
+ * guessed local buffer size. Sized to hold a `select_option` naming the
+ * question it answers: ~94 bytes of envelope + a 31-byte session id + the
+ * device's 160-byte copy of the question, escaped.
+ */
+constexpr size_t OUTBOUND_MAX_LEN = 320;
+
+/**
  * Drain the outbound queue (WS if connected, else serial). Call from the network task loop.
  */
 void pumpOutbound();

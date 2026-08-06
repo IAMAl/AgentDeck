@@ -17,7 +17,18 @@ enum ApmeScorers {
     private static func toolKey(_ e: [String: Any]) -> String {
         let name = e["name"] as? String ?? "tool"
         var input = ""
-        if let inp = e["input"], let data = try? JSONSerialization.data(withJSONObject: inp, options: [.sortedKeys]) {
+        // `isValidJSONObject` first — NOT decoration. `data(withJSONObject:)`
+        // raises an ObjC NSInvalidArgumentException for anything that is not a
+        // valid top-level JSON container, and an ObjC exception is not a Swift
+        // error: `try?` does not catch it, so it reaches the runtime as a
+        // terminate. A tool event whose `input` is a bare String does exactly
+        // that, and it aborted the whole app on 2026-08-06 — from a background
+        // eval task, with the daemon and every device connection going down
+        // with it. The `as? String` branch below shows a plain String was
+        // always expected here; the throwing call just got to it first.
+        // Same guard as `compactDebugValue` in DaemonServer.swift.
+        if let inp = e["input"], JSONSerialization.isValidJSONObject(inp),
+           let data = try? JSONSerialization.data(withJSONObject: inp, options: [.sortedKeys]) {
             input = String(data: data, encoding: .utf8) ?? ""
         } else if let s = e["input"] as? String {
             input = s

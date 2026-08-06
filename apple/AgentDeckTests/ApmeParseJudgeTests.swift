@@ -203,4 +203,60 @@ final class ApmeParseJudgeTests: XCTestCase {
         XCTAssertEqual(ApmeRunner.clamp01(-1.0), 0.0)
     }
 }
+
+/// A scorer must not be able to take the process down.
+///
+/// Observed 2026-08-06: `ApmeScorers.toolKey` fed a trajectory event's untyped
+/// `input` straight to `JSONSerialization.data(withJSONObject:)`, which raises
+/// an ObjC `NSInvalidArgumentException` — not a Swift error, so `try?` sails
+/// past it — for anything that is not a valid top-level JSON container. A tool
+/// event carrying a bare String aborted the app from a background eval task,
+/// taking the daemon, every device connection and the port with it.
+final class ApmeScorerHostileInputTests: XCTestCase {
+    private func toolEvent(_ input: Any) -> [String: Any] {
+        ["kind": "tool", "name": "Bash", "status": "success", "input": input]
+    }
+
+    private func trajectoryScore(_ results: [ApmeScorers.Result]) -> Double? {
+        results.first(where: { $0.scorer == "trajectory_quality" })?.score
+    }
+
+    func testSurvivesAToolInputThatIsNotAJSONContainer() {
+        // Each of these makes the raw call raise. Reaching the assertion at all
+        // is the test.
+        let hostile: [Any] = [
+            "a bare string",
+            42,
+            Double.nan,
+            Date(),
+            URL(string: "https://example.com")!,
+        ]
+        for input in hostile {
+            let results = ApmeScorers.run(events: [toolEvent(input), toolEvent(input)])
+            XCTAssertFalse(results.isEmpty, "scorer produced nothing for \(type(of: input))")
+        }
+    }
+
+    func testStillDistinguishesDuplicateToolCallsWithStringInputs() {
+        // The guard must not flatten every String input to one key — that would
+        // score unrelated calls as repeats. The `as? String` fallback is what
+        // keeps them apart, and it was unreachable before the fix.
+        let differing = ApmeScorers.run(events: [toolEvent("ls -la"), toolEvent("git status")])
+        let identical = ApmeScorers.run(events: [toolEvent("ls -la"), toolEvent("ls -la")])
+        XCTAssertNotNil(trajectoryScore(differing))
+        XCTAssertGreaterThan(trajectoryScore(differing)!, trajectoryScore(identical)!)
+    }
+
+    func testSerializesAWellFormedContainerInputAsBefore() {
+        let a = ApmeScorers.run(events: [
+            toolEvent(["command": "ls"] as [String: Any]),
+            toolEvent(["command": "ls"] as [String: Any]),
+        ])
+        let b = ApmeScorers.run(events: [
+            toolEvent(["command": "ls"] as [String: Any]),
+            toolEvent(["command": "pwd"] as [String: Any]),
+        ])
+        XCTAssertGreaterThan(trajectoryScore(b)!, trajectoryScore(a)!)
+    }
+}
 #endif

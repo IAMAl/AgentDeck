@@ -162,14 +162,58 @@ actor WebSocketServer {
     func stop() {
         listener?.cancel()
         for conn in connections {
-            conn.close()
+            // force: this is teardown, and the port must not be hostage to a
+            // device that has stopped reading (see `close(force:)`).
+            conn.close(force: true)
         }
         connections.removeAll()
+        // Then every socket that never became a WebSocket. Cancelling the
+        // listener stops new accepts; it does nothing to sockets already
+        // accepted, and each of those keeps the local port bound.
+        for conn in acceptedConnections.values { conn.forceCancel() }
+        acceptedConnections.removeAll()
+    }
+
+    /// Every socket this listener has accepted, WebSocket or not.
+    ///
+    /// `connections` above holds only UPGRADED WebSockets — right for
+    /// broadcasting, wrong for teardown. This one listener also serves plain
+    /// HTTP on the same port (hook POSTs, dashboard polls, and the long-lived
+    /// SSE stream routes), and those sockets were tracked nowhere at all: they
+    /// outlived `stop()` and, because a socket's local port stays reserved while
+    /// it is open, they kept port 9120 bound for as long as the app ran.
+    ///
+    /// That is what made the stand-down handover unwinnable — `agentdeck daemon
+    /// start` waited, saw EADDRINUSE with `lsof` showing only ESTABLISHED
+    /// sockets owned by the app, gave up, and the app took its own port back
+    /// (2026-08-06, three consecutive runs).
+    private var acceptedConnections: [ObjectIdentifier: NWConnection] = [:]
+
+    private func trackAccepted(_ conn: NWConnection) {
+        let key = ObjectIdentifier(conn)
+        acceptedConnections[key] = conn
+        // Self-eviction, so the map tracks live sockets rather than growing for
+        // the daemon's lifetime — these are cancelled from a dozen places
+        // (upgrade failures, malformed requests, client hang-ups) and none of
+        // them can be expected to remember to deregister.
+        conn.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .cancelled, .failed:
+                Task { await self?.untrackAccepted(key) }
+            default:
+                break
+            }
+        }
+    }
+
+    private func untrackAccepted(_ key: ObjectIdentifier) {
+        acceptedConnections.removeValue(forKey: key)
     }
 
     // MARK: - Connection Detection
 
     private func handleNewConnection(_ nwConn: NWConnection) {
+        trackAccepted(nwConn)
         nwConn.start(queue: Self.ioQueue)
 
         // Read the first bytes, then finish the HTTP request framing before
@@ -531,7 +575,35 @@ final class WebSocketConnection: Hashable, Sendable {
         }))
     }
 
-    func close() {
+    /// Close the socket.
+    ///
+    /// `force` decides whether the PORT's release is allowed to depend on the
+    /// peer. Normally the cancel rides the close frame's send completion, which
+    /// is the polite ordering. On shutdown that ordering is a trap: half this
+    /// daemon's clients are ESP32 boards that may be asleep or radio-parked, and
+    /// a peer that never drains the frame never fires `contentProcessed` — so
+    /// the connection is never cancelled, its TCP socket stays open, and the
+    /// listening port stays bound with it. Measured 2026-08-06: ~11.5s after
+    /// "Daemon stopped", long enough that `agentdeck daemon start` gave up
+    /// waiting and the app took its own port back.
+    ///
+    /// A forced close therefore skips the handshake entirely and RSTs the
+    /// socket. Sending the close frame first would not help: `cancel()` is a
+    /// GRACEFUL close, so a board that is asleep with bytes still queued to it
+    /// leaves the socket in FIN_WAIT_1 / CLOSING / LAST_ACK until TCP gives up
+    /// retransmitting — observed 2026-08-06 on three boards at once, holding
+    /// port 9120 long past any handover budget. A RST leaves no such state.
+    ///
+    /// Nothing user-visible is lost: the device farewell SCENES (Pixoo/D200H
+    /// OFFLINE) are pushed earlier in `ModuleManager.stopAll()`, and a client
+    /// that misses a protocol close frame notices via its own keepalive and
+    /// reconnects — which is exactly what it must do after a daemon handover
+    /// anyway.
+    func close(force: Bool = false) {
+        guard !force else {
+            connection.forceCancel()
+            return
+        }
         let closeFrame = Self.buildFrame(opcode: 0x8, payload: Data())
         connection.send(content: closeFrame, completion: .contentProcessed({ [weak self] _ in
             self?.connection.cancel()

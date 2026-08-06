@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import http from 'http';
-import { scanDaemonPortWindow, shouldConcedePortToOccupant, waitForDaemonExit } from '../session-registry.js';
+import { scanDaemonPortWindow, shouldConcedePortToOccupant, waitForDaemonExit, waitForPortBindable } from '../session-registry.js';
 import { readFileSync, mkdirSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -270,6 +270,40 @@ describe('Session Registry Logic', () => {
       } finally {
         server.close();
       }
+    });
+
+    /** Holds the port but answers nothing on /health — a listener mid-teardown. */
+    function holdPort(port: number): Promise<http.Server> {
+      return new Promise((resolve, reject) => {
+        const server = http.createServer((_req, res) => { res.writeHead(404); res.end(); });
+        server.on('error', reject);
+        server.listen(port, '0.0.0.0', () => resolve(server));
+      });
+    }
+
+    it('waitForPortBindable refuses a port that is still bound', async () => {
+      // The distinction the takeover path turns on: this port answers nothing
+      // on /health — so waitForDaemonExit calls it gone — yet it cannot be
+      // bound. A cancelled-but-not-yet-torn-down NWListener looks exactly like
+      // this, which is how the CLI landed on a fallback port right after
+      // reporting that the app had yielded the canonical one.
+      const holder = await holdPort(WINDOW[0] + 5);
+      try {
+        expect(await waitForDaemonExit(WINDOW[0] + 5, 400)).toBe(true);
+        expect(await waitForPortBindable(WINDOW[0] + 5, 400)).toBe(false);
+      } finally {
+        holder.close();
+      }
+    });
+
+    it('waitForPortBindable resolves true once the socket is actually released', async () => {
+      const holder = await holdPort(WINDOW[0] + 6);
+      setTimeout(() => holder.close(), 300);
+      expect(await waitForPortBindable(WINDOW[0] + 6, 5000)).toBe(true);
+    });
+
+    it('waitForPortBindable resolves true immediately for a free port', async () => {
+      expect(await waitForPortBindable(WINDOW[0] + 7, 2000)).toBe(true);
     });
   });
 });

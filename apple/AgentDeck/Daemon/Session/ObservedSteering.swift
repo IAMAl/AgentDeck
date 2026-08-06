@@ -65,6 +65,32 @@ actor ObservedSteering {
         return 20
     }()
 
+    /// Shortest echo that may be accepted as a device-truncated prefix.
+    /// Mirror of `ASK_ECHO_MIN_PREFIX` in bridge/src/ask-gate.ts.
+    static let askEchoMinPrefix = 24
+
+    /// Does this echo name the question that is live? Mirror of
+    /// `askEchoMatches` in bridge/src/ask-gate.ts — keep the two in step.
+    ///
+    /// Exact match is the normal answer. The exception is structural: a
+    /// question is capped at 120 CHARACTERS, which is up to 360 bytes of
+    /// Hangul/CJK, while a firmware surface holds it in a fixed BYTE buffer —
+    /// so a Korean question reaches the device already cut short, and an `==`
+    /// gate would reject every answer to one while passing every answer to an
+    /// English one. A length-dependent failure reads as a flaky device rather
+    /// than as a contract.
+    ///
+    /// A prefix is safe because of what the guard is for — catching a press
+    /// aimed at the question a grouped prompt has already moved past. Two
+    /// groups in one call would have to share `askEchoMinPrefix` leading
+    /// characters AND differ only after the cut to slip through.
+    nonisolated static func askEchoMatches(_ echo: String, _ question: String) -> Bool {
+        if echo == question { return true }
+        return echo.count >= askEchoMinPrefix
+            && echo.count < question.count
+            && question.hasPrefix(echo)
+    }
+
     static let stopDenyReason =
         "AgentDeck: the user pressed STOP on their AgentDeck controller. "
         + "Halt the current work now, briefly summarize where you left off, and wait "
