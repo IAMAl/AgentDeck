@@ -204,5 +204,22 @@ final class ObservedAskUserQuestionTests: XCTestCase {
         let question = "Which colour do you prefer?"
         XCTAssertTrue(ObservedSteering.askEchoMatches(question, question))
     }
+
+    func testAgreesWithTheTSSideOnAnEchoCutInsideAGrapheme() {
+        // A byte-sized buffer trims at a UTF-8 CODE POINT boundary, which can
+        // land between a base letter and its combining mark. Swift's default
+        // string comparison would call that "not a prefix" (grapheme clusters,
+        // canonical equivalence) while the TS mirror, comparing UTF-16 units,
+        // calls it one — leaving the two daemons to disagree about one press.
+        let question = "Which one should we all meet at the cafe\u{0301} tomorrow afternoon?"
+        let units = Array(question.utf16)
+        let cut = units.firstIndex(of: 0x0301)!   // between the e and its mark
+        let echo = String(decoding: units[..<cut], as: UTF16.self)
+
+        XCTAssertGreaterThanOrEqual(cut, ObservedSteering.askEchoMinPrefix)
+        XCTAssertTrue(echo.hasSuffix("e"), "expected the cut to strip the combining acute")
+        XCTAssertFalse(question.hasPrefix(echo), "precondition: grapheme-aware compare rejects it")
+        XCTAssertTrue(ObservedSteering.askEchoMatches(echo, question))
+    }
 }
 #endif

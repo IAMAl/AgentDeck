@@ -674,6 +674,13 @@ daemon
           // with the CLI reporting success.
           log(`The AgentDeck app yielded port ${targetPort} but the port has not been released `
             + `(usually a sleeping WiFi device holding a half-closed socket on it).`);
+          if (opts.port) {
+            // The port was ASKED for, not defaulted to. Quietly binding a
+            // different one would answer a question the user did not ask;
+            // an explicit choice fails loudly instead.
+            log(`Quit the AgentDeck app and retry, or choose another port.`);
+            process.exit(1);
+          }
           log(`Starting on a fallback port instead — clients resolve it from daemon.json. `
             + `For the canonical port, quit the AgentDeck app and retry, or pass -p.`);
           // fall through to normal port selection

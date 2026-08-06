@@ -86,9 +86,17 @@ actor ObservedSteering {
     /// characters AND differ only after the cut to slip through.
     nonisolated static func askEchoMatches(_ echo: String, _ question: String) -> Bool {
         if echo == question { return true }
-        return echo.count >= askEchoMinPrefix
-            && echo.count < question.count
-            && question.hasPrefix(echo)
+        // Compared as UTF-16 code units, which is exactly what the TS side's
+        // `.length` and `startsWith` mean. `String.count` counts grapheme
+        // CLUSTERS and `hasPrefix` is canonical-equivalence aware, so a device
+        // that cut its copy at a UTF-8 code-point boundary inside a grapheme —
+        // a base letter whose combining mark was trimmed off, which is exactly
+        // what a byte-sized buffer does — would be refused here and accepted
+        // there. Two daemons must not disagree about the same press.
+        let e = echo.utf16, q = question.utf16
+        return e.count >= askEchoMinPrefix
+            && e.count < q.count
+            && q.starts(with: e)
     }
 
     static let stopDenyReason =

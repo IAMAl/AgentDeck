@@ -154,6 +154,19 @@ describe('askEchoMatches — a truncated echo still names its question', () => {
     expect(askEchoMatches(`${long} And why?`, long)).toBe(false);
   });
 
+  it('accepts an echo cut inside a grapheme, as the Swift mirror does', () => {
+    // A byte-sized device buffer trims at a UTF-8 CODE POINT boundary, which
+    // can land between a base letter and its combining mark. Both daemons must
+    // reach the same verdict on that press — this pins the TS half of the pair
+    // (ObservedSteering.askEchoMatches compares utf16 for the same reason).
+    const question = 'Which one should we all meet at the cafe\u0301 tomorrow afternoon?';
+    const cut = question.indexOf('\u0301'); // the cut lands between the e and its mark
+    const echo = question.slice(0, cut);
+    expect(cut).toBeGreaterThanOrEqual(ASK_ECHO_MIN_PREFIX);
+    expect(echo.endsWith('e')).toBe(true);
+    expect(askEchoMatches(echo, question)).toBe(true);
+  });
+
   it('refuses a superseded question that shares a long prefix', () => {
     const q1 = 'Which migration strategy should we use for the session store?';
     const q2 = 'Which migration strategy should we use for the timeline store?';
