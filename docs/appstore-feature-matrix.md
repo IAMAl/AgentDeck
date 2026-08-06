@@ -34,7 +34,7 @@ The upgrade story exists in README, web, and developer documentation only. App S
 
 All surfaces follow the same rule:
 
-1. Render steering controls only from real `options[]` supplied by a PTY-managed session.
+1. Render steering controls only from real `options[]` the agent itself supplied — never invented ones. A PTY-managed session's options are always pressable; an observed session's are pressable only when the daemon reports `liveAnswerable`, meaning it has a way to deliver the answer (typing into that terminal, or holding the question's hook open to resolve it).
 2. An observed session never emits `requestId`.
 3. Display-only attention shows the question and “Respond in the terminal”; it does not invent Allow/Deny choices.
 4. Permission attention is keyed by `notification_type: permission_prompt`; free-text matching is legacy fallback only.
@@ -92,7 +92,8 @@ All surfaces follow the same rule:
 | Display-only permission attention | Yes | Yes | Real permission notification; no fabricated options |
 | Session order pinning (`--weight` sort override) | Limited | Yes | Weight is CLI-set at session launch and reaches the Swift daemon via `session_push_register`; the App Store app displays the resulting order (no in-app weight editor, and observed-hook sessions never carry weight) |
 | PTY option steering | No | Yes | Real parsed options and key injection |
-| Observed-session answer injection (device tap → host UI) | No | Yes | tmux / iTerm2 / Terminal.app by tty, GUI apps by AX button or key events. Needs `ps` tty discovery + tmux/osascript subprocesses — both CLI-only; sandbox has neither |
+| Observed AskUserQuestion — device answer (ask-gate) | Yes | Yes | The daemon holds the question's PreToolUse hook open and resolves it with the option the user picked, stated as the decision reason. Pure HTTP hold, no subprocess, so it works sandboxed. Engaged only when injection is unavailable (always so in Tier 1); an unanswered hold releases empty, and Claude's own picker appears in the terminal as usual. Multi-question calls are answered one question at a time |
+| Observed-session answer injection (device tap → host UI) | No | Yes | tmux / iTerm2 / Terminal.app by tty, GUI apps by AX button or key events. Needs `ps` tty discovery + tmux/osascript subprocesses — both CLI-only; sandbox has neither. Preferred over the ask-gate when available: it answers the live picker with no added latency for whoever is at that terminal |
 | OpenCode monitoring | Opt-in read-only | Yes | Tier 1 connects only to a configured/fixed local server; no port scan |
 | Antigravity session monitoring | No | Yes | Tier 1 may display user-approved usage data only |
 | Subagent activity summaries + parent-linked orbit visuals | Yes | Yes | Read-only lifecycle hooks collapse each child to concise start/completion rows using existing Timeline types. Terrarium surfaces may derive non-interactive wire/ring/satellite accents around the owning parent; they never become selectable sessions. No subagent commands, approvals, team configuration, or process discovery |

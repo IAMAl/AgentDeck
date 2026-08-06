@@ -21,6 +21,58 @@ target-internal version consistency. See [RELEASING.md](RELEASING.md).
 
 ## 1.0.7
 
+### Answering an agent's question from a device
+
+- Answer AskUserQuestion from a device even when AgentDeck cannot reach the
+  terminal. Until now the only working channel was typing into the session's
+  own terminal, which needs subprocesses the sandboxed macOS daemon does not
+  have — so on the App Store app every tap on a question was logged and
+  dropped. Both daemons now hold the question's PreToolUse hook open and
+  resolve it with the option the user picked, stated as the decision reason
+  (the same channel STOP and the turn-end queue already use). It only engages
+  when typing is unavailable, so nobody sitting at a reachable terminal waits
+  for anything; an unanswered hold releases empty and Claude's own picker
+  appears exactly as before — nothing ever proceeds on the user's behalf
+- Ask each question of a multi-question prompt in turn. One AskUserQuestion
+  call can carry up to four questions; only the first ever reached a device,
+  and answering it left the old options on screen while the agent had moved on
+  — so the next tap sent an index into a different list and silently picked the
+  wrong answer. Questions are now presented one at a time and advance as each
+  is answered, and a press carries the question it was answering so a late tap
+  is dropped instead of misapplied
+- Stop the deck from missing the follow-up question. The D200H compared two
+  questions as identical (its repaint signature ignored per-session questions
+  and options), opening a session blanked its live prompt with the daemon's
+  global state, and both decks carried the previous question's page number into
+  the new one
+- Show the answer buttons as answerable in the Mac, iPhone/iPad and Android
+  apps. They decided that from `controlMode` alone, so they refused sessions
+  the daemon could answer and would have refused every held question too
+- Select the option the user actually pressed. Typing an answer into a
+  session's terminal sent the arrow keys and the Return that acts on them in
+  one burst, and the picker resolved the Return against the cursor position
+  from *before* the arrows — so every device answer silently chose the first
+  option. Pressing "Blue" selected "Red". The keys are now paced apart, the
+  way the dictated-prompt path already did it
+- Require an answer to name the question it answers. Several surfaces map a
+  hardware "approve" key to option 0 as a stand-in for a yes/no gate (ESP32
+  mosaic, NFC approve tags). Against a permission gate that means something;
+  against a four-way question it is a guess, and this path would have submitted
+  it as the user's stated answer. A surface that renders the real choices can
+  say which one it is answering; a binary approve key cannot, and is now
+  refused rather than guessed at
+- Hold a question only when some device can actually see it. The hold was keyed
+  off "cannot type into this terminal", which is also true of a session the
+  observer has not scanned yet — so the one case that stalled a terminal for
+  the full hold was the case where nobody could answer
+- Submit a grouped question instead of stranding it. A multi-question
+  AskUserQuestion does not close when its last question is answered; it shows a
+  "Review your answers → Submit answers" confirmation, which nobody was at the
+  terminal to press, so the agent waited on a form the user could not see. The
+  count that decides this is what Claude rendered, not what AgentDeck managed to
+  parse — a question group dropped as malformed is still a tab in the user's
+  form
+
 ### CLI and daemon — npm
 
 - Archive the reply half of every conversation. `turns.response` was NULL for

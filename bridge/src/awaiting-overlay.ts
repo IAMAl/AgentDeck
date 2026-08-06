@@ -22,14 +22,39 @@ import { rawSessionId } from '@agentdeck/shared';
 
 export type AwaitingKind = 'permission' | 'option';
 
+/** One question group of an AskUserQuestion call, already sanitized and
+ *  re-indexed. A single call carries up to four; the overlay presents them one
+ *  at a time (see `AwaitingEntry.groups`). */
+export interface AskGroup {
+  question: string;
+  options: PromptOption[];
+  promptType?: 'multi_select';
+}
+
 export interface AwaitingEntry {
   kind: AwaitingKind;
   state: 'awaiting_permission' | 'awaiting_option';
   question: string;
-  /** Structured AskUserQuestion choices. Display-only for observed sessions:
-   *  no requestId means devices must direct the user back to the terminal. */
+  /** Structured AskUserQuestion choices for the ACTIVE group. Pressable only
+   *  when the daemon can deliver the answer (terminal injection or a held
+   *  ask-gate) — otherwise devices direct the user back to the terminal. */
   options?: PromptOption[];
   promptType?: 'multi_select';
+  /** Every valid question group from one AskUserQuestion call. Claude allows up
+   *  to four, but SessionInfo carries a single question/options pair, so they
+   *  are presented sequentially rather than flattened into one index space
+   *  (which would let a press against group 1 select an option in group 2).
+   *  `question`/`options`/`promptType` above always mirror `groups[activeGroup]`. */
+  groups?: AskGroup[];
+  activeGroup?: number;
+  /** How many question groups the tool call actually contained, INCLUDING any
+   *  `groups` dropped as malformed. The terminal's own picker renders a form
+   *  for all of them, so this — not `groups.length` — decides whether that form
+   *  ends on a "Submit answers" confirmation someone has to press. */
+  rawGroupCount?: number;
+  /** Answers collected so far, one per resolved group. The held ask-gate turns
+   *  these into the hook's decision reason when the last group is answered. */
+  answers?: Array<{ question: string; label: string }>;
   /** Claude's stable tool call id. Option overlays resolve only when the
    *  matching PostToolUse/PostToolUseFailure arrives (or a terminal lifecycle
    *  event ends/supersedes the turn). Never expose this as requestId: that
@@ -88,11 +113,47 @@ export function setPermissionNotificationOverlay(sessionId: string, question: st
   return true;
 }
 
+/** Sanitize one raw AskUserQuestion group. Returns undefined when the group has
+ *  no usable question text or no labelled options. */
+function parseAskGroup(raw: unknown): AskGroup | undefined {
+  if (!isRecord(raw) || typeof raw.question !== 'string') return undefined;
+  const question = raw.question.replace(/\s+/g, ' ').trim().slice(0, MAX_QUESTION_LEN);
+  if (!question) return undefined;
+
+  const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+  const options: PromptOption[] = rawOptions.flatMap((value) => {
+    if (!isRecord(value) || typeof value.label !== 'string') return [];
+    const label = value.label.replace(/\s+/g, ' ').trim();
+    if (!label) return [];
+    return [{
+      index: 0, // re-indexed below after invalid/empty labels are removed
+      label: label.slice(0, MAX_QUESTION_LEN),
+    }];
+  }).map((option, index) => ({ ...option, index }));
+  if (options.length === 0) return undefined;
+
+  return {
+    question,
+    options,
+    ...(raw.multiSelect === true ? { promptType: 'multi_select' as const } : {}),
+  };
+}
+
+/** Copy a group's fields into the flat wire projection every surface renders. */
+function projectGroup(entry: AwaitingEntry, group: AskGroup): void {
+  entry.question = group.question;
+  entry.options = group.options;
+  if (group.promptType) entry.promptType = group.promptType;
+  else delete entry.promptType;
+}
+
 /**
- * Lift a direct-Claude AskUserQuestion PreToolUse payload into a structured,
- * display-only option overlay. Claude supports one to four grouped questions,
- * while SessionInfo currently carries one question/options set; show the first
- * valid group rather than flattening unrelated groups into unsafe wire indices.
+ * Lift a direct-Claude AskUserQuestion PreToolUse payload into a structured
+ * option overlay. Claude supports one to four grouped questions while
+ * SessionInfo carries a single question/options pair, so ALL valid groups are
+ * kept here and presented one at a time (`advanceAskUserQuestionOverlay`)
+ * rather than flattened into one index space — flattening would let a press
+ * aimed at group 1 land on an option of group 2.
  * Returns false for malformed payloads so callers can preserve normal tool
  * processing instead of surfacing a dead prompt.
  */
@@ -103,37 +164,73 @@ export function setAskUserQuestionOverlay(
 ): boolean {
   if (typeof toolUseId !== 'string' || !toolUseId) return false;
   const rawQuestions = Array.isArray(toolInput?.questions) ? toolInput.questions : [];
-  const first = rawQuestions.find((value): value is Record<string, unknown> =>
-    isRecord(value) && typeof value.question === 'string' && value.question.trim().length > 0
-  );
-  if (!first) return false;
-  const rawQuestion = first.question;
-  if (typeof rawQuestion !== 'string') return false;
+  const groups = rawQuestions
+    .map((raw) => parseAskGroup(raw))
+    .filter((group): group is AskGroup => group !== undefined);
+  if (groups.length === 0) return false;
 
-  const rawOptions = Array.isArray(first.options) ? first.options : [];
-  const options: PromptOption[] = rawOptions.flatMap((value) => {
-    if (!isRecord(value) || typeof value.label !== 'string') return [];
-    const label = value.label.replace(/\s+/g, ' ').trim();
-    if (!label) return [];
-    return [{
-      index: 0, // re-indexed below after invalid/empty labels are removed
-      label: label.slice(0, MAX_QUESTION_LEN),
-    }];
-  }).map((option, index) => ({ ...option, index }));
-  if (options.length === 0) return false;
-
-  const question = rawQuestion.replace(/\s+/g, ' ').trim().slice(0, MAX_QUESTION_LEN);
-  const promptType = first.multiSelect === true ? 'multi_select' : undefined;
-  overlay.set(sessionId, {
+  const entry: AwaitingEntry = {
     kind: 'option',
     state: 'awaiting_option',
-    question,
-    options,
-    ...(promptType ? { promptType } : {}),
+    question: '',
+    groups,
+    activeGroup: 0,
+    rawGroupCount: rawQuestions.length,
+    answers: [],
     toolUseId,
     updatedAt: Date.now(),
-  });
+  };
+  projectGroup(entry, groups[0]);
+  overlay.set(sessionId, entry);
   return true;
+}
+
+/**
+ * Record the answer to the active question group and present the next one.
+ *
+ * Returns `'advanced'` when a further group is now showing (the caller must
+ * re-broadcast so devices swap to it), `'complete'` when that was the last
+ * group (the caller resolves the held ask-gate / waits for PostToolUse), or
+ * `'ignored'` when there is no active option overlay.
+ *
+ * `label` is the option text the user chose; it is kept so a held ask-gate can
+ * report every Q→A pair back to the agent.
+ */
+export function advanceAskUserQuestionOverlay(
+  sessionId: string,
+  label?: string,
+): 'advanced' | 'complete' | 'ignored' {
+  const entry = overlay.get(sessionId);
+  if (!entry || entry.kind !== 'option' || !entry.groups?.length) return 'ignored';
+  const active = entry.activeGroup ?? 0;
+  // Already past the last group: report completion again but record nothing.
+  // A repeat press (a device that did not see the prompt close, a duplicate
+  // frame) would otherwise append another answer every time, growing the list
+  // without bound and reporting phantom answers back to the agent.
+  if (active >= entry.groups.length) return 'complete';
+  entry.answers = [
+    ...(entry.answers ?? []),
+    { question: entry.groups[active]?.question ?? entry.question, label: label ?? '' },
+  ];
+  const next = active + 1;
+  if (next >= entry.groups.length) {
+    entry.activeGroup = next;
+    entry.updatedAt = Date.now();
+    return 'complete';
+  }
+  entry.activeGroup = next;
+  projectGroup(entry, entry.groups[next]);
+  entry.updatedAt = Date.now();
+  return 'advanced';
+}
+
+/** Q→A pairs recorded so far for a pending AskUserQuestion (held ask-gate). */
+export function getAskUserQuestionAnswers(
+  sessionId: string,
+): Array<{ question: string; label: string }> {
+  const entry = overlay.get(sessionId);
+  if (!entry || entry.kind !== 'option') return [];
+  return (entry.answers ?? []).map((a) => ({ ...a }));
 }
 
 /** Returns the overlay entry if it exists and is still fresh (< TTL). Stale
@@ -151,6 +248,8 @@ export function getAwaitingOverlay(
   return {
     ...entry,
     options: entry.options?.map((option) => ({ ...option })),
+    groups: entry.groups?.map((group) => ({ ...group })),
+    answers: entry.answers?.map((answer) => ({ ...answer })),
   };
 }
 
@@ -201,6 +300,8 @@ export function applyAwaitingOverlayToObserved<
     requestId?: string;
     options?: PromptOption[];
     promptType?: string;
+    askGroupIndex?: number;
+    askGroupCount?: number;
     lastActivityAt?: number;
   },
 >(sessions: T[]): T[] {
@@ -219,6 +320,9 @@ export function applyAwaitingOverlayToObserved<
       clearAwaitingOverlay(uuid);
       return s;
     }
+    // Multi-group prompts advance one question at a time, so surfaces can show
+    // "Q 2/3". Single-group prompts omit the fields entirely (absent ⇒ one).
+    const multiGroup = (ov.groups?.length ?? 0) > 1;
     return {
       ...s,
       state: ov.state,
@@ -226,6 +330,14 @@ export function applyAwaitingOverlayToObserved<
       requestId: ov.requestId,
       ...(ov.options ? { options: ov.options } : {}),
       ...(ov.promptType ? { promptType: ov.promptType } : {}),
+      ...(multiGroup
+        ? {
+          // Clamped: once the last group is answered the cursor sits one past
+          // the end, and "Q 4/3" is not a thing.
+          askGroupIndex: Math.min(ov.activeGroup ?? 0, ov.groups!.length - 1),
+          askGroupCount: ov.groups!.length,
+        }
+        : {}),
     };
   });
 }
