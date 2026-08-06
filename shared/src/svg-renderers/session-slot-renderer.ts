@@ -16,6 +16,40 @@ import { wrapTextByWidth, escSvgText } from './text-utils.js';
 const SIZE = 144;
 const BORDER_PERIMETER = 512;
 
+/**
+ * Dash travel per `animFrame` unit, shared by EVERY orbiting border on a session
+ * slot (the processing state border and the focused-session ring).
+ *
+ * The single speed is a hard requirement, not a style choice: a surface that
+ * pre-bakes the animation into a looping GIF (the D200H / Ulanzi plugin) can only
+ * close the loop when every animated element returns to its starting phase at the
+ * same frame. Dash phase repeats with period BORDER_PERIMETER, so a ring of speed
+ * `v` closes after BORDER_PERIMETER / v units — two different speeds only agree
+ * again at their common multiple, which for the old 22/16 pair was 256 units (11
+ * dash cycles: far too much travel to sample at a watchable frame count). Keep
+ * these in lockstep; if a future ring needs a different tempo it must be an
+ * INTEGER multiple of this speed, or the GIF surfaces get a visible jump on wrap.
+ */
+const ORBIT_SPEED_PX = 22;
+
+/**
+ * `animFrame` units in one full animation cycle — after this span every orbiting
+ * dash and every pulse is back at its starting value. A pre-baked loop (GIF) MUST
+ * span exactly this, sampled at N even steps of `SESSION_SLOT_ANIM_CYCLE / N`.
+ * Live tickers (Stream Deck) just keep incrementing and can ignore it.
+ */
+export const SESSION_SLOT_ANIM_CYCLE = BORDER_PERIMETER / ORBIT_SPEED_PX;
+
+/**
+ * Angular frequency of the opacity pulses (processing glow, awaiting breath),
+ * chosen so `|sin(PULSE_OMEGA * animFrame)|` runs one full 0→1→0 breath across
+ * exactly one `SESSION_SLOT_ANIM_CYCLE` and therefore lands back on 0 at the loop
+ * seam. The previous hand-picked 0.12 / 0.14 were close to this value but not
+ * commensurate with the cycle, so a baked loop snapped from a lit border back to
+ * a dark one on every wrap.
+ */
+const PULSE_OMEGA = Math.PI / SESSION_SLOT_ANIM_CYCLE;
+
 export type DisconnectedSlotKind = 'open-app' | 'empty';
 
 export type ClusterQuadrant = 'tl' | 'tr' | 'bl' | 'br';
@@ -356,12 +390,15 @@ export function renderSessionSlot(
     // RUNNING: a teal border of marching dashes ORBITING the key — motion that
     // reads as "work travelling around", distinct from PERM's steady breath.
     defs += blurDef;
-    const pulseOpacity = animated ? 0.72 + 0.20 * Math.abs(Math.sin(animFrame * 0.12)) : 0.9;
+    const pulseOpacity = animated ? 0.72 + 0.20 * Math.abs(Math.sin(animFrame * PULSE_OMEGA)) : 0.9;
     const borderColor = signalColor;
-    const orbitSpeedPx = 22;
+    const orbitSpeedPx = ORBIT_SPEED_PX;
     // Anchor the rotation to when this session entered the animated state so
     // sibling buttons that started later orbit out of phase, not in lockstep.
-    const startFrame = options?.processingStartFrame ?? animFrame;
+    // Defaulting to `animFrame` would make the phase cancel the rotation exactly
+    // (phase = -animFrame*speed, offset = -(animFrame*speed + phase) = 0), which
+    // froze the dashes for every caller that does not track a start frame.
+    const startFrame = options?.processingStartFrame ?? 0;
     const processingPhasePx = -((startFrame * orbitSpeedPx) % BORDER_PERIMETER);
     stateBorder = animated
       ? renderOrbitingRect({
@@ -378,7 +415,7 @@ export function renderSessionSlot(
     // "needs you" is unmistakable at a glance. Plus a bold amber PERM badge.
     defs += blurDef;
     const amber = sColor; // #f59e0b
-    const breathe = animated ? 0.45 + 0.55 * Math.abs(Math.sin(animFrame * 0.14)) : 1;
+    const breathe = animated ? 0.45 + 0.55 * Math.abs(Math.sin(animFrame * PULSE_OMEGA)) : 1;
     stateBorder = [
       `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${amber}" stroke-width="7" opacity="${(breathe * 0.6).toFixed(2)}" filter="url(#${filterId})"/>`,
       `<rect x="8" y="8" width="128" height="128" rx="12" fill="none" stroke="${amber}" stroke-width="3" opacity="0.97"/>`,
@@ -392,7 +429,7 @@ export function renderSessionSlot(
     activeRing = animated
       ? renderOrbitingRect({
           x: 10.5, y: 10.5, width: 123, height: 123, rx: 10.5, color: '#60A5FA', animFrame,
-          speedPx: 16, phasePx: 170, dashPx: isIdle ? 72 : 52,
+          speedPx: ORBIT_SPEED_PX, phasePx: 170, dashPx: isIdle ? 72 : 52,
           railOpacity: isIdle ? 0.20 : 0.10, glowOpacity: isIdle ? 0.42 : 0.24,
           coreOpacity: isIdle ? 0.95 : 0.58, railWidth: 1, glowWidth: isIdle ? 3.6 : 2.6,
           coreWidth: isIdle ? 1.8 : 1.3, filterId: isIdle ? filterId : undefined,
@@ -597,7 +634,14 @@ export function renderInfoSlot(label: string, subtitle?: string, icon: StatusIco
 }
 
 export function svgFrame(bgColor: string, innerElements: string): string {
-  const gradId = 'frame-bg-' + Math.floor(Math.random() * 1000000);
+  // Derived from the only input the gradient depends on, never random. A random
+  // id made two renders of an IDENTICAL tile differ as strings, which silently
+  // defeated every downstream identity check: the D200H plugin re-pushed
+  // unchanged quiet keys to the device on every broadcast, its "does this tile
+  // animate?" probe answered yes for every one of them, and the GIF encoded from
+  // that answer could never hit its cache. Sibling frames here (cluster, grid)
+  // were already keyed off their own parameters — this one was the outlier.
+  const gradId = `frame-bg-${bgColor.replace(/[^a-zA-Z0-9]/g, '') || 'default'}`;
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}">`,
     `<defs><linearGradient id="${gradId}" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="${bgColor}"/><stop offset="100%" stop-color="#0A0A0E"/></linearGradient></defs>`,

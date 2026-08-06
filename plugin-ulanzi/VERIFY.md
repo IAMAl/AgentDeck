@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: stable
 owner: Plugin maintainers
-reviewed: 2026-07-21
-revision: 2026-07-21
+reviewed: 2026-08-07
+revision: 2026-08-07
 source_of_truth: plugin-ulanzi/VERIFY.md
 validators: [pnpm test]
 ---
@@ -56,9 +56,47 @@ Already set up for you:
    drag the single **AgentDeck** action onto several keys — each key reflows by
    agent state (session, option, mode, stop, usage), then watch:
    - tiles render text + creatures (font fix),
-   - an `awaiting`/`processing` Session key shows an **animated GIF** (pulsing border),
+   - an `awaiting`/`processing` Session key shows an **animated GIF** — an amber
+     border breathing on `awaiting`, a teal dash orbiting the key on `processing`
+     (see [Animation](#animation) for what a correct loop looks like),
    - pressing a key dispatches a command — confirm with `agentdeck daemon status`
      (e.g. button press count / focus change) or the daemon log.
+
+## Animation
+
+Ulanzi Studio plays and loops a GIF on the device itself, so unlike the Stream
+Deck plugin — which pushes a fresh image every 150ms tick — this plugin pushes
+**one GIF per state transition** and then goes quiet. Steady-state animation costs
+nothing on the link.
+
+What that buys has to be paid for at encode time, so three properties are worth
+checking whenever the tiles or the schedule change:
+
+- **The loop must close.** A GIF spans exactly one `SESSION_SLOT_ANIM_CYCLE`
+  (`shared/src/svg-renderers/session-slot-renderer.ts`), sampled at
+  `ANIM_FRAMES` even steps. Any other span leaves the orbiting dash mid-travel at
+  the wrap, and the tile jumps once per loop. A live ticker cannot have this bug,
+  which is why it went unnoticed; `shared/src/__tests__/session-slot-anim.test.ts`
+  and `src/__tests__/anim-schedule.test.ts` are the gates.
+- **A key press must stay responsive.** Encoding shares the thread that serves
+  Studio's socket, so it runs off the render path a frame at a time: a changed key
+  ships its static PNG immediately and upgrades to its GIF when ready. If BACK
+  feels sluggish, that path regressed.
+- **Keys must not move as one block.** Each key starts its loop at a different
+  point in the cycle (`phaseOffsetFor`), so a deck of busy sessions reads as
+  several independent activities rather than one synchronised light show. Because
+  the frames are an even sample of the cycle, this is a rotation of the frames
+  already rendered and costs nothing. If every tile pulses in unison, the rotation
+  was lost; if no tile animates at all, the rotation and the encoder's staleness
+  check have disagreed (see `frameOrderFor`).
+- **Payload stays modest.** Frames are written as delta frames (only pixels that
+  changed from the previous frame, GIF disposal 1) over one shared palette, at the
+  native 144 canvas rather than `ICON_SIZE`. Expect roughly 21–24 KB for a
+  `processing` tile and ~47 KB for `awaiting`; a sudden jump back to ~70 KB means
+  the delta or palette path broke.
+
+Set `AGENTDECK_ULANZI_ANIM=0` to fall back to static PNG tiles — useful for
+isolating whether a device-side rendering problem involves animation at all.
 
 ## Notes
 - The main service auto-discovers the daemon port from `daemon.json` (Node CLI or

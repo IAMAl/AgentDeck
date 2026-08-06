@@ -16,6 +16,17 @@ import { derr } from './log.js';
 
 export const ICON_SIZE = 196;
 
+/**
+ * Animated tiles rasterize at the renderers' native 144 canvas instead of
+ * ICON_SIZE. A GIF carries every frame, so its pixel count is multiplied by the
+ * frame count and it is the only payload big enough to congest the Studio→device
+ * link; 144 is 1:1 with the SVG viewBox (no upsampling, so no real detail is
+ * lost — the plugin's own action icons ship at 96) and cuts an awaiting tile from
+ * 73 KB to 47 KB. The brief sharpness difference while a cache-miss key shows its
+ * static PNG before the GIF lands is the trade.
+ */
+export const GIF_ICON_SIZE = 144;
+
 const FONT_OPTS: { fontFiles?: string[]; loadSystemFonts: boolean; defaultFontFamily: string } = (() => {
   try {
     // compiled app lives at <plugin>/plugin/*.js → fonts at <plugin>/resources/fonts

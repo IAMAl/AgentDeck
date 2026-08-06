@@ -76,10 +76,6 @@ function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   };
 }
 
-function stableFrameIds(svg: string): string {
-  return svg.replace(/frame-bg-\d+/g, 'frame-bg-test');
-}
-
 function makeGroupedEntry(overrides: Partial<{
   ts: number; type: string; raw: string; detail?: string; status?: string;
   count: number; firstTs: number; lastTs: number;
@@ -372,31 +368,31 @@ describe('usage-encoder level-fill (SD+ 200x100) snapshots', () => {
 
 describe('session-slot-renderer snapshots', () => {
   it('disconnected hero is icon-rich', () => {
-    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app' }))).toMatchSnapshot();
+    expect(renderDisconnectedSlot({ kind: 'open-app' })).toMatchSnapshot();
   });
 
   it('disconnected non-center slot is empty', () => {
-    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'empty' }))).toMatchSnapshot();
+    expect(renderDisconnectedSlot({ kind: 'empty' })).toMatchSnapshot();
   });
 
   it('disconnected cluster quadrant tl', () => {
-    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'tl' }))).toMatchSnapshot();
+    expect(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'tl' })).toMatchSnapshot();
   });
 
   it('disconnected cluster quadrant tr', () => {
-    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'tr' }))).toMatchSnapshot();
+    expect(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'tr' })).toMatchSnapshot();
   });
 
   it('disconnected cluster quadrant bl', () => {
-    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'bl' }))).toMatchSnapshot();
+    expect(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'bl' })).toMatchSnapshot();
   });
 
   it('disconnected cluster quadrant br', () => {
-    expect(stableFrameIds(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'br' }))).toMatchSnapshot();
+    expect(renderDisconnectedSlot({ kind: 'open-app', quadrant: 'br' })).toMatchSnapshot();
   });
 
   it('connected no-session card is icon-rich', () => {
-    expect(stableFrameIds(renderStatusCard({ icon: 'no-session', label: 'NO SESSION', subtitle: 'WAITING', tone: 'idle' }))).toMatchSnapshot();
+    expect(renderStatusCard({ icon: 'no-session', label: 'NO SESSION', subtitle: 'WAITING', tone: 'idle' })).toMatchSnapshot();
   });
 
   it('active idle session uses orbiting focus border', () => {

@@ -14,12 +14,19 @@
  *   key press → cell action → view change and/or daemon command
  */
 import { buildSessionDeck, type DeckView, RECONNECT_BACKOFF_MS } from '@agentdeck/shared';
+import {
+  ANIM_FRAMES,
+  ANIM_DELAY_MS,
+  ANIM_PROBE_FRAME,
+  animFrameAt,
+  frameOrderFor,
+} from './anim-schedule.js';
 import { UlanziApiCtor, type UlanziApi, type UlanziMessage } from './ulanzi.js';
 import { DaemonClient } from './daemon-client.js';
 import { ReconnectSupervisor } from './reconnect-supervisor.js';
 import { StateStore } from './state-store.js';
 import { deckSignature } from './deck-signature.js';
-import { svgToBase64Png, ICON_SIZE } from './raster.js';
+import { svgToBase64Png, GIF_ICON_SIZE } from './raster.js';
 import { framesToGifBase64 } from './gif.js';
 import { launchCompanionApp } from './launch.js';
 import { dinfo, dlog, derr, flog } from './log.js';
@@ -27,13 +34,22 @@ import { dinfo, dlog, derr, flog } from './log.js';
 const PLUGIN_UUID = 'com.ulanzi.ulanzistudio.agentdeck';
 const TAG = 'app';
 
-const ANIM_FRAMES = 14;
-const ANIM_STEP = 3;
-const ANIM_DELAY_MS = 70;
-// GIF animation is OFF by default: encoding it for every processing/awaiting
-// session each render churns CPU and makes pushes heavy, which the slow D200H
-// LCD can't keep up with (laggy, BACK feels unresponsive). Opt in explicitly.
-const ANIMATE = process.env.AGENTDECK_ULANZI_ANIM === '1';
+// GIF animation is ON: encodes are cached per tile appearance, run off the hot
+// path a frame at a time, and ship as delta frames, so the churn that forced this
+// off originally (re-encoding every render, synchronously, at full frame size) is
+// gone. `AGENTDECK_ULANZI_ANIM=0` falls back to static PNG tiles.
+const ANIMATE = process.env.AGENTDECK_ULANZI_ANIM !== '0';
+// Encoded GIFs keyed by the tile's own SVG — a session returning to a state it
+// already showed re-pushes instantly instead of re-encoding.
+const GIF_CACHE_MAX = 64;
+const gifCache = new Map<string, string>();
+function cacheGif(key: string, gif: string): void {
+  if (gifCache.size >= GIF_CACHE_MAX) {
+    const oldest = gifCache.keys().next().value;
+    if (oldest !== undefined) gifCache.delete(oldest);
+  }
+  gifCache.set(key, gif);
+}
 
 interface Instance {
   context: string;
@@ -117,6 +133,9 @@ const BLACK_KEY_SVG =
 let displayDimmed = false;
 
 function dimAllKeys(): void {
+  // Drop queued loops — a GIF landing after the dim would relight the key. Wake
+  // clears every cached signature, so they all re-queue then.
+  animPending.clear();
   const dataUri = `data:image/png;base64,${svgToBase64Png(BLACK_KEY_SVG)}`;
   for (const inst of instances.values()) {
     // Clear lastSig so the wake repaint is not swallowed by the per-key dedup.
@@ -125,6 +144,84 @@ function dimAllKeys(): void {
   }
   lastDeckSig = '';
   if (instances.size > 0) ensureDrainer();
+}
+
+// ---- Background GIF encoding ----
+// Encoding runs on the same thread that services Ulanzi Studio's socket, so it
+// must never sit in the render path: a synchronous multi-frame encode is what made
+// BACK feel unresponsive. Instead a changed key ships its static PNG immediately
+// and joins this queue, which encodes one tile at a time and upgrades the key when
+// the GIF is ready.
+const animPending = new Set<string>(); // contexts awaiting a GIF
+let animDraining = false;
+// Bumped on every state change; the frame decks memo keys off it, so the 24 decks
+// are rebuilt at most once per change no matter how many keys ask for them.
+let deckVersion = 0;
+let frameDeckMemo: { version: number; decks: ReturnType<typeof deckFor>[] } | null = null;
+
+function frameDecks(): ReturnType<typeof deckFor>[] {
+  if (frameDeckMemo?.version !== deckVersion) {
+    frameDeckMemo = {
+      version: deckVersion,
+      decks: Array.from({ length: ANIM_FRAMES }, (_, i) => deckFor(animFrameAt(i), true)),
+    };
+  }
+  return frameDeckMemo.decks;
+}
+
+async function drainAnimQueue(): Promise<void> {
+  if (animDraining) return; // the running loop picks up whatever gets queued
+  animDraining = true;
+  try {
+    while (animPending.size > 0) {
+      if (displayDimmed) break;
+      const context: string = animPending.values().next().value!;
+      animPending.delete(context);
+      const inst = instances.get(context);
+      if (!inst) continue;
+      // Rotate this key's start point into the cycle so neighbouring buttons do
+      // not orbit as one block. The decks are an even sample of a full cycle, so
+      // the rotation is a pure phase shift — no extra frames are rendered.
+      const order = frameOrderFor(inst.key);
+      const frames = order.map((f) => frameDecks()[f].get(inst.key)?.svg);
+      if (frames.some((f) => !f)) continue;
+      // This key's OWN first frame identifies its whole loop: every other frame is
+      // a deterministic function of the same session state and the same rotation.
+      // It must be read through `order[0]`, never deck 0 — see frameOrderFor.
+      const cacheKey = frames[0]!;
+      // Abandon only when THIS tile changed, not on any deck change at all. Most
+      // renders during a live turn move some other key (a tool name, another
+      // session's state) and leave this tile's pixels identical, so keying the
+      // abort on `deckVersion` alone would restart the encode over and over and
+      // an animation could never finish while anything else was busy.
+      const tileChanged = () => frameDecks()[order[0]].get(inst.key)?.svg !== cacheKey;
+      let gif = gifCache.get(cacheKey);
+      const cached = gif !== undefined;
+      const startedAt = Date.now();
+      if (gif === undefined) {
+        const encoded = await framesToGifBase64(
+          { frames: frames as string[], delayMs: ANIM_DELAY_MS },
+          GIF_ICON_SIZE,
+          { get cancelled() { return tileChanged(); } },
+        );
+        if (tileChanged()) { animPending.add(context); continue; }
+        if (!encoded) continue; // encode failed — the static PNG already on the key stands
+        cacheGif(cacheKey, encoded);
+        gif = encoded;
+      }
+      // The one line that tells a hardware session whether animation actually
+      // landed: without it a key stuck on its static PNG is indistinguishable
+      // from a key whose loop is playing.
+      dlog(TAG, `gif ${inst.key} ${Math.round((gif.length * 3) / 4 / 1024)}KB `
+        + (cached ? 'cached' : `encoded in ${Date.now() - startedAt}ms`));
+      pushQueue.set(context, { dataUri: `data:image/gif;base64,${gif}`, isGif: true });
+      ensureDrainer();
+    }
+  } catch (err) {
+    derr(TAG, `anim encode failed: ${err}`);
+  } finally {
+    animDraining = false;
+  }
 }
 
 function renderAll(): void {
@@ -153,41 +250,54 @@ function renderAll(): void {
   lastDeckSig = sig;
   lastRenderAt = Date.now();
 
+  deckVersion++;
+
   const staticDeck = deckFor(0, false);
-  const probeDeck = ANIMATE ? deckFor(5, true) : null;
-  let frameDecks: ReturnType<typeof deckFor>[] | null = null;
-  const getFrameDecks = () =>
-    (frameDecks ??= Array.from({ length: ANIM_FRAMES }, (_, i) => deckFor(i * ANIM_STEP, true)));
+  // Compare the animated frame 0 against a half-cycle frame: a tile animates iff
+  // those differ. Comparing against the STATIC tile would be wrong — `animated`
+  // changes the border markup on its own, so every state tile would look animated.
+  const animBaseDeck = ANIMATE ? deckFor(0, true) : null;
+  const probeDeck = ANIMATE ? deckFor(ANIM_PROBE_FRAME, true) : null;
 
   // Enqueue changed keys; the drainer paces them to the device (a few per tick).
   // Blasting 12–13 keys at once on a view switch overruns the device — Studio's
   // UI updates but the hardware drops most, leaving stale keys.
   let changed = 0;
+  let queuedAnim = 0;
   for (const inst of instances.values()) {
     try {
       const cell = staticDeck.get(inst.key);
       const staticSvg = cell?.svg ?? '';
-      const animates = ANIMATE && !!cell && probeDeck!.get(inst.key)?.svg !== staticSvg;
+      const animBase = animBaseDeck?.get(inst.key)?.svg ?? '';
+      const animates = ANIMATE && !!cell && probeDeck!.get(inst.key)?.svg !== animBase;
+      // A key that stopped animating must leave the queue, or a pending encode
+      // would later overwrite its current static tile with a stale loop.
+      if (!animates) animPending.delete(inst.context);
       const sig = `${animates ? 'A' : 'S'}|${staticSvg}`;
       if (sig === inst.lastSig) continue;
       inst.lastSig = sig;
       if (!cell) continue;
-      let gif: string | null = null;
-      if (animates) {
-        const frames = getFrameDecks().map((d) => d.get(inst.key)?.svg ?? staticSvg);
-        gif = framesToGifBase64({ frames, delayMs: ANIM_DELAY_MS }, ICON_SIZE);
-      }
       // Full data URI — the device firmware needs the `data:` prefix to decode
       // (Studio's preview accepts bare base64, the hardware does not).
-      pushQueue.set(inst.context, gif
-        ? { dataUri: `data:image/gif;base64,${gif}`, isGif: true }
-        : { dataUri: `data:image/png;base64,${svgToBase64Png(staticSvg)}`, isGif: false });
+      const cachedGif = animates ? gifCache.get(animBase) : undefined;
+      if (cachedGif !== undefined) {
+        pushQueue.set(inst.context, { dataUri: `data:image/gif;base64,${cachedGif}`, isGif: true });
+      } else {
+        // Static tile now, GIF when it is encoded — a view switch stays instant
+        // even when several tiles need a loop built from scratch.
+        pushQueue.set(inst.context, { dataUri: `data:image/png;base64,${svgToBase64Png(staticSvg)}`, isGif: false });
+        if (animates) { animPending.add(inst.context); queuedAnim++; }
+      }
       changed++;
     } catch (err) {
       derr(TAG, `render ${inst.key} failed: ${err}`);
     }
   }
-  if (changed > 0) { dlog(TAG, `queue ${changed} key(s) (view=${view.mode})`); ensureDrainer(); }
+  if (changed > 0) {
+    dlog(TAG, `queue ${changed} key(s), ${queuedAnim} to animate (view=${view.mode})`);
+    ensureDrainer();
+  }
+  if (animPending.size > 0) void drainAnimQueue();
 }
 
 // ---- Ulanzi Studio side ----

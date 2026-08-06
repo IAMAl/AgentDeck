@@ -14,12 +14,20 @@
 // Sync pin — verified by `scripts/check-preview-mirror-sync.mjs` (CI). When the
 // origin changes, re-port (or confirm no visual impact) and bump the pin in the
 // same commit.
-// Pin bumped 2026-07-19 for an additive-only origin change: `renderAgentDeckMarkCompact`
-// was added for the Stream Deck plugin's 20px action-list icons. Nothing existing
-// was modified (28 insertions, 0 deletions) and the only consumer is
-// scripts/generate-icons.mjs, so the mirrored surface (renderSessionSlot) is
-// unaffected — no re-port needed.
-// SYNC-HASH shared/src/svg-renderers/session-slot-renderer.ts 85667bbfd3ba244427139ae1e7cdc94fe65bc6ff
+// Pin bumped 2026-08-07: the origin unified its animation constants so a surface
+// that BAKES the loop (the D200H, which ships one looping GIF per state rather
+// than ticking every frame) can close it — `ORBIT_SPEED_PX`,
+// `SESSION_SLOT_ANIM_CYCLE`, `PULSE_OMEGA`. Ported: the pulse and the breath now
+// ride PULSE_OMEGA instead of the hand-picked 0.12 / 0.14.
+//
+// Two origin changes deliberately did NOT need porting, recorded so the next
+// reader does not go looking for them:
+//   • the focus ring's orbit speed (16 → ORBIT_SPEED_PX) — this mirror never drew
+//     the focus ring at all; `isActive` is declared and unused.
+//   • `processingStartFrame` defaulting to 0 instead of `animFrame` — this mirror
+//     never applied that per-session phase anchor, so it never had the bug where
+//     the anchor cancelled the rotation and froze the dashes.
+// SYNC-HASH shared/src/svg-renderers/session-slot-renderer.ts 15a765038d23df870db58302442056340cb66c8a
 //
 // Scope for this first pass:
 //   - renderSessionSlot (primary session button)
@@ -33,6 +41,22 @@ enum SessionSlot {
     static let cornerRadius: CGFloat = 16
     static let innerInset: CGFloat = 8
     static let innerCornerRadius: CGFloat = 12
+
+    /// Dash travel per `animFrame` unit (TS: `ORBIT_SPEED_PX`).
+    static let orbitSpeedPx = 22
+    /// Dash pattern period — the `dash: [92, 420]` below sums to exactly this.
+    static let borderPerimeter = 512
+    /// `animFrame` units in one full animation cycle (TS: `SESSION_SLOT_ANIM_CYCLE`).
+    static let animCycle = Double(borderPerimeter) / Double(orbitSpeedPx)
+    /// Pulse / breath frequency: one complete breath per cycle (TS: `PULSE_OMEGA`).
+    ///
+    /// Replaces the hand-picked 0.12 and 0.14. Those were fine here — this preview
+    /// is a live ticker that just keeps incrementing `animFrame` — but they are not
+    /// commensurate with the orbit period, so a surface that bakes the animation
+    /// into a looping GIF (the D200H) snapped from a lit border back to a dark one
+    /// on every wrap. The shared renderer had to change; this mirror follows so the
+    /// preview keeps showing what the hardware shows.
+    static let pulseOmega = Double.pi / animCycle
 }
 
 /// Premium palette (matches the p1/p2 pairs in the TS renderer, not StateColors.brand).
@@ -133,8 +157,8 @@ struct SessionSlotView: View {
             // PERM: solid amber that breathes (full perimeter, no dashes).
             // Deliberately different motion + hue per state (TS f9869f9e).
             if mode == .working {
-                let pulseOpacity = 0.72 + 0.20 * abs(sin(Double(animFrame) * 0.12))
-                let phase = CGFloat(-((animFrame * 22) % 512))
+                let pulseOpacity = 0.72 + 0.20 * abs(sin(Double(animFrame) * SessionSlot.pulseOmega))
+                let phase = CGFloat(-((animFrame * SessionSlot.orbitSpeedPx) % SessionSlot.borderPerimeter))
                 RoundedRectangle(cornerRadius: SessionSlot.innerCornerRadius, style: .continuous)
                     .strokeBorder(signalColor, style: StrokeStyle(lineWidth: 3.6, dash: [92, 420], dashPhase: phase))
                     .opacity(pulseOpacity * 0.72)
@@ -146,7 +170,7 @@ struct SessionSlotView: View {
                     .padding(SessionSlot.innerInset)
             }
             if mode == .asking {
-                let breathe = 0.45 + 0.55 * abs(sin(Double(animFrame) * 0.14))
+                let breathe = 0.45 + 0.55 * abs(sin(Double(animFrame) * SessionSlot.pulseOmega))
                 RoundedRectangle(cornerRadius: SessionSlot.innerCornerRadius, style: .continuous)
                     .strokeBorder(signalColor, lineWidth: 7)
                     .opacity(breathe * 0.6)
