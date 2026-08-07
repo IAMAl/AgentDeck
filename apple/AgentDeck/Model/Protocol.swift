@@ -664,6 +664,27 @@ struct ScopedUsageLimit: Codable, Sendable {
     }
 }
 
+/// Display name for a raw `chatgpt_plan_type`.
+///
+/// One copy on purpose: this mapping had drifted into three Swift call sites
+/// (topology rail, state holder, daemon payload) and each one passed an
+/// unrecognized plan through verbatim — so a "free" account read as
+/// "ChatGPT free", the only lowercase entry next to Plus/Pro/Team.
+enum ChatGPTPlan {
+    static func displayName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed.lowercased() {
+        case "free": return "ChatGPT Free"
+        case "plus": return "ChatGPT Plus"
+        case "pro": return "ChatGPT Pro"
+        case "team": return "ChatGPT Team"
+        case "enterprise": return "ChatGPT Enterprise"
+        // Capitalize an unknown plan rather than showing the raw lowercase value.
+        default: return "ChatGPT " + trimmed.prefix(1).uppercased() + trimmed.dropFirst()
+        }
+    }
+}
+
 struct UsageEvent: Codable, Sendable {
     let type: String  // "usage_update"
     var sessionDurationSec: Int?

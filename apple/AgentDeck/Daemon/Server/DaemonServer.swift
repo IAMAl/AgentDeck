@@ -7700,13 +7700,7 @@ final class DaemonServer {
     /// Returns 0 if the usage window has already reset.
     /// Added 'sticky' 5-min buffer for high usage to avoid premature '0% (now)'.
     private static func chatGptPlanDisplay(_ raw: String) -> String {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "plus": return "ChatGPT Plus"
-        case "pro": return "ChatGPT Pro"
-        case "team": return "ChatGPT Team"
-        case "enterprise": return "ChatGPT Enterprise"
-        default: return "ChatGPT \(raw)"
-        }
+        return ChatGPTPlan.displayName(raw)
     }
 
     private func antigravityPayload(_ status: AntigravityStatus) -> [String: Any] {

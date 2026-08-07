@@ -10,11 +10,14 @@ function formatChatGptPlan(planType?: string | null): string | undefined {
   const raw = planType?.trim();
   if (!raw) return undefined;
   switch (raw.toLowerCase()) {
+    case 'free': return 'ChatGPT Free';
     case 'plus': return 'ChatGPT Plus';
     case 'pro': return 'ChatGPT Pro';
     case 'team': return 'ChatGPT Team';
     case 'enterprise': return 'ChatGPT Enterprise';
-    default: return `ChatGPT ${raw}`;
+    // Capitalize an unknown plan instead of passing the raw lowercase value
+    // through — it renders beside Plus/Pro/Team in the subscriptions footer.
+    default: return `ChatGPT ${raw.charAt(0).toUpperCase()}${raw.slice(1)}`;
   }
 }
 

@@ -661,7 +661,12 @@ private fun RateChipView(chip: RateChip) {
             color = TerrariumColors.HUDSubtext,
             fontSize = 9.sp,
             fontFamily = FontFamily.Monospace,
-            modifier = Modifier.width(16.dp),
+            // 16.dp fit "5h"/"7d" and nothing else, so "30d" wrapped onto a
+            // second line and pushed the gauge out of alignment. maxLines makes
+            // wrapping impossible; the width fits the longest label a window or
+            // a scoped model cap can produce. Mirrors the Swift rail.
+            maxLines = 1,
+            modifier = Modifier.width(30.dp),
         )
         Box(
             modifier = Modifier
@@ -814,11 +819,14 @@ private fun buildCodexRateChips(limits: CodexRateLimits?): List<RateChip> =
 private fun chatGptPlanLabel(raw: String?): String? {
     val trimmed = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     return when (trimmed.lowercase()) {
+        "free" -> "ChatGPT Free"
         "plus" -> "ChatGPT Plus"
         "pro" -> "ChatGPT Pro"
         "team" -> "ChatGPT Team"
         "enterprise" -> "ChatGPT Enterprise"
-        else -> "ChatGPT $trimmed"
+        // Capitalize an unknown plan type rather than passing the lowercased
+        // raw value through next to Plus/Pro/Team.
+        else -> "ChatGPT " + trimmed.replaceFirstChar { it.uppercase() }
     }
 }
 

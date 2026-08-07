@@ -1072,13 +1072,7 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
         until: String?
     ) -> String? {
         if let plan = planType?.trimmingCharacters(in: .whitespacesAndNewlines), !plan.isEmpty {
-            switch plan.lowercased() {
-            case "plus": return "ChatGPT Plus"
-            case "pro": return "ChatGPT Pro"
-            case "team": return "ChatGPT Team"
-            case "enterprise": return "ChatGPT Enterprise"
-            default: return "ChatGPT \(plan)"
-            }
+            return ChatGPTPlan.displayName(plan)
         }
         let normalizedMode = authMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let hasUntil = until.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false

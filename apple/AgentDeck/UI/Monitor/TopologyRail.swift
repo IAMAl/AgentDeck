@@ -997,7 +997,7 @@ struct TopologyRail: View {
         // inactive cap stays visible but neutral (never the critical ramp).
         for s in stateHolder.state.scopedLimits ?? [] {
             chips.append(.init(
-                label: s.compactLabel(5),
+                label: s.compactLabel(RateChip.labelMaxChars),
                 percent: s.percent,
                 reset: formatResetTime(s.resetsAt),
                 stale: isStale,
@@ -1048,13 +1048,7 @@ struct TopologyRail: View {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return nil
         }
-        switch raw.lowercased() {
-        case "plus": return "ChatGPT Plus"
-        case "pro": return "ChatGPT Pro"
-        case "team": return "ChatGPT Team"
-        case "enterprise": return "ChatGPT Enterprise"
-        default: return "ChatGPT \(raw)"
-        }
+        return ChatGPTPlan.displayName(raw)
     }
 
     // MARK: - Consumer creatures (session ↔ provider mapping)
@@ -1190,6 +1184,20 @@ enum LEDStatus {
 // MARK: - Provider row
 
 struct RateChip: Identifiable {
+    /// Longest label the column has to render. Window labels are short ("5h",
+    /// "30d"); a per-model scoped cap carries a model name, truncated to this
+    /// many characters at the call site so the bound is real and not a hope.
+    static let labelMaxChars = 5
+    /// Width that fits `labelMaxChars` at 9pt monospaced (~5.5pt per glyph).
+    ///
+    /// The column used to be 16pt — enough for "5h"/"7d" and nothing else — with
+    /// no line limit, so "30d" broke into "30"/"d" and "Fable" into "Fa"/"bl"/"e",
+    /// each wrap pushing the row taller and shoving the gauge out of alignment.
+    /// `lineLimit(1)` at the call site is what makes wrapping structurally
+    /// impossible; this width is what keeps the label readable instead of
+    /// truncated.
+    static let labelColumnWidth: CGFloat = 30
+
     let id = UUID()
     let label: String
     let percent: Double
@@ -1326,7 +1334,8 @@ private struct RateChipView: View {
             Text(chip.label)
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(TerrariumHUD.subtext)
-                .frame(width: 16, alignment: .leading)
+                .lineLimit(1)
+                .frame(width: RateChip.labelColumnWidth, alignment: .leading)
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {

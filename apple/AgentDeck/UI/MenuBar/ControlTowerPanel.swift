@@ -751,7 +751,12 @@ struct ControlTowerPanel: View {
             Text(label)
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(TerrariumHUD.subtext)
-                .frame(width: 22, alignment: .leading)
+                // Same bound as the topology rail: a scoped cap's label is a
+                // model name, and at 22pt "Fable" wrapped onto a second line and
+                // dragged the gauge out of alignment. lineLimit makes that
+                // impossible; the width keeps the label readable.
+                .lineLimit(1)
+                .frame(width: 38, alignment: .leading)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3)
