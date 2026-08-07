@@ -61,10 +61,14 @@ Per [Play's asset specs](https://support.google.com/googleplay/android-developer
 
 | Slot | Spec | Our file | ✓ |
 |---|---|---|---|
-| App icon | 512×512 PNG, no transparency | `1.0.5/icon-512.png` | 512×512, flattened onto `--ink-900` |
-| Feature graphic | 1024×500 PNG/JPG, no transparency | `1.0.5/feature-graphic-1024x500.png` | 1024×500 |
-| Phone screenshots | 2–8, 320–3840 px | `1.0.5/phone-01-dashboard.png`, `phone-02-attention.png` | 1080×2400 |
-| Tablet screenshots | 10" required to list as tablet-optimized | `1.0.5/tablet-01-dashboard.png` | 2560×1600 |
+| App icon | 512×512 PNG, no transparency | `1.0.6/icon-512.png` | 512×512, flattened onto `--ink-900` |
+| Feature graphic | 1024×500 PNG/JPG, no transparency | `1.0.6/feature-graphic-1024x500.png` | 1024×500 |
+| Phone screenshots | 2–8, 320–3840 px | `1.0.6/phone-01-dashboard.png`, `phone-02-focus.png` | 1080×2400 |
+| Tablet screenshots | 10" required to list as tablet-optimized | `1.0.6/tablet-01-dashboard.png` | 2560×1600 |
+
+Captured 2026-08-07 from the 1.0.6 release APK against the synthetic feed
+(`scripts/appstore-demo-orchestrator.mjs` on 9220, reached by `adb reverse`).
+The 1.0.5 set is kept for provenance; 1.0.6 supersedes it.
 
 **Screenshots are captured from the app, never mocked up** — Android 16
 emulators at the two Play form factors (phone 1080×2400 @420dpi, 10" tablet
