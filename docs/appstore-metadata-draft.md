@@ -162,6 +162,7 @@ claude code,ai,agent,dashboard,stream deck,monitoring,apme,openclaw,codex,ipad,c
 
 • 페어링 토큰이 더 이상 네트워크에서 조회되지 않습니다 — 기기 연결은 QR 페어링으로 진행됩니다
 • 페어링되지 않은 네트워크 연결은 모두 차단됩니다 (이 Mac의 앱은 영향 없음)
+• 페어링된 기기가 재연결·네트워크 변경 후에도 페어링을 유지합니다
 • 데몬이 재시작 후 포트를 되찾지 못하던 문제 수정
 • 안정성 개선
 
@@ -174,6 +175,7 @@ claude code,ai,agent,dashboard,stream deck,monitoring,apme,openclaw,codex,ipad,c
 연결·페어링 개선.
 
 • 보안 강화: Mac 연결에 QR 페어링을 사용합니다 (Mac 자동 검색은 그대로 동작합니다)
+• 한 번 페어링하면 유지됩니다 — 재연결할 때 다시 스캔하지 않아도 됩니다
 • 안정성 개선
 
 피드백은 언제든 환영합니다: admin@foundby.kr
@@ -417,6 +419,7 @@ claude code,ai,エージェント,ダッシュボード,stream deck,monitoring,a
 
 • ペアリングトークンがネットワーク上から取得できなくなりました — デバイス接続は QR ペアリングで行います
 • 未ペアリングのネットワーク接続はすべて拒否されます(この Mac 上のアプリには影響ありません)
+• ペアリング済みのデバイスは再接続やネットワーク変更後もペアリングを維持します
 • 再起動後にデーモンがポートを取り戻せない問題を修正
 • 安定性の改善
 
@@ -429,6 +432,7 @@ claude code,ai,エージェント,ダッシュボード,stream deck,monitoring,a
 接続とペアリングの改善。
 
 • セキュリティ強化: Mac への接続に QR ペアリングを使用します(Mac の自動検出はこれまで通りです)
+• 一度ペアリングすれば維持されます — 再接続のたびにスキャンし直す必要はありません
 • 安定性の改善
 
 フィードバックはいつでも歓迎します: admin@foundby.kr
@@ -673,6 +677,7 @@ Local-network security hardening.
 
 • The pairing token is no longer discoverable on your network — devices now pair via QR code
 • Unpaired network connections are rejected (apps on this Mac are unaffected)
+• Paired devices now stay paired across reconnects and network changes
 • Fixed the daemon failing to reclaim its port after a restart
 • Stability improvements
 
@@ -685,6 +690,7 @@ Thanks for the feedback — keep it coming: admin@foundby.kr
 Connection and pairing update.
 
 • Security hardening: connecting to your Mac now uses QR pairing (discovery still finds your Mac automatically)
+• Once paired, your Mac stays paired — reconnecting no longer asks you to scan again
 • Stability improvements
 
 Thanks for the feedback — keep it coming: admin@foundby.kr

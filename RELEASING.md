@@ -17,7 +17,7 @@ validators: [node scripts/build-design-system-viewer.mjs --check, pnpm verify-ve
 
 AgentDeck uses one `major.minor` compatibility line across every maintained surface. Two numeric `X.Y.Z` product versions are mutually compatible if and only if their first two components match. Patch values are ignored in both directions: for example, `1.0.1` and `1.0.9` are compatible regardless of which side is newer.
 
-Root [`VERSION`](VERSION) is the repository baseline and compatibility-line anchor, not a patch ceiling and not a runtime negotiation value. It currently reads **1.0.2**, so every maintained target must remain on compatibility line **1.0**. npm/CLI is at `1.0.10`; Stream Deck is at `1.0.4`; Android is at `1.0.5`; Apple is at `1.0.3`; ESP32 is at `1.0.2`; Ulanzi is at `1.0.2`. A target may also advance beyond root's patch without forcing unrelated targets or root to ship. Both Apple platforms are live: macOS `1.0.3` (approved 2026-08-05) and the iPhone/iPad companion `1.0.2`, whose first public release landed 2026-08-06 after the 2026-08-04 rejection.
+Root [`VERSION`](VERSION) is the repository baseline and compatibility-line anchor, not a patch ceiling and not a runtime negotiation value. It currently reads **1.0.2**, so every maintained target must remain on compatibility line **1.0**. npm/CLI is at `1.0.10`; Stream Deck is at `1.0.4`; Android is at `1.0.5`; Apple is at `1.0.4`; ESP32 is at `1.0.2`; Ulanzi is at `1.0.2`. A target may also advance beyond root's patch without forcing unrelated targets or root to ship. Both Apple platforms are live: macOS `1.0.3` (approved 2026-08-05) and the iPhone/iPad companion `1.0.2`, whose first public release landed 2026-08-06 after the 2026-08-04 rejection.
 
 Run `pnpm verify-version` before every build or release. CI rejects a `major.minor` compatibility split or a target-internal mismatch. Release CI additionally requires a channel tag's full `X.Y.Z` to equal that target's own declared version; it does not compare the tag's patch with root `VERSION`.
 
@@ -84,8 +84,8 @@ macOS has been publicly available since 2026-07-21 at [AgentDeck Dashboard on th
 
 | Platform | Version record | Build | State |
 |---|---|---|---|
-| macOS | `1.0.4` | 4301 | Submitted 2026-08-07 (issue #145 LAN security fix), **Waiting for Review**; `1.0.3` (4101) live |
-| iPhone/iPad | `1.0.4` | 4301 | Submitted 2026-08-07 (same fix, converges the two platforms on one version); `1.0.2` (4002) live since 2026-08-06T08:46Z |
+| macOS | `1.0.4` | 4401 | Resubmitted 2026-08-07 — build 4301 was **withdrawn from review** because it predated the client-side pairing-retention fix (#149 follow-up); `1.0.3` (4101) live |
+| iPhone/iPad | `1.0.4` | 4401 | Resubmitted 2026-08-07 alongside macOS, same reason; `1.0.2` (4002) live since 2026-08-06T08:46Z |
 
 iOS was answered as a `1.0.2` resubmission rather than moved up to `1.0.3`: a rejected version keeps its `MARKETING_VERSION`, and attaching the already-uploaded 4002 kept the reply and the binary consistent. macOS had no such constraint, so it went out at `1.0.3` with the newer 4101. **Do not describe an Apple release state from the tag or from the repository's own version numbers** — a single `apple-v*` tag can produce two builds whose store-side version records differ, as it did here. Read App Store Connect → 앱 심사 / App Review, whose submission table gives version, build and state per platform in one place.
 
