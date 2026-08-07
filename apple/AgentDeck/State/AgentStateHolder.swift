@@ -233,7 +233,12 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
                 self.failedBridgeIds.insert(bridge.id)
                 print("[Waterfall] blacklisted bridge \(bridge.id) after reconnect exhausted")
             }
-            self.savedUrl = nil
+            // savedUrl is deliberately KEPT. It is the only place this device
+            // stores its pairing token, and an unreachable Mac (asleep, DHCP
+            // change, Wi-Fi drop) is not an un-pairing — discarding it here
+            // turned every outage into a re-scan-the-QR event. The waterfall
+            // already prefers mDNS and only falls back to this URL, and the
+            // blacklist above stops a dead bridge being retried.
             self.waterfallStage = .idle
             self.startConnectionWaterfall()
         }
@@ -248,11 +253,16 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
             let candidates = self.discovery.bridges.filter { !self.failedBridgeIds.contains($0.id) }
             let bridge = candidates.first(where: { $0.agentType == "daemon" })
                 ?? candidates.first
-            if let bridge, bridge.wsUrl != self.connection.url {
+            // Switch only for a genuinely DIFFERENT daemon. Discovered URLs
+            // carry no token since #145, so a full-string comparison against a
+            // paired connection never matched — every reconnect blip looked
+            // like the daemon had moved, cleared the stored credential, and
+            // redialed unauthenticated (see PairingCredential).
+            if let bridge, !PairingCredential.sameEndpoint(bridge.wsUrl, self.connection.url) {
+                let target = PairingCredential.resolve(discoveredUrl: bridge.wsUrl, savedUrl: self.savedUrl)
                 DispatchQueue.main.async {
-                    self.savedUrl = nil
                     self.waterfallStage = .idle
-                    self.connectTo(bridge)
+                    self.connectTo(url: target)
                 }
                 return true  // abort reconnect
             }
@@ -1166,10 +1176,14 @@ final class AgentStateHolder: ObservableObject, @unchecked Sendable {
     /// Any connect is fresh intent, so it lifts the suppression an explicit stop
     /// installed — otherwise tapping a discovered bridge after "Stop Reconnecting"
     /// would connect once and then never auto-recover.
+    /// Dial a discovered bridge. Its URL carries no pairing token (discovery
+    /// stopped advertising credentials in #145), so an endpoint this device is
+    /// already paired with inherits the stored one here — the single chokepoint
+    /// every discovery-driven connect goes through.
     func connectTo(_ bridge: DiscoveredBridge) {
         guard !isTerminating else { return }
         userStoppedConnecting = false
-        connection.connect(to: bridge.wsUrl)
+        connection.connect(to: PairingCredential.resolve(discoveredUrl: bridge.wsUrl, savedUrl: savedUrl))
     }
 
     func connectTo(url: String) {

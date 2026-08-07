@@ -321,7 +321,15 @@ void wifiSaveProvisionedBridge(const char* ip, uint16_t port, const char* token)
     }
     prefs.putString(IPS10_WIFI_PREFS_BRIDGE_IP, ip);
     prefs.putUShort(IPS10_WIFI_PREFS_BRIDGE_PORT, port);
-    prefs.putString(IPS10_WIFI_PREFS_BRIDGE_TOKEN, token ? token : "");
+    // A caller with no token to offer must not be able to erase the one this
+    // board was provisioned with. Endpoint self-heal (DHCP drift) legitimately
+    // rewrites ip/port while knowing nothing about credentials, and discovery
+    // stopped carrying the token entirely in GitHub #145 — so an empty
+    // argument means "leave it alone", never "clear it". Only serial
+    // provisioning, which is handed a real token, replaces it.
+    if (token && token[0] != '\0') {
+        prefs.putString(IPS10_WIFI_PREFS_BRIDGE_TOKEN, token);
+    }
     prefs.end();
 #else
     (void)ip;

@@ -55,6 +55,7 @@ import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
+import dev.agentdeck.net.PairingCredential
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.state.TimelineStore
@@ -124,8 +125,11 @@ fun EinkMonitorScreen(
             connectionStatus == ConnectionStatus.CONNECTED -> {
                 discoveredBridges = emptyList()
                 // Keep the last network URL stable; localhost is always known implicitly.
-                if (shouldPersistBridgeUrl(currentUrl)) {
+                // mayPersist, not shouldPersist — see MainActivity: a
+                // tokenless URL must never displace a stored credential.
+                if (PairingCredential.mayPersist(currentUrl, displayPrefs.lastBridgeUrlFlow.first())) {
                     displayPrefs.setLastBridgeUrl(currentUrl)
+                    connection.pairedUrl = currentUrl
                 }
             }
             else -> {
@@ -159,6 +163,10 @@ fun EinkMonitorScreen(
         if (rawSavedUrl != null && savedUrl == null) {
             displayPrefs.setLastBridgeUrl(null)
         }
+        // Seed the credential the connection layer re-attaches to tokenless
+        // discovered endpoints (PairingCredential) — discovery stopped carrying
+        // tokens in #145, so this is the only copy the device has.
+        connection.pairedUrl = savedUrl
         einkDebug { "Auto-connect: savedUrl=$savedUrl" }
         // Try localhost (adb reverse USB connection) before mDNS
         if (connection.status.value != ConnectionStatus.CONNECTED) {

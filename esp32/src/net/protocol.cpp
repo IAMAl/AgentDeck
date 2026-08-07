@@ -725,11 +725,18 @@ static void handleWifiProvision(JsonObject& obj) {
 
     Serial.printf("[Provision] Received WiFi credentials: SSID=%s\n", ssid);
 
-    // Store bridge endpoint for direct WebSocket connection after WiFi connects
+    // Store bridge endpoint for direct WebSocket connection after WiFi connects.
+    // Serial provisioning is the authoritative credential channel, so a token it
+    // carries replaces whatever we hold (that is how `agentdeck token rotate`
+    // reaches a board). An ABSENT one still means "no information" — same rule
+    // discovery follows — so it must not blank a working credential.
     lockState();
     strncpy(g_state.bridgeIp, bridgeIp, sizeof(g_state.bridgeIp) - 1);
     g_state.bridgePort = bridgePort;
-    strncpy(g_state.authToken, authToken, sizeof(g_state.authToken) - 1);
+    if (authToken[0] != '\0') {
+        strncpy(g_state.authToken, authToken, sizeof(g_state.authToken) - 1);
+        g_state.authToken[sizeof(g_state.authToken) - 1] = '\0';
+    }
     unlockState();
 
     bool ok = false;

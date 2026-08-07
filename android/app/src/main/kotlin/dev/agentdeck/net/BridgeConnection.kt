@@ -108,7 +108,18 @@ class BridgeConnection private constructor() {
      * once after [PRIMARY_ATTEMPTS_BEFORE_FALLBACK] failed attempts on the primary,
      * before clearing the URL for re-discovery.
      */
-    fun connect(wsUrl: String, fallbackUrl: String? = null) {
+    /**
+     * Last URL known to carry a working pairing token, seeded from persisted
+     * prefs. Discovered bridge URLs have carried no token since #145, so a
+     * rediscovered endpoint we are already paired with re-attaches its
+     * credential here instead of dialing unauthenticated. Set it wherever the
+     * saved URL is read or written; see [PairingCredential].
+     */
+    @Volatile
+    var pairedUrl: String? = null
+
+    fun connect(requestedUrl: String, fallbackUrl: String? = null) {
+        val wsUrl = PairingCredential.resolve(requestedUrl, pairedUrl)
         bridgeDebug { "connect($wsUrl) — current status=${_status.value}" }
         // Cancel any existing connection/reconnect loop before starting fresh
         shouldReconnect = false

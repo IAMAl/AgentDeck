@@ -194,6 +194,24 @@ static void networkTask(void* param) {
         if (!Net::wifiRadioParked() && Net::wifiConnected() && !Net::wsConnected() && !Net::wsConnecting() && Net::mdnsPoll(bridge)) {
             bool ipChanged = (strcmp(currentBridgeIp, bridge.ip) != 0) || (currentBridgePort != bridge.port);
             if (ipChanged || !Net::wsConnected()) {
+                // Discovery answers WHERE the daemon is, never WHAT the token is.
+                // Since the daemon stopped advertising its pairing token over
+                // multicast (GitHub #145), `bridge.token` is empty against any
+                // current daemon — and an empty field means "no information",
+                // not "the token is now empty". Adopting it verbatim wiped the
+                // credential this board was provisioned with over serial, so
+                // every reconnect dialed tokenless and the daemon closed the
+                // socket 4001. Keep what we hold unless discovery actually
+                // carries one (a pre-#145 daemon still does).
+                char authToken[sizeof(g_state.authToken)] = {0};
+                lockState();
+                strncpy(authToken, g_state.authToken, sizeof(authToken) - 1);
+                unlockState();
+                if (bridge.token[0] != '\0') {
+                    strncpy(authToken, bridge.token, sizeof(authToken) - 1);
+                    authToken[sizeof(authToken) - 1] = '\0';
+                }
+
                 if (ipChanged) {
                     Serial.printf("[Net] Bridge (re)discovered via mDNS: %s:%d\n", bridge.ip, bridge.port);
                     strncpy(currentBridgeIp, bridge.ip, sizeof(currentBridgeIp) - 1);
@@ -204,21 +222,24 @@ static void networkTask(void* param) {
                     // IP on every reboot and loops on "connection reset by peer".
                     // Persisting the freshly-discovered endpoint here lets the
                     // board recover across reboots. No-op on non-IPS10 boards.
-                    Net::wifiSaveProvisionedBridge(bridge.ip, bridge.port, bridge.token);
+                    // The token passed here is the retained one, so an endpoint
+                    // self-heal can never cost the board its credential.
+                    Net::wifiSaveProvisionedBridge(bridge.ip, bridge.port, authToken);
                     // New endpoint: tear down old WS so wsConnect rebinds cleanly
                     if (Net::wsConnected()) Net::wsDisconnect();
                 }
                 lockState();
                 strncpy(g_state.bridgeIp, bridge.ip, sizeof(g_state.bridgeIp) - 1);
                 g_state.bridgePort = bridge.port;
-                strncpy(g_state.authToken, bridge.token, sizeof(g_state.authToken) - 1);
+                strncpy(g_state.authToken, authToken, sizeof(g_state.authToken) - 1);
+                g_state.authToken[sizeof(g_state.authToken) - 1] = '\0';
                 unlockState();
 
                 static uint32_t lastConnectTimeMs = 0;
                 uint32_t now = millis();
                 if (!Net::wsConnecting() && (ipChanged || (now - lastConnectTimeMs > 10000))) {
                     lastConnectTimeMs = now;
-                    Net::wsConnect(bridge.ip, bridge.port, bridge.token);
+                    Net::wsConnect(bridge.ip, bridge.port, authToken);
                 }
             }
         }

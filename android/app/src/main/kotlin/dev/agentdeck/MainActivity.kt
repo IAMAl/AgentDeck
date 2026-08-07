@@ -19,6 +19,7 @@ import dev.agentdeck.net.BridgeConnection
 import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DimConfig
+import dev.agentdeck.net.PairingCredential
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.ui.monitor.MonitorScreen
 import dev.agentdeck.ui.screen.EinkMonitorScreen
@@ -338,6 +339,10 @@ fun TabletDashboard(
         if (rawSavedUrl != null && savedUrl == null) {
             displayPrefs.setLastBridgeUrl(null)
         }
+        // Seed the credential the connection layer re-attaches to tokenless
+        // discovered endpoints (PairingCredential) — discovery stopped carrying
+        // tokens in #145, so this is the only copy the device has.
+        connection.pairedUrl = savedUrl
         mainDebug { "Auto-connect: savedUrl=$savedUrl" }
         // Try localhost (adb reverse USB connection) before mDNS
         if (connection.status.value != ConnectionStatus.CONNECTED) {
@@ -374,7 +379,15 @@ fun TabletDashboard(
     LaunchedEffect(connectionStatus) {
         if (connectionStatus == ConnectionStatus.CONNECTED) {
             val url = currentUrl
-            if (shouldPersistBridgeUrl(url)) displayPrefs.setLastBridgeUrl(url)
+            // mayPersist, not shouldPersist: a tokenless URL must never
+            // overwrite a stored credential for the same daemon. CONNECTED
+            // fires at the WebSocket handshake, which the daemon completes
+            // before closing an unauthorized peer 4001 — so a doomed attempt
+            // could otherwise race in and erase a working pairing.
+            if (PairingCredential.mayPersist(url, displayPrefs.lastBridgeUrlFlow.first())) {
+                displayPrefs.setLastBridgeUrl(url)
+                connection.pairedUrl = url
+            }
         }
     }
 
