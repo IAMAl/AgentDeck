@@ -37,6 +37,10 @@ struct DevicePreviewScreen: View {
     /// model is agent+state+count), but it turns the catalog into a live
     /// mirror for QA without hardware.
     @State private var followLive = false
+    /// Play the scripted arc from `DemoPlayback` instead of static selections.
+    /// Mutually exclusive with `followLive`: both answer "what drives this
+    /// preview", and letting them both win would make that unanswerable.
+    @State private var playDemo = false
     @EnvironmentObject private var stateHolder: AgentStateHolder
 
     /// Mark first-view-seen. The window is the only caller that should write
@@ -169,7 +173,7 @@ struct DevicePreviewScreen: View {
                     Text(agent.displayName).tag(agent)
                 }
             }
-            .disabled(followLive)
+            .disabled(followLive || playDemo)
 
             iosMenuField(
                 title: "State",
@@ -180,7 +184,7 @@ struct DevicePreviewScreen: View {
                     Text(state.displayName).tag(state)
                 }
             }
-            .disabled(followLive)
+            .disabled(followLive || playDemo)
 
             VStack(alignment: .leading, spacing: DesignTokens.Spacing.s2) {
                 Label("Sessions", systemImage: "square.stack.3d.up")
@@ -193,8 +197,18 @@ struct DevicePreviewScreen: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .disabled(followLive)
+                .disabled(followLive || playDemo)
             }
+
+            // Play the scripted arc. Offered first, and always available: it is
+            // the only mode that shows what AgentDeck *does* on a device with no
+            // Mac in sight, which is exactly the situation this screen exists for.
+            Toggle(isOn: $playDemo) {
+                Label("Play a demo session", systemImage: "play.circle")
+                    .font(.subheadline.weight(.medium))
+            }
+            .tint(DesignTokens.Kelp.s500)
+            .onChange(of: playDemo) { _, on in if on { followLive = false } }
 
             if stateHolder.state.bridgeConnected {
                 Toggle(isOn: $followLive) {
@@ -202,6 +216,7 @@ struct DevicePreviewScreen: View {
                         .font(.subheadline.weight(.medium))
                 }
                 .tint(DesignTokens.Kelp.s500)
+                .onChange(of: followLive) { _, on in if on { playDemo = false } }
             } else {
                 Label("Offline sample", systemImage: "checkmark.circle.fill")
                     .font(.subheadline.weight(.medium))
@@ -258,8 +273,9 @@ struct DevicePreviewScreen: View {
                 .overlay(DesignTokens.Ink.s500.opacity(0.5))
 
             TimelineView(.animation(minimumInterval: 0.1, paused: false)) { context in
-                deviceBody(animationFrame: frameFromTimeline(context.date))
-                    .scaleEffect(iosPreviewScale)
+                ScaledToFit(maxUpscale: iosPreviewScale) {
+                    deviceBody(animationFrame: frameFromTimeline(context.date))
+                }
             }
             .frame(maxWidth: .infinity, minHeight: 430)
             .padding(DesignTokens.Spacing.s5)
@@ -381,9 +397,11 @@ struct DevicePreviewScreen: View {
 
                     // The device itself
                     TimelineView(.animation(minimumInterval: 0.1, paused: false)) { context in
-                        deviceBody(animationFrame: frameFromTimeline(context.date))
+                        ScaledToFit(maxUpscale: 1) {
+                            deviceBody(animationFrame: frameFromTimeline(context.date))
+                        }
                     }
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 460)
                     .padding(.vertical, 12)
                 }
                 .padding(24)
@@ -429,7 +447,7 @@ struct DevicePreviewScreen: View {
             }
             .pickerStyle(.menu)
             .frame(maxWidth: 180)
-            .disabled(followLive)
+            .disabled(followLive || playDemo)
 
             Picker("State", selection: $selection.state) {
                 ForEach(PixooPreviewState.allCases) { state in
@@ -438,7 +456,7 @@ struct DevicePreviewScreen: View {
             }
             .pickerStyle(.menu)
             .frame(maxWidth: 180)
-            .disabled(followLive)
+            .disabled(followLive || playDemo)
 
             #if os(iOS)
             Text("Sessions")
@@ -452,17 +470,25 @@ struct DevicePreviewScreen: View {
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 200)
-            .disabled(followLive)
+            .disabled(followLive || playDemo)
 
             Spacer()
 
             // Live-follow: mirror the daemon's current sessions instead of
             // the synthetic picker state.
+            Toggle(isOn: $playDemo) {
+                Label("Demo", systemImage: "play.circle")
+            }
+            .toggleStyle(.button)
+            .help("Play a scripted session — the previews animate through a real multi-agent arc")
+            .onChange(of: playDemo) { _, on in if on { followLive = false } }
+
             Toggle(isOn: $followLive) {
                 Label("Live", systemImage: "dot.radiowaves.left.and.right")
             }
             .toggleStyle(.button)
             .help("Follow the live daemon state — previews mirror what devices show right now")
+            .onChange(of: followLive) { _, on in if on { playDemo = false } }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -475,7 +501,13 @@ struct DevicePreviewScreen: View {
         // Merge the toolbar selection (or, in live-follow mode, the daemon's
         // aggregate state) with the animation frame so each per-device view
         // receives a single, coherent DevicePreviewSelection.
-        let inputs = followLive ? Self.liveSelectionInputs(from: stateHolder.state) : nil
+        // A scripted state is shaped exactly like the daemon's, so the demo
+        // rides the live-follow seams rather than adding a parallel path — the
+        // previews (Pixoo/D200H emulators included) cannot tell them apart.
+        let demoState = playDemo ? DemoPlayback.state(at: Double(animationFrame) / 10.0) : nil
+        let sourceState = demoState ?? stateHolder.state
+        let driven = followLive || playDemo
+        let inputs = driven ? Self.liveSelectionInputs(from: sourceState) : nil
         let live = DevicePreviewSelection(
             agent: inputs?.agent ?? selection.agent,
             state: inputs?.state ?? selection.state,
@@ -486,7 +518,7 @@ struct DevicePreviewScreen: View {
             // (D200H etc.). Only attached in live-follow mode; the coarse
             // agent/state/count above stays as the fallback for previews that
             // don't consume it yet.
-            live: followLive ? LivePreviewData.from(stateHolder.state) : nil
+            live: driven ? LivePreviewData.from(sourceState) : nil
         )
 
         switch selection.device {
