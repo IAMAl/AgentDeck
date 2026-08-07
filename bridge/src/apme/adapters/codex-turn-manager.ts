@@ -22,6 +22,14 @@
  * landed seven Codex review iterations on. If hooks stop firing (Codex
  * Ink-TUI repaint glitch), parser fallback re-engages automatically.
  *
+ * One wedge that window can't fix on its own: a missed `codex_stop`
+ * leaves the turn open, the parser is muted for 30 s, and the next
+ * `codex_user_prompt_submit` used to be absorbed into the stale row —
+ * spinner forever, new prompt invisible. A prompt-submit is therefore
+ * treated as an authoritative boundary: finding an open turn that is
+ * neither a hook echo nor a late text fill-in, it closes the stale turn
+ * before opening the new row (see CODEX_PROMPT_* windows below).
+ *
  * Extracted from `bridge/src/index.ts wireAgentApme` so the codex segment
  * can be unit-tested with fake collector / fake ringbuffer / fake adapter.
  */
@@ -53,6 +61,19 @@ const CODEX_TOOL_SILENCE_MAX_MS = 15_000;
 // authoritative and demote PTY parser signals to no-ops. Any longer and
 // we re-arm the parser fallback in case hooks have stopped firing.
 const CODEX_HOOK_FRESHNESS_MS = 30_000;
+// A prompt-submit hook that finds a turn already open distinguishes three
+// cases by age and text. FILL: a text-less turn younger than this was
+// opened moments ago by codex_tool_start / parser spinner_start with the
+// prompt text arriving late — upsert the text, same turn. Anything older
+// is STALE: its codex_stop never arrived (hook drop, daemon restart), and
+// absorbing the new prompt into it would leave the row spinning forever
+// while the new prompt never gets a row — close it and open fresh.
+const CODEX_PROMPT_FILL_WINDOW_MS = 5_000;
+// DUP: the same prompt text delivered again while the turn it opened is
+// still young and tool-less is a hook echo, not a new turn. Mirrors the
+// collector's DUPLICATE_TURN_OPEN_WINDOW_MS guard so the timeline and the
+// APME store agree on what counts as an echo.
+const CODEX_PROMPT_DUP_WINDOW_MS = 15_000;
 
 export class CodexTurnManager {
   // ── PTY-mode turn-boundary state (legacy) ──
@@ -88,6 +109,23 @@ export class CodexTurnManager {
 
     if (evt.event === 'codex_user_prompt_submit') {
       const prompt = extractPrompt(evt.data ?? {});
+      if (this.chatStart !== null) {
+        const age = Date.now() - this.chatStart;
+        const isDupEcho = prompt.length > 0
+          && this.lastPromptText === prompt
+          && !this.toolActiveSinceLastSpinner
+          && age < CODEX_PROMPT_DUP_WINDOW_MS;
+        if (isDupEcho) return;
+        const isLateTextFill = this.lastPromptText === null
+          && age < CODEX_PROMPT_FILL_WINDOW_MS;
+        if (!isLateTextFill) {
+          // Stale open turn: codex_stop never arrived. A user prompt is an
+          // authoritative boundary, so close the old turn now — this runs
+          // before the index.ts hook branch ingests the new turn_start, so
+          // the APME turn being finalized here is still the stale one.
+          this.closeOpenTurnNow();
+        }
+      }
       this.openTimelineChatStart(prompt || undefined);
       return;
     }
@@ -117,17 +155,24 @@ export class CodexTurnManager {
     }
 
     if (evt.event === 'codex_stop') {
-      // Hook is authoritative — close synchronously. PTY-side timers /
-      // pending state get cleared so a late parser idle can't double-fire.
-      if (this.idleCloseTimer) { clearTimeout(this.idleCloseTimer); this.idleCloseTimer = null; }
-      this.exitToolSilence();
-      this.pendingPromptIdle = false;
-      this.pendingTailSnapshot = null;
-      this.toolActiveSinceLastSpinner = false;
-      if (this.chatStart !== null) {
-        this.closeTurn(this.chatStart);
-      }
+      // Hook is authoritative — close synchronously.
+      this.closeOpenTurnNow();
       return;
+    }
+  }
+
+  /** Close whatever turn is open, right now, clearing all PTY-side timers
+   *  and pending state so a late parser idle can't double-fire. Used by
+   *  codex_stop (normal close) and by a prompt-submit that finds a stale
+   *  open turn (missed codex_stop). */
+  private closeOpenTurnNow(): void {
+    if (this.idleCloseTimer) { clearTimeout(this.idleCloseTimer); this.idleCloseTimer = null; }
+    this.exitToolSilence();
+    this.pendingPromptIdle = false;
+    this.pendingTailSnapshot = null;
+    this.toolActiveSinceLastSpinner = false;
+    if (this.chatStart !== null) {
+      this.closeTurn(this.chatStart);
     }
   }
 
@@ -372,6 +417,7 @@ export class CodexTurnManager {
   private closeTurn(startedAt: number, tailSnapshot?: string): void {
     if (this.chatStart !== startedAt) return;
     const endedAt = Date.now();
+    const promptText = this.lastPromptText;
     this.chatStart = null;
     this.lastPromptText = null;
     const tail = tailSnapshot ?? this.ptyRingBuffer.getTail(5000);
@@ -412,7 +458,7 @@ export class CodexTurnManager {
     // 'topic' → real heuristic; fallback / generic label → 'none' so client
     // suppresses the (likely-redundant) detail pane.
     const respHint = response ? extractTopicHintWithKind(response) : { hint: null, kind: null };
-    const promptHint = this.lastPromptText ? extractTopicHintWithKind(this.lastPromptText) : { hint: null, kind: null };
+    const promptHint = promptText ? extractTopicHintWithKind(promptText) : { hint: null, kind: null };
     let label: string;
     let summaryKind: 'heuristic' | 'none';
     if (respHint.kind === 'topic' && respHint.hint) {
@@ -425,7 +471,7 @@ export class CodexTurnManager {
       label = (respHint.hint || promptHint.hint)!;
       summaryKind = 'none';
     } else {
-      label = promptSnippetFallback(this.lastPromptText, 60) ?? 'Codex turn completed';
+      label = promptSnippetFallback(promptText, 60) ?? 'Codex turn completed';
       summaryKind = 'none';
     }
     // chat_end is timeline-only (display marker for duration + topic).

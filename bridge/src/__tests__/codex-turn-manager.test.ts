@@ -245,6 +245,87 @@ describe('CodexTurnManager (hook-primary path)', () => {
   });
 });
 
+describe('CodexTurnManager (stale-turn recovery on prompt-submit)', () => {
+  let harness: Awaited<ReturnType<typeof makeHarness>>;
+
+  beforeEach(async () => {
+    harness = await makeHarness();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    harness.mgr.cleanup();
+    harness.store.close();
+    rmSync(harness.dir, { recursive: true, force: true });
+  });
+
+  it('missed codex_stop: next prompt closes the stale turn and opens a fresh row', () => {
+    const { mgr, entries, setTail } = harness;
+    setTail('turn-1 answer');
+
+    mgr.onHookEvent(hookEvt('codex_user_prompt_submit', { message: { content: 'q1' } }));
+    mgr.onHookEvent(hookEvt('codex_tool_start', { tool_name: 'shell', tool_input: { command: 'ls' } }));
+    // codex_stop is dropped (Ink repaint glitch / daemon restart). The
+    // parser is hook-muted, so nothing closes turn 1. User submits q2.
+    vi.advanceTimersByTime(60_000);
+
+    setTail('turn-1 answer\n› q2');
+    mgr.onHookEvent(hookEvt('codex_user_prompt_submit', { message: { content: 'q2' } }));
+
+    const startEntries = entries.filter((e) => e.type === 'chat_start');
+    expect(startEntries).toHaveLength(2);
+    expect(startEntries[1].raw).toBe('q2');
+    // Stale turn 1 got a chat_end; turn 2 is still open.
+    expect(entries.filter((e) => e.type === 'chat_end')).toHaveLength(1);
+
+    mgr.onHookEvent(hookEvt('codex_stop', {}));
+    expect(entries.filter((e) => e.type === 'chat_end')).toHaveLength(2);
+  });
+
+  it('late prompt text fills a tool_start-opened turn without splitting it', () => {
+    const { mgr, entries } = harness;
+
+    // Hook reorder: tool_start lands first and opens a text-less turn.
+    mgr.onHookEvent(hookEvt('codex_tool_start', { tool_name: 'shell', tool_input: { command: 'ls' } }));
+    vi.advanceTimersByTime(500);
+    mgr.onHookEvent(hookEvt('codex_user_prompt_submit', { message: { content: 'the real prompt' } }));
+
+    const startEntries = entries.filter((e) => e.type === 'chat_start');
+    expect(startEntries).toHaveLength(1);
+    expect(startEntries[0].raw).toBe('the real prompt');
+    expect(entries.filter((e) => e.type === 'chat_end')).toHaveLength(0);
+  });
+
+  it('duplicate prompt echo within the window is a no-op', () => {
+    const { mgr, entries } = harness;
+
+    mgr.onHookEvent(hookEvt('codex_user_prompt_submit', { message: { content: 'same q' } }));
+    vi.advanceTimersByTime(1_000);
+    mgr.onHookEvent(hookEvt('codex_user_prompt_submit', { message: { content: 'same q' } }));
+
+    expect(entries.filter((e) => e.type === 'chat_start')).toHaveLength(1);
+    expect(entries.filter((e) => e.type === 'chat_end')).toHaveLength(0);
+  });
+
+  it('text-less stale turn older than the fill window is closed, not filled', () => {
+    const { mgr, entries, setTail } = harness;
+    setTail('orphan tool output');
+
+    // Turn opened by tool_start only; its prompt hook never arrived, and
+    // neither did codex_stop. Well past the fill window, a new prompt must
+    // not be swallowed as a late text fill for that orphan.
+    mgr.onHookEvent(hookEvt('codex_tool_start', { tool_name: 'shell', tool_input: { command: 'ls' } }));
+    vi.advanceTimersByTime(20_000);
+
+    mgr.onHookEvent(hookEvt('codex_user_prompt_submit', { message: { content: 'q-next' } }));
+
+    const startEntries = entries.filter((e) => e.type === 'chat_start');
+    expect(startEntries).toHaveLength(2);
+    expect(startEntries[1].raw).toBe('q-next');
+    expect(entries.filter((e) => e.type === 'chat_end')).toHaveLength(1);
+  });
+});
+
 describe('CodexTurnManager (PTY-only fallback when hooks absent)', () => {
   let harness: Awaited<ReturnType<typeof makeHarness>>;
 
