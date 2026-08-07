@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { locateCodexRollout, lastAgentMessageFromCodexRollout } from '../codex-rollout-response.js';
+import { locateCodexRollout, lastAgentMessageFromCodexRollout, codexTurnOutcomeFromRollout } from '../codex-rollout-response.js';
 
 /**
  * Observed Codex response capture: codex_stop's payload rarely carries the
@@ -62,5 +62,79 @@ describe('codex rollout response reader', () => {
     expect(lastAgentMessageFromCodexRollout(SID, root)).toBe('');
     expect(lastAgentMessageFromCodexRollout('', root)).toBe('');
     expect(lastAgentMessageFromCodexRollout('../../etc/passwd', root)).toBe('');
+  });
+
+  /**
+   * A failed turn is the case Codex never reports through a hook: it does not
+   * run `Stop`, so this file is the only place the failure is observable. It
+   * used to be skipped entirely, which is what left the turn spinning with its
+   * cause sitting unread on disk.
+   */
+  describe('failed turns', () => {
+    it('reports the error a task_complete carries instead of a reply', () => {
+      writeRollout([
+        { type: 'event_msg', payload: { type: 'task_started' } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'hello' } },
+        { type: 'event_msg', payload: {
+          type: 'task_complete',
+          last_agent_message: null,
+          error: { message: "You've hit your usage limit.", codex_error_info: 'usage_limit_exceeded' },
+        } },
+      ]);
+      const out = codexTurnOutcomeFromRollout(SID, root);
+      expect(out.text).toBe('');
+      expect(out.error).toBe("You've hit your usage limit.");
+      expect(out.errorKind).toBe('usage_limit_exceeded');
+    });
+
+    it('reports a standalone error record', () => {
+      writeRollout([
+        { type: 'event_msg', payload: { type: 'task_started' } },
+        { type: 'event_msg', payload: { type: 'error', message: 'stream disconnected', codex_error_info: 'other' } },
+      ]);
+      expect(codexTurnOutcomeFromRollout(SID, root).error).toBe('stream disconnected');
+    });
+
+    it('unwraps the upstream JSON body Codex nests in the message', () => {
+      writeRollout([
+        { type: 'event_msg', payload: { type: 'task_started' } },
+        { type: 'event_msg', payload: {
+          type: 'error',
+          message: JSON.stringify({ type: 'error', status: 400, message: "The 'gpt-5.6-sol' model is not supported." }),
+        } },
+      ]);
+      expect(codexTurnOutcomeFromRollout(SID, root).error)
+        .toBe("The 'gpt-5.6-sol' model is not supported.");
+    });
+
+    /**
+     * The scan must stop at the turn's own opening record. Without that, a
+     * failed turn — which contributes no agent_message — walked into the
+     * PREVIOUS turn and returned its reply as this one's.
+     */
+    it('never inherits the previous turn\'s reply', () => {
+      writeRollout([
+        { type: 'event_msg', payload: { type: 'task_started' } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'first' } },
+        { type: 'event_msg', payload: { type: 'agent_message', message: 'an answer from the turn before' } },
+        { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'an answer from the turn before' } },
+        { type: 'event_msg', payload: { type: 'task_started' } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'second' } },
+        { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: null,
+          error: { message: 'quota exhausted' } } },
+      ]);
+      const out = codexTurnOutcomeFromRollout(SID, root);
+      expect(out.text).toBe('');
+      expect(out.error).toBe('quota exhausted');
+    });
+
+    it('still returns a successful reply unchanged', () => {
+      writeRollout([
+        { type: 'event_msg', payload: { type: 'task_started' } },
+        { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'done' } },
+      ]);
+      expect(codexTurnOutcomeFromRollout(SID, root).text).toBe('done');
+      expect(lastAgentMessageFromCodexRollout(SID, root)).toBe('done');
+    });
   });
 });

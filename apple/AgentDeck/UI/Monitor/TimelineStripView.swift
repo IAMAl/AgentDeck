@@ -2519,7 +2519,11 @@ func timelineIsRotatingEntry(_ entry: TimelineEntry, siblings: [TimelineEntry]) 
             // spinner immediately instead of animating out the full age cap.
             for s in siblings where s.ts >= entry.ts {
                 if !timelineSameRotatingSession(entry.sessionId, s.sessionId) { continue }
-                if s.type == .chatResponse || s.type == .chatEnd || s.type == .modelResponse {
+                // `error` closes a turn as surely as a response does — a failed
+                // request emits one instead of a reply, and leaving it off this
+                // list kept the spinner turning next to its own explanation.
+                if s.type == .chatResponse || s.type == .chatEnd
+                    || s.type == .modelResponse || s.type == .error {
                     return false
                 }
                 if s.type == .chatStart && s.ts > entry.ts { return false }

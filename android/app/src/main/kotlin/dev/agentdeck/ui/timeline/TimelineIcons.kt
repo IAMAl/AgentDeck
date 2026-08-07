@@ -157,7 +157,9 @@ fun turnHasLaterCompletion(entry: TimelineEntry, siblings: List<TimelineEntry>):
     for (s in siblings) {
         if (s.timestamp < entry.timestamp) continue
         if (!sameRotatingSession(entry.sessionId, s.sessionId)) continue
-        if (s.type == "chat_response" || s.type == "chat_end" || s.type == "model_response") return true
+        // `error` closes a turn as surely as a response does (mirrors Swift/TS).
+        if (s.type == "chat_response" || s.type == "chat_end" ||
+            s.type == "model_response" || s.type == "error") return true
     }
     return false
 }

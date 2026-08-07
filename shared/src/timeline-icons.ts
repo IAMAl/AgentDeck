@@ -160,7 +160,11 @@ export function isRotatingEntry(
       for (const s of siblings) {
         if (s.ts == null || s.ts < ts) continue;
         if (!sameRotatingSession(entry.sessionId, s.sessionId)) continue;
-        if (s.type === 'chat_response' || s.type === 'chat_end' || s.type === 'model_response') return false;
+        // `error` closes a turn as surely as a response does — a failed Codex
+        // request emits one instead of a reply, and leaving it off this list
+        // kept the spinner turning next to the error that explained it.
+        if (s.type === 'chat_response' || s.type === 'chat_end'
+            || s.type === 'model_response' || s.type === 'error') return false;
         if (s.type === 'chat_start' && s.ts > ts) return false;
       }
     }

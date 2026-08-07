@@ -88,16 +88,61 @@ function readTail(path: string, maxBytes: number): string {
 }
 
 /**
- * Parse the rollout tail for the turn's final response, newest record
- * first. `task_complete.last_agent_message` wins (authoritative turn
- * close); otherwise the last `agent_message` body — Codex emits
- * mid-turn `commentary` messages too, and the final one is the reply.
+ * What the rollout says happened on a turn.
+ *
+ * A turn ends one of two ways and the tail records both, but only one used to
+ * be read. `text` is the assistant's reply; `error` is the failure Codex wrote
+ * instead — quota exhausted, a model the account may not use, a stream that
+ * died. Codex does not run its `Stop` hook on a failed turn, so this file is
+ * the ONLY place the failure is observable, and dropping it is what left a
+ * turn spinning with its cause sitting unread on disk (issue: "ChatGPT free
+ * request fails, timeline stays in progress").
  */
-export function lastAgentMessageFromCodexRollout(sessionId: string, sessionsRoot?: string): string {
+export interface CodexTurnOutcome {
+  /** Assistant reply, empty when the turn produced none. */
+  text: string;
+  /** Human-readable failure text, when the turn ended in one. */
+  error?: string;
+  /** Codex's own classification, e.g. `usage_limit_exceeded`. */
+  errorKind?: string;
+}
+
+/** Longest error text worth carrying onto a timeline row. */
+const MAX_ERROR_CHARS = 400;
+
+function cleanErrorText(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  let text = raw.trim();
+  if (!text) return undefined;
+  // Codex nests the upstream JSON body inside `message` for HTTP failures.
+  // The useful sentence is the inner `message`; the envelope is noise.
+  if (text.startsWith('{')) {
+    try {
+      const inner = JSON.parse(text) as Record<string, unknown>;
+      const nested = (inner.message ?? (inner.error as Record<string, unknown> | undefined)?.message);
+      if (typeof nested === 'string' && nested.trim()) text = nested.trim();
+    } catch { /* not JSON after all — keep the raw text */ }
+  }
+  return text.length > MAX_ERROR_CHARS ? `${text.slice(0, MAX_ERROR_CHARS - 1)}…` : text;
+}
+
+/**
+ * Parse the rollout tail for how the turn ended, newest record first.
+ *
+ * The scan stops at the turn's own opening record (`task_started` /
+ * `user_message`). Without that stop a failed turn — which contributes no
+ * `agent_message` of its own — kept walking into the PREVIOUS turn and
+ * returned its reply as this one's, quietly attributing old text to a request
+ * that never produced any.
+ */
+export function codexTurnOutcomeFromRollout(sessionId: string, sessionsRoot?: string): CodexTurnOutcome {
   const path = locateCodexRollout(sessionId, sessionsRoot);
-  if (!path) return '';
+  if (!path) return { text: '' };
   const lines = readTail(path, TAIL_BYTES).split('\n');
-  let lastAgentMessage = '';
+  let text = '';
+  let error: string | undefined;
+  let errorKind: string | undefined;
+
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
     if (!line) continue;
@@ -110,20 +155,45 @@ export function lastAgentMessageFromCodexRollout(sessionId: string, sessionsRoot
     if (record.type !== 'event_msg') continue;
     const payload = record.payload as Record<string, unknown> | undefined;
     if (!payload || typeof payload !== 'object') continue;
-    if (payload.type === 'task_complete' && typeof payload.last_agent_message === 'string'
-        && payload.last_agent_message.trim()) {
-      return payload.last_agent_message.trim();
+
+    // Turn boundary — everything above belongs to an earlier turn.
+    if (payload.type === 'task_started' || payload.type === 'user_message') break;
+
+    if (payload.type === 'error') {
+      error ??= cleanErrorText(payload.message);
+      if (typeof payload.codex_error_info === 'string') errorKind ??= payload.codex_error_info;
+      continue;
     }
-    if (!lastAgentMessage && payload.type === 'agent_message'
+
+    if (payload.type === 'task_complete') {
+      const failure = payload.error as Record<string, unknown> | undefined;
+      if (failure && typeof failure === 'object') {
+        error ??= cleanErrorText(failure.message);
+        if (typeof failure.codex_error_info === 'string') errorKind ??= failure.codex_error_info;
+      }
+      if (typeof payload.last_agent_message === 'string' && payload.last_agent_message.trim()) {
+        return { text: payload.last_agent_message.trim(), error, errorKind };
+      }
+      continue;
+    }
+
+    if (!text && payload.type === 'agent_message'
         && typeof payload.message === 'string' && payload.message.trim()) {
-      lastAgentMessage = payload.message.trim();
-      // Keep scanning upward only for a task_complete that might supersede;
-      // but task_complete always FOLLOWS agent_message in the log, so if we
-      // reached an agent_message first (scanning backwards) there is no
-      // newer task_complete — return immediately.
+      text = payload.message.trim();
+      // task_complete always FOLLOWS agent_message, so scanning backwards past
+      // this point can only reach older records.
       break;
     }
   }
-  if (!lastAgentMessage) debug('codex-rollout', `no agent_message in tail of ${path}`);
-  return lastAgentMessage;
+
+  if (!text && !error) debug('codex-rollout', `no agent_message or error in tail of ${path}`);
+  return { text, error, errorKind };
+}
+
+/**
+ * Back-compat shim: the turn's reply text only.
+ * Prefer `codexTurnOutcomeFromRollout`, which also reports failures.
+ */
+export function lastAgentMessageFromCodexRollout(sessionId: string, sessionsRoot?: string): string {
+  return codexTurnOutcomeFromRollout(sessionId, sessionsRoot).text;
 }

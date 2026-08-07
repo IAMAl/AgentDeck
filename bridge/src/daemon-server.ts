@@ -149,7 +149,7 @@ import {
   DeviceVoiceReplyRouter, speakableReply, spokenDigest, pcmFromWav, type ReplySink,
 } from './device-voice-reply.js';
 import { rawSessionId, type StateSnapshot } from '@agentdeck/shared';
-import { lastAgentMessageFromCodexRollout } from './codex-rollout-response.js';
+import { codexTurnOutcomeFromRollout, lastAgentMessageFromCodexRollout } from './codex-rollout-response.js';
 import { callFoundationModelsHelper } from './foundation-models-helper.js';
 import {
   initModules,
@@ -1166,6 +1166,17 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
   // that is provably alive (agentic turns regularly outlive any fixed age
   // threshold). Declared before the HTTP handlers that populate it.
   const hookSessionsSeen = new Set<string>();
+  /**
+   * When each session last posted a hook.
+   *
+   * `hookSessionsSeen` answers "has this session EVER been heard from", which
+   * is the wrong question for the turn watchdog: the very prompt hook that
+   * opens a chat_start also adds the session to that set, so the row it
+   * created was permanently immune to the reaper meant to close it. A
+   * timestamp lets the watchdog ask the answerable question instead — has
+   * anything arrived SINCE this turn opened.
+   */
+  const hookSessionLastSeenAt = new Map<string, number>();
 
   // Codex OTel span state. Declared before the HTTP server because the
   // `/otel/v1/traces` handler closes over it — Codex's exporter can POST before
@@ -2058,6 +2069,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         // posts ANY hook after daemon startup is alive, and its open turn
         // (even one persisted before the restart) must not be force-closed.
         hookSessionsSeen.add(hookSid);
+        hookSessionLastSeenAt.set(hookSid, Date.now());
         // Claude hooks carry `cwd` (the worktree dir), not project_name/path —
         // capture it so APME runs are attributable to a specific worktree.
         const hookCwd = (typeof json.cwd === 'string' ? json.cwd
@@ -2225,9 +2237,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
           // authoritative source — the Codex counterpart of Claude's
           // transcript tail. Read it whenever a completion row might be
           // emitted (open turn, or a response-only close below).
-          const rolloutResponse = !tp && !inlineResponse && hookAgentType === 'codex-cli'
-            ? lastAgentMessageFromCodexRollout(hookSid)
-            : '';
+          const rolloutOutcome = hookAgentType === 'codex-cli' && !tp && !inlineResponse
+            ? codexTurnOutcomeFromRollout(hookSid)
+            : { text: '' as string, error: undefined as string | undefined, errorKind: undefined as string | undefined };
+          const rolloutResponse = rolloutOutcome.text;
           const responseText = tp
             ? stripUnsafeText(lastAssistantTextFromTranscript(tp))
             : stripUnsafeText(inlineResponse || rolloutResponse);
@@ -2275,12 +2288,25 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
                 ...base,
               } as TimelineEntry);
             } else {
-              // No readable response (interrupted / tool-only turn) — still
-              // close the row so the dashboards stop the spinner.
+              // No readable response (interrupted / tool-only turn / failure) —
+              // still close the row so the dashboards stop the spinner.
               const durS = Math.max(0, Math.round((now - (lastStart.startedAt ?? lastStart.ts)) / 1000));
+              // A turn that failed says so, in the words Codex used. The text
+              // is on disk in the rollout and used to be dropped, so a quota
+              // refusal read as an ordinary quiet turn.
+              if (rolloutOutcome.error) {
+                core.bridgeTimeline.addEntry({
+                  ts: now, type: 'error',
+                  raw: cleanRawText(rolloutOutcome.error.slice(0, 197)),
+                  detail: prepareMarkdownDetail(rolloutOutcome.error) || undefined,
+                  ...base,
+                } as TimelineEntry);
+              }
               core.bridgeTimeline.addEntry({
                 ts: now, type: 'chat_end',
-                raw: `Completed · ${formatDurationSec(durS)}`,
+                raw: rolloutOutcome.error
+                  ? `Failed · ${formatDurationSec(durS)}`
+                  : `Completed · ${formatDurationSec(durS)}`,
                 summaryKind: 'none',
                 ...base,
               } as TimelineEntry);
@@ -2798,6 +2824,32 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       if (reapedTurns > 0) log(`[agentdeck] Closed ${reapedTurns} orphaned chat_start rows as interrupted`);
     }, 5 * 60_000);
     chatReaperTimer.unref?.();
+
+    // Standing watchdog for turns that end without a closing signal.
+    //
+    // The startup pass above only ever runs once, so a turn that wedges an
+    // hour later is never revisited. Codex makes that the common case rather
+    // than the exception: it does NOT run its `Stop` hook when a request
+    // fails, so a rejected prompt (quota exhausted, a model the plan may not
+    // use) leaves its chat_start open with nothing on the way to close it, and
+    // every surface spins on it indefinitely. This sweeps for such rows and
+    // closes them, but only where the session has gone quiet SINCE the turn
+    // opened — a long-running turn that is still posting tool hooks is alive
+    // and must be left alone.
+    const TURN_WATCHDOG_INTERVAL_MS = 60_000;
+    const TURN_WATCHDOG_SILENCE_MS = 3 * 60_000;
+    const turnWatchdog = setInterval(() => {
+      const now = Date.now();
+      const active = new Set<string>();
+      for (const [sid, at] of hookSessionLastSeenAt) {
+        if (now - at <= TURN_WATCHDOG_SILENCE_MS) active.add(sid);
+      }
+      const closed = core.bridgeTimeline.reapOrphanChatStarts(
+        TURN_WATCHDOG_SILENCE_MS, now, active,
+      );
+      if (closed > 0) log(`[agentdeck] Turn watchdog closed ${closed} stalled chat_start row(s)`);
+    }, TURN_WATCHDOG_INTERVAL_MS);
+    turnWatchdog.unref?.();
   }
   // Enabled AFTER rehydration + reaping so the first write carries the restored
   // history instead of truncating the file to whatever this run has seen.
