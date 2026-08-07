@@ -13,7 +13,10 @@
  *   daemon broadcasts → recompute deck → per-key PNG/GIF → Ulanzi
  *   key press → cell action → view change and/or daemon command
  */
-import { buildSessionDeck, type DeckView, RECONNECT_BACKOFF_MS } from '@agentdeck/shared';
+import {
+  buildSessionDeck, type DeckView, RECONNECT_BACKOFF_MS,
+  VoicePttHold, voiceCommandForAction,
+} from '@agentdeck/shared';
 import {
   ANIM_FRAMES,
   ANIM_DELAY_MS,
@@ -319,7 +322,7 @@ const studioSupervisor = new ReconnectSupervisor({
 });
 // Register handlers BEFORE the first connect so the initial open isn't missed.
 $UD.onConnected(() => { dinfo(TAG, 'Ulanzi Studio bridge connected'); studioSupervisor.noteOpen(); });
-$UD.onClose(() => { dlog(TAG, 'Ulanzi Studio bridge closed'); studioSupervisor.noteClosed(); });
+$UD.onClose(() => { dlog(TAG, 'Ulanzi Studio bridge closed'); cancelActiveHold('studio socket closed'); studioSupervisor.noteClosed(); });
 $UD.onError((e) => { derr(TAG, `Ulanzi bridge error: ${e}`); studioSupervisor.noteClosed(); });
 studioSupervisor.start();
 
@@ -333,8 +336,42 @@ $UD.onAdd((m: UlanziMessage) => {
 $UD.onClear((m: UlanziMessage) => {
   const param = m.param as unknown;
   const items = Array.isArray(param) ? (param as Array<{ context: string }>) : [];
-  for (const it of items) instances.delete(it.context);
+  for (const it of items) {
+    instances.delete(it.context);
+    // A key that disappears mid-hold (page change, profile switch) would
+    // otherwise leave the daemon capturing until its 30s cap.
+    const dispatch = voiceHold.disappear(it.context);
+    if (!dispatch) continue;
+    const cmd = voiceCommandForAction(dispatch.action, dispatch.sessionId);
+    if (cmd) { dlog(TAG, 'voice hold cancelled (key removed)'); daemon.send({ ...cmd }); }
+  }
 });
+
+/** One hold at a time, shared with the Stream Deck key's semantics. */
+const voiceHold = new VoicePttHold();
+
+/**
+ * End a hold whose key release can no longer reach us.
+ *
+ * The capture's whole lifetime is the keydown/keyUp pair, so anything that can
+ * eat the release — Studio's socket dropping, the daemon link flapping — would
+ * otherwise leave the daemon recording to its 30s cap and then delivering 30s
+ * of room noise into the user's session as a prompt.
+ */
+function cancelActiveHold(why: string): void {
+  const dispatch = voiceHold.cancelActive();
+  if (!dispatch) return;
+  const cmd = voiceCommandForAction(dispatch.action, dispatch.sessionId);
+  dlog(TAG, `voice hold cancelled (${why})`);
+  if (cmd) daemon.send({ ...cmd });
+}
+
+/** The voice command a key currently carries, if it is the VOICE tile. */
+function voiceTargetFor(key: string): string | undefined {
+  const action = deckFor(0, false).get(key)?.action;
+  if (action?.kind !== 'command' || action.command.type !== 'voice') return undefined;
+  return (action.command as { sessionId?: string }).sessionId ?? '';
+}
 
 function onPress(m: UlanziMessage): void {
   flog('RAW', 'press', m);
@@ -342,6 +379,9 @@ function onPress(m: UlanziMessage): void {
   if (!inst) { flog(TAG, `press: no instance for context ${m.context} (key=${m.key})`); $UD.emit('add', m); return; }
   const known = positions().sort();
   flog(TAG, `press key=${inst.key} view=${view.mode} positions=[${known.join(',')}]`);
+  // VOICE is hold-to-talk, driven by the keydown/keyUp pair below. `run` fires
+  // for the same physical press, so it must not also fire the capture.
+  if (voiceTargetFor(inst.key) !== undefined) { flog(TAG, `press ${inst.key} → voice (held, run ignored)`); return; }
   const action = deckFor(0, false).get(inst.key)?.action;
   if (!action) { dlog(TAG, `press ${inst.key} (inert)`); return; }
   switch (action.kind) {
@@ -378,12 +418,42 @@ function onPress(m: UlanziMessage): void {
   }
 }
 // IMPORTANT: the device fires BOTH `keydown` AND `run` for one physical press
-// (~300ms apart). Handle ONLY `run` (the SDK's documented main trigger) so a
-// single press is a single action — wiring both double-fires and cancels out
-// (open→back). keydown/keyUp are diagnostic-only.
+// (~2ms apart, measured on hardware). Handle ONLY `run` (the SDK's documented
+// main trigger) so a single press is a single action — wiring both double-fires
+// and cancels out (open→back).
+//
+// VOICE is the one exception, and it has to be: a capture ends when the user
+// lets go, which `run` cannot express. The device does deliver a truthful
+// keydown/keyUp pair (measured: down 17:35:10.399, up 17:35:13.298 for a 2.9 s
+// hold), so the VOICE key alone rides that pair and `run` skips it. This also
+// takes the stop off the tile's state — the previous tap-toggle could only stop
+// once `voice_state` had come back and repainted the key, so a user who simply
+// held it, as they would on a Stream Deck, never stopped the capture at all.
 $UD.onRun(onPress);
-$UD.onKeyDown((m: UlanziMessage) => flog('RAW', 'keydown(ignored)', m.key));
-$UD.onKeyUp((m: UlanziMessage) => flog('RAW', 'keyUp(ignored)', m.key));
+
+
+
+$UD.onKeyDown((m: UlanziMessage) => {
+  // Recover an unknown context the same way `run` does. keydown precedes `run`
+  // by ~2ms, so without this the first press after a re-add would be lost
+  // entirely: keydown ignored, `run` registers the key and then skips it as a
+  // VOICE tile, keyUp finds no hold.
+  if (!instances.has(m.context)) $UD.emit('add', m);
+  const inst = instances.get(m.context);
+  const sessionId = inst ? voiceTargetFor(inst.key) : undefined;
+  if (sessionId === undefined) { flog('RAW', 'keydown(ignored)', m.key); return; }
+  voiceHold.begin(m.context, sessionId || undefined);
+  const cmd = voiceCommandForAction('voice-ptt-begin', sessionId || undefined);
+  if (cmd) { dlog(TAG, `voice hold begin on ${inst!.key}`); daemon.send({ ...cmd }); }
+});
+
+$UD.onKeyUp((m: UlanziMessage) => {
+  const dispatch = voiceHold.release(m.context);
+  if (!dispatch) { flog('RAW', 'keyUp(ignored)', m.key); return; }
+  const cmd = voiceCommandForAction(dispatch.action, dispatch.sessionId);
+  if (cmd) { dlog(TAG, `voice hold ${dispatch.action}`); daemon.send({ ...cmd }); }
+});
+
 
 // ---- AgentDeck daemon side ----
 let voiceErrorResetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -423,7 +493,7 @@ daemon.on('connected', () => {
   daemon.send({ type: 'query_usage' });
   scheduleRender();
 });
-daemon.on('disconnected', () => { dlog(TAG, 'daemon disconnected'); store.setConnected(false); view = { mode: 'list', page: 0 }; scheduleRender(); });
+daemon.on('disconnected', () => { dlog(TAG, 'daemon disconnected'); cancelActiveHold('daemon disconnected'); store.setConnected(false); view = { mode: 'list', page: 0 }; scheduleRender(); });
 daemon.start();
 
 dinfo(TAG, 'AgentDeck Ulanzi plugin started');
