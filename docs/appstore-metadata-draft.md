@@ -155,6 +155,30 @@ AgentDeck은 독립적인 프로젝트이며 Anthropic, OpenAI, Google, SST, Cor
 claude code,ai,agent,dashboard,stream deck,monitoring,apme,openclaw,codex,ipad,companion,developer
 ```
 
+### What's New (v1.0.4, macOS — 보안 강화, #145)
+
+```
+로컬 네트워크 보안 강화.
+
+• 페어링 토큰이 더 이상 네트워크에서 조회되지 않습니다 — 기기 연결은 QR 페어링으로 진행됩니다
+• 페어링되지 않은 네트워크 연결은 모두 차단됩니다 (이 Mac의 앱은 영향 없음)
+• 데몬이 재시작 후 포트를 되찾지 못하던 문제 수정
+• 안정성 개선
+
+피드백은 언제든 환영합니다: admin@foundby.kr
+```
+
+### What's New (v1.0.4, iOS — 페어링 변경 동반)
+
+```
+연결·페어링 개선.
+
+• 보안 강화: Mac 연결에 QR 페어링을 사용합니다 (Mac 자동 검색은 그대로 동작합니다)
+• 안정성 개선
+
+피드백은 언제든 환영합니다: admin@foundby.kr
+```
+
 ### What's New (v1.0.2, macOS — 유지보수)
 
 > 1.0.1이 공개된 적 없고 1.0.0이 라이브라, 1.0.0→1.0.2로 올라오는 사용자가 받는 1.0.1+1.0.2 수정을 합침 (App Store Swift 앱 실제 포함 항목만; ESP32 시리얼 등 CLI 전용 제외). 2026-07-24 심사 제출된 실제 문구.
@@ -386,6 +410,30 @@ AgentDeckは独立したプロジェクトであり、Anthropic、OpenAI、Googl
 claude code,ai,エージェント,ダッシュボード,stream deck,monitoring,apme,openclaw,codex,ipad,developer
 ```
 
+### What's New (v1.0.4, macOS — セキュリティ強化, #145)
+
+```
+ローカルネットワークのセキュリティ強化。
+
+• ペアリングトークンがネットワーク上から取得できなくなりました — デバイス接続は QR ペアリングで行います
+• 未ペアリングのネットワーク接続はすべて拒否されます(この Mac 上のアプリには影響ありません)
+• 再起動後にデーモンがポートを取り戻せない問題を修正
+• 安定性の改善
+
+フィードバックはいつでも歓迎します: admin@foundby.kr
+```
+
+### What's New (v1.0.4, iOS — ペアリング変更対応)
+
+```
+接続とペアリングの改善。
+
+• セキュリティ強化: Mac への接続に QR ペアリングを使用します(Mac の自動検出はこれまで通りです)
+• 安定性の改善
+
+フィードバックはいつでも歓迎します: admin@foundby.kr
+```
+
 ### What's New (v1.0.2, macOS — メンテナンス)
 
 ```
@@ -613,6 +661,33 @@ AgentDeck is independent and is not affiliated with or endorsed by Anthropic, Op
 
 ```
 claude code,ai,agent,dashboard,monitoring,apme,openclaw,codex,ipad,stream deck,developer
+```
+
+### What's New (v1.0.4, macOS — security hardening, #145)
+
+Submitted 2026-08-07. Delta is 1.0.3 → 1.0.4: the LAN default-deny fix (GitHub
+issue #145) plus the daemon port-reclaim fix. App-Store-app items only.
+
+```
+Local-network security hardening.
+
+• The pairing token is no longer discoverable on your network — devices now pair via QR code
+• Unpaired network connections are rejected (apps on this Mac are unaffected)
+• Fixed the daemon failing to reclaim its port after a restart
+• Stability improvements
+
+Thanks for the feedback — keep it coming: admin@foundby.kr
+```
+
+### What's New (v1.0.4, iOS — pairing change rider)
+
+```
+Connection and pairing update.
+
+• Security hardening: connecting to your Mac now uses QR pairing (discovery still finds your Mac automatically)
+• Stability improvements
+
+Thanks for the feedback — keep it coming: admin@foundby.kr
 ```
 
 ### What's New (v1.0.2, macOS — maintenance)

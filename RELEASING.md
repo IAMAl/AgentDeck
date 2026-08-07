@@ -80,12 +80,12 @@ Tag prefixes remain because channels ship independently and may point to differe
 
 macOS has been publicly available since 2026-07-21 at [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497), first as `1.0.0` and — since the 2026-07-24 approval of build 3901 — as `1.0.2`. The iPhone/iPad companion's first release (also `1.0.2`, build 3901) was **rejected on 2026-08-04 under Guideline 2.1(a)**.
 
-**The two platforms then diverged, and their version records do not match.** Verified in App Store Connect on 2026-08-06:
+**The two platforms then diverged, and their version records do not match.** Verified in App Store Connect on 2026-08-07:
 
 | Platform | Version record | Build | State |
 |---|---|---|---|
-| macOS | `1.0.3` | 4101 | Submitted 2026-08-05, **approved**, automatic release |
-| iPhone/iPad | `1.0.2` | 4002 | Resubmitted 2026-08-05, **approved** — released 2026-08-06T08:46Z, the companion's first public release |
+| macOS | `1.0.4` | 4301 | Submitted 2026-08-07 (issue #145 LAN security fix), **Waiting for Review**; `1.0.3` (4101) live |
+| iPhone/iPad | `1.0.4` | 4301 | Submitted 2026-08-07 (same fix, converges the two platforms on one version); `1.0.2` (4002) live since 2026-08-06T08:46Z |
 
 iOS was answered as a `1.0.2` resubmission rather than moved up to `1.0.3`: a rejected version keeps its `MARKETING_VERSION`, and attaching the already-uploaded 4002 kept the reply and the binary consistent. macOS had no such constraint, so it went out at `1.0.3` with the newer 4101. **Do not describe an Apple release state from the tag or from the repository's own version numbers** — a single `apple-v*` tag can produce two builds whose store-side version records differ, as it did here. Read App Store Connect → 앱 심사 / App Review, whose submission table gives version, build and state per platform in one place.
 
