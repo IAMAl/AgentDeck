@@ -408,6 +408,60 @@ docs/devices.md 인증 컬럼 현행화, esp32-client-contract.md, CLAUDE.md 불
 
 ---
 
+## 2026-08-07 — Codex 프롬프트는 stop 훅이 죽어도 턴 경계다
+
+### 문제
+
+PTY 관리 경로의 Codex 타임라인 wedge (`bridge/src/apme/adapters/codex-turn-manager.ts`).
+`codex_stop` 이 유실되면(잉크 TUI 재페인트 글리치, 데몬 재시작) 턴이 열린 채 남고,
+30초 hook-freshness 창이 PTY 파서를 무음 처리하며, 다음 `codex_user_prompt_submit`
+은 `openTimelineChatStart` 의 upsert 경로로 **기존 stale 행에 흡수**됐다 — 행은
+영원히 스피닝, 새 프롬프트는 행을 얻지 못함. 심사 빌드에서 의도적으로 제외했던
+상태기계 변경을 이번에 반영.
+
+### 해결
+
+프롬프트 훅을 권위 있는 턴 경계로 승격: 열린 턴을 발견하면 stale 턴을 닫고
+새 행을 연다(`f30d4ada`). 실제 플로우 보존을 위한 예외 2건 — 5초 내 텍스트 없는
+턴은 late text fill(tool_start 훅 역순 도착), 15초 내 동일 프롬프트·툴 없음은
+훅 에코 no-op(collector 의 `DUPLICATE_TURN_OPEN_WINDOW_MS` 가드 미러).
+부수 수정: `closeTurn` 이 `lastPromptText` 를 먼저 null 로 지운 뒤 읽어서
+프롬프트 기반 chat_end 라벨이 한 번도 동작한 적 없던 버그 — 로컬 캡처로 해결.
+
+### 핵심 설계 결정
+
+**리스너 등록 순서가 곧 정합성 근거다.** `wireAgentApme`(매니저)가 index.ts 의
+업스트림 APME 수집 리스너보다 먼저 등록되므로, 프롬프트 훅 시점에 매니저가
+`closeTurnForSession` 을 불러도 collector 의 활성 턴은 아직 stale 턴이다 —
+새 턴은 그 뒤 업스트림이 연다. 이 순서가 바뀌면 새 턴을 닫아버리니, stale-close
+는 반드시 매니저 쪽(선등록 리스너)에서 해야 한다.
+
+검증: 신규 테스트 4건 포함 vitest 170 파일 2733 테스트 green.
+
+---
+
+## 2026-08-07 — Google Play 검토 제출: 무료 앱도 KR 규정 검사에 하드 블록된다
+
+### 문제
+
+앱 콘텐츠 11개 항목·AAB(vc8)·국가 177개까지 저장했는데 게시 개요의 사전 검사가
+"대한민국 개발자 추가 정보"로 **검토 전송 버튼을 비활성화**. 도움말은 사업자번호/
+통신판매신고를 유료·인앱결제 업체 전용 요건이라 하지만, 조직 계정은 무료 앱이어도
+검사에서 예외가 아니었다. 폼은 전자상거래 라이선스 번호가 비면 저장을 거부 —
+통신판매업 신고가 없는 조직은 넣을 번호 자체가 없다.
+
+### 해결
+
+계정 소유자가 전자상거래 라이선스 번호에 **"해당없음" 텍스트를 그대로 입력**하니
+저장·검사 모두 통과. 변경사항 11개 검토 제출 완료(통상 7일, 관리형 게시 OFF 라
+승인 즉시 게시). 그 밖의 콘솔 함정: IARC 설문은 문항을 다 채워도 **저장을 먼저
+눌러야 다음 버튼이 활성화**되고, FOREGROUND_SERVICE_CONNECTED_DEVICE 선언은
+**데모 영상 URL 이 필수**다(README 의 공식 데모 유튜브 링크로 통과). 상세 절차와
+계정 소유자 전용 관문은 `marketplace/play/LISTING.md` 와 메모리
+`play-console-owner-only-verification-gate` 에 기록.
+
+---
+
 ## 2026-08-07 — LAN 보안 리포트(#145): 페어링 토큰을 스스로 나눠주던 데몬
 
 ### 문제
