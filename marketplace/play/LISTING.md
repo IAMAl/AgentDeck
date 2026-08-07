@@ -63,8 +63,24 @@ Per [Play's asset specs](https://support.google.com/googleplay/android-developer
 |---|---|---|---|
 | App icon | 512×512 PNG, no transparency | `1.0.6/icon-512.png` | 512×512, flattened onto `--ink-900` |
 | Feature graphic | 1024×500 PNG/JPG, no transparency | `1.0.6/feature-graphic-1024x500.png` | 1024×500 |
-| Phone screenshots | 2–8, 320–3840 px | `1.0.6/phone-01-dashboard.png`, `phone-02-focus.png` | 1080×2400 |
-| Tablet screenshots | 10" required to list as tablet-optimized | `1.0.6/tablet-01-dashboard.png` | 2560×1600 |
+| Phone screenshots | 2–8, 320–3840 px, **16:9 or 9:16** | `1.0.6/phone-0{1..4}-*.png` | 1080×2400, 4 shots |
+| 7" tablet screenshots | **required**, 320–3840 px, 16:9 or 9:16 | `1.0.6/tablet7-0{1,2}-*.png` | 1920×1080 |
+| 10" tablet screenshots | **required**, 1080–7680 px, 16:9 or 9:16 | `1.0.6/tablet10-0{1,2}-*.png` | 2560×1440 |
+
+★ **Both tablet sizes are required, and both enforce 16:9 / 9:16.** The
+`ad_tablet36` AVD is 2560×**1600** — 16:10 — so its native capture is rejected
+without a word about why. Drive the emulator to a conforming size first
+(`adb -s emulator-<p> shell wm size 2560x1440` for the 10" slot, `1920x1080`
+for the 7" one, then `wm size reset`), restart the app so it re-lays-out, and
+capture. Four phone shots, not two: below four, Play's own note says the
+listing is ineligible for promotion.
+
+★ **Upload into the slot's own dialog.** Every slot's "애셋 추가" opens a picker
+scoped to that slot, and they all look identical. Uploading the feature graphic
+while the app-icon picker happened to be open put a 1024×500 file through the
+512×512 validator, which the library then flagged with a generic prohibition
+icon — the file was fine, the slot was wrong. Re-open the right picker (its
+file input gets a new element id) before every upload.
 
 Captured 2026-08-07 from the 1.0.6 release APK against the synthetic feed
 (`scripts/appstore-demo-orchestrator.mjs` on 9220, reached by `adb reverse`).
