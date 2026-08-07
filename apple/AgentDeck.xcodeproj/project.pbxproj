@@ -261,6 +261,7 @@
 		A574521C09137ADFCCD9495A /* ProjectNameResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F7897FE76F480951CD34749 /* ProjectNameResolver.swift */; };
 		A5FEB3C538CE2A4C9C385F2F /* TerrariumRules.generated.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CF3CC89437DF95538AA2AE5 /* TerrariumRules.generated.swift */; };
 		A7560FE516D5460EB526FA3A /* DaemonActorIndependenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E84D819AA86894944600240C /* DaemonActorIndependenceTests.swift */; };
+		A78A1918B0FC99BAA4B1F6E9 /* HttpAccessPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D805A12FAC706136018710BC /* HttpAccessPolicyTests.swift */; };
 		A7C44EC8857DB5EA6890BACA /* MatrixTerminalPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AECC310DB5852BD8814BC04 /* MatrixTerminalPreviews.swift */; };
 		A7E6158A1A9242B77356F1E8 /* MiniTomlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B1754EEF69FF454C638CF1C /* MiniTomlTests.swift */; };
 		A8293F557BD8D3FB91BF4CF4 /* StateTimelineGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38C2485BC8700CBDD9EDE70E /* StateTimelineGenerator.swift */; };
@@ -323,6 +324,7 @@
 		CB4DB4586BC5196412C3429C /* UsageAPIClientThreadingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9841FBF8AFC5D5C65809F8B /* UsageAPIClientThreadingTests.swift */; };
 		CBB9FC921D8EFD210A80BC6D /* DisplayMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1F43DCAC6100C73B98139EA /* DisplayMonitor.swift */; };
 		CCB2A2848DDAADBEB6F7BB53 /* OctopusCreature.swift in Sources */ = {isa = PBXBuildFile; fileRef = 776467350B975D0CA1A18E84 /* OctopusCreature.swift */; };
+		CD8B866925EF6BC839EC467D /* HttpAccessPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D805A12FAC706136018710BC /* HttpAccessPolicyTests.swift */; };
 		CF27ABB66E4B268C31C44E6E /* IntegrationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01B7BAB1080F7958F74A1B74 /* IntegrationsView.swift */; };
 		CFCABF9422E74B8CF2A23C7E /* CodexOtelParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BE1D983995443760EDE3A4A /* CodexOtelParserTests.swift */; };
 		D036600F5679C1A191132F87 /* SingletonGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B5C866AF54937CD8E433F49 /* SingletonGuard.swift */; };
@@ -609,6 +611,7 @@
 		D2FD383032B3C47C9B547426 /* LocalSessionDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSessionDiscovery.swift; sourceTree = "<group>"; };
 		D53F4A08898B95CB592E133A /* LightRaySystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightRaySystem.swift; sourceTree = "<group>"; };
 		D54B6A5B14E7FEFC4CD93EF2 /* ApmeTaskBoundaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApmeTaskBoundaryTests.swift; sourceTree = "<group>"; };
+		D805A12FAC706136018710BC /* HttpAccessPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HttpAccessPolicyTests.swift; sourceTree = "<group>"; };
 		D8FF164B1E859BEE08BBF646 /* TopologyRail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopologyRail.swift; sourceTree = "<group>"; };
 		DA46D3D4A84FBDE6C8B3AB62 /* StateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateMachine.swift; sourceTree = "<group>"; };
 		DA58B8921954E616F8ECCC53 /* SettingsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsScreen.swift; sourceTree = "<group>"; };
@@ -711,6 +714,7 @@
 				C671E2324E45E6745813C681 /* ESP32WifiForwardTests.swift */,
 				234CFF4B2832E6B1CA98AF10 /* GatewayParityTests.swift */,
 				165E4184E24C198326D600A6 /* HookIdleTTLTests.swift */,
+				D805A12FAC706136018710BC /* HttpAccessPolicyTests.swift */,
 				3C6D9385857E3BEB95A91496 /* HTTPServerMainThreadStallTests.swift */,
 				640AC95BED93D142107D828E /* IDotMatrixProtocolTests.swift */,
 				3B1754EEF69FF454C638CF1C /* MiniTomlTests.swift */,
@@ -1328,6 +1332,7 @@
 				D369DAE31A2E86FD08922453 /* GatewayParityTests.swift in Sources */,
 				136F28B1F6B5E4729ADA92EC /* HTTPServerMainThreadStallTests.swift in Sources */,
 				C13B92B69ACA5F6CA1D8EE1E /* HookIdleTTLTests.swift in Sources */,
+				A78A1918B0FC99BAA4B1F6E9 /* HttpAccessPolicyTests.swift in Sources */,
 				89C78B3EB58A06C87CC5CDE0 /* IDotMatrixProtocolTests.swift in Sources */,
 				23EA982402128EB1158AB6A9 /* MiniTomlTests.swift in Sources */,
 				BA45B7FBDCFDD8971904714D /* ObservedAskUserQuestionTests.swift in Sources */,
@@ -1368,6 +1373,7 @@
 				5E39A0DA9E8B9E175292E84D /* GatewayParityTests.swift in Sources */,
 				DDB79DF8FFBAF3367C0399EF /* HTTPServerMainThreadStallTests.swift in Sources */,
 				D5B04048B117D3FA74BE4769 /* HookIdleTTLTests.swift in Sources */,
+				CD8B866925EF6BC839EC467D /* HttpAccessPolicyTests.swift in Sources */,
 				FDE24F470C55939E9503C810 /* IDotMatrixProtocolTests.swift in Sources */,
 				A7E6158A1A9242B77356F1E8 /* MiniTomlTests.swift in Sources */,
 				3DF6BC8D6B4841A3EF370023 /* ObservedAskUserQuestionTests.swift in Sources */,

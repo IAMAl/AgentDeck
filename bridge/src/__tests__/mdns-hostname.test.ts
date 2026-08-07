@@ -39,7 +39,7 @@ describe('mDNS service hostname', () => {
   });
 
   it('never publishes A/AAAA records under the macOS system hostname', () => {
-    const cleanup = advertiseBridge(9120, 'AgentDeck', 'daemon', 'test-token');
+    const cleanup = advertiseBridge(9120, 'AgentDeck', 'daemon');
 
     expect(MDNS_SERVICE_HOST).toMatch(/^agentdeck-[0-9a-f]{32}\.local$/);
     expect(MDNS_SERVICE_HOST).not.toBe(os.hostname());
@@ -55,8 +55,18 @@ describe('mDNS service hostname', () => {
     cleanup();
   });
 
+  it('never puts a pairing token in the multicast TXT record (issue #145)', () => {
+    const cleanup = advertiseBridge(9120, 'AgentDeck', 'daemon');
+
+    const txt = bonjourMocks.publish.mock.calls[0][0].txt as Record<string, string>;
+    expect(Object.keys(txt)).not.toContain('token');
+    expect(JSON.stringify(txt)).not.toMatch(/token/i);
+
+    cleanup();
+  });
+
   it('keeps the service hostname stable across recovery re-publishes', () => {
-    const cleanup = advertiseBridge(9120, 'AgentDeck', 'daemon', 'test-token');
+    const cleanup = advertiseBridge(9120, 'AgentDeck', 'daemon');
 
     triggerMdnsRecovery();
 

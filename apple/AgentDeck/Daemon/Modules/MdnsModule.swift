@@ -11,13 +11,11 @@ final class MdnsModule: DeviceModule, @unchecked Sendable {
     private let port: UInt16
     private let projectName: String
     private let agentType: String
-    private let token: String
 
-    init(port: UInt16, projectName: String = "daemon", agentType: String = "daemon", token: String) {
+    init(port: UInt16, projectName: String = "daemon", agentType: String = "daemon") {
         self.port = port
         self.projectName = projectName
         self.agentType = agentType
-        self.token = token
     }
 
     func start() async {
@@ -29,13 +27,13 @@ final class MdnsModule: DeviceModule, @unchecked Sendable {
             }
             let listener = try NWListener(using: params, on: nwPort)
 
-            // Advertise Bonjour service
+            // Advertise Bonjour service. Never include the pairing token —
+            // mDNS TXT is multicast (issue #145).
             let txtRecord = NWTXTRecord([
                 "project": projectName,
                 "agent": agentType,
                 "port": "\(port)",
                 "ip": AuthManager.getLanIP() ?? "127.0.0.1",
-                "token": token,
                 // TXT schema version — keep in lockstep with the Node daemon's
                 // advertisement (bridge/src/mdns.ts).
                 "v": "3",

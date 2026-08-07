@@ -36,6 +36,17 @@ actor HTTPServer {
     private var routes: [(method: String, path: String, handler: @Sendable (HTTPRequest) async -> HTTPResponse)] = []
     private var streamRoutes: [(method: String, path: String, handler: @Sendable (HTTPRequest, StreamConnection) async -> Void)] = []
 
+    /// Access policy consulted before ANY route dispatch — including stream
+    /// routes (issue #145 LAN default-deny). Return nil to allow the request
+    /// through, or a response to short-circuit with (401 / minimal /health).
+    /// Installed by DaemonServer; policy lives there because it needs
+    /// AuthManager and the daemon port.
+    private var accessPolicy: (@Sendable (HTTPRequest) async -> HTTPResponse?)?
+
+    func setAccessPolicy(_ policy: @escaping @Sendable (HTTPRequest) async -> HTTPResponse?) {
+        accessPolicy = policy
+    }
+
     struct HTTPRequest: Sendable {
         let method: String
         let path: String
@@ -263,6 +274,14 @@ actor HTTPServer {
 
     /// Route a request, including long-lived stream routes. Returns true if handled.
     func handle(_ request: HTTPRequest, on conn: NWConnection) async -> Bool {
+        // Stream routes (SSE etc.) bypass route(), so the access policy must
+        // run here too — a denied stream request gets the policy's response
+        // instead of a long-lived unauthenticated subscription.
+        if let policy = accessPolicy, let denial = await policy(request) {
+            let raw = Self.formatHTTPResponse(denial)
+            conn.send(content: raw, completion: .contentProcessed({ _ in conn.cancel() }))
+            return true
+        }
         for route in streamRoutes where route.method == request.method && route.path == request.path {
             await route.handler(request, StreamConnection(raw: conn))
             return true
@@ -278,6 +297,8 @@ actor HTTPServer {
 
     /// Route a request to matching handler (used by WebSocketServer for HTTP delegation).
     /// Supports both exact match and prefix match (paths ending with "*").
+    /// NOTE: the access policy runs in `handle(_:on:)` — the one production
+    /// entry point — not here; a new direct caller of `route` must apply it.
     func route(_ request: HTTPRequest) async -> HTTPResponse {
         // Trailing-slash insensitive: some clients append a trailing slash to
         // otherwise-exact paths (e.g. `/api/setup/`). Normalizing here lets an

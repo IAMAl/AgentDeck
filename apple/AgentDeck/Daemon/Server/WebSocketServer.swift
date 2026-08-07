@@ -248,6 +248,25 @@ actor WebSocketServer {
         return text.range(of: "upgrade: websocket", options: .caseInsensitive) != nil
     }
 
+    /// Bare remote address (no port, no IPv6 scope) for auth decisions —
+    /// the form `AuthManager.isLocalConnection` compares against.
+    static func remoteIPString(_ endpoint: NWEndpoint) -> String {
+        switch endpoint {
+        case .hostPort(let host, _):
+            switch host {
+            case .ipv4(let addr): return "\(addr)"
+            case .ipv6(let addr):
+                let s = "\(addr)"
+                // Strip "%en0"-style scope so link-local peers compare cleanly.
+                return s.split(separator: "%", maxSplits: 1).first.map(String.init) ?? s
+            case .name(let name, _): return name
+            @unknown default: return "\(host)"
+            }
+        default:
+            return "\(endpoint)"
+        }
+    }
+
     /// Format an NWEndpoint as "host:port" for logging. Distinguishes local (127.0.0.1/::1)
     /// from LAN clients so we can tell at a glance whether iPad/iPhone is actually connecting.
     private static func describeRemote(_ endpoint: NWEndpoint) -> String {
@@ -270,6 +289,23 @@ actor WebSocketServer {
         guard let text = String(data: requestData, encoding: .utf8) else {
             nwConn.cancel()
             return
+        }
+
+        // Auth before upgrade (issue #145, Node ws-server.ts parity): a peer
+        // that is neither same-machine nor token-bearing never gets a socket.
+        // Rejecting at the handshake (401) rather than post-upgrade keeps the
+        // unauthenticated surface at zero frames.
+        let remoteIP = Self.remoteIPString(nwConn.endpoint)
+        if !AuthManager.shared.isLocalConnection(remoteIP) {
+            let parsed = HTTPServer.parseHTTPRequest(requestData, remoteIP: remoteIP)
+            let token = parsed.queryParams["token"] ?? ""
+            guard AuthManager.shared.validateToken(token) else {
+                DaemonLogger.shared.info("WS: rejected unauthenticated LAN peer \(remoteIP)")
+                let body = Data("{\"error\":\"Unauthorized — pairing token required\"}".utf8)
+                let response = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+                nwConn.send(content: Data(response.utf8) + body, completion: .contentProcessed({ _ in nwConn.cancel() }))
+                return
+            }
         }
 
         // Extract Sec-WebSocket-Key
@@ -342,7 +378,9 @@ actor WebSocketServer {
             return
         }
 
-        let request = HTTPServer.parseHTTPRequest(data, remoteIP: nwConn.endpoint.debugDescription)
+        // Bare IP (not endpoint.debugDescription) so the access policy's
+        // isLocalConnection check sees a comparable address string.
+        let request = HTTPServer.parseHTTPRequest(data, remoteIP: Self.remoteIPString(nwConn.endpoint))
         _ = await httpHandler.handle(request, on: nwConn)
     }
 

@@ -1180,13 +1180,16 @@ final class DaemonServer {
         setupWifiOta()
         await wsServer.setHTTPHandler(httpServer)
 
-        // Bonjour mDNS advertisement on the same listener
+        // Bonjour mDNS advertisement on the same listener.
+        // Security (issue #145): the TXT record must never carry the pairing
+        // token — mDNS is multicast, so a TXT token hands the credential to
+        // every device on the network segment. Companions pair via QR /
+        // manual URL instead. Keep in lockstep with bridge/src/mdns.ts.
         let txtRecord = NWTXTRecord([
             "project": "daemon",
             "agent": "daemon",
             "port": "\(port)",
             "ip": AuthManager.getLanIP() ?? "127.0.0.1",
-            "token": auth.token,
             "v": "3",
         ])
         await wsServer.setBonjourService(NWListener.Service(
@@ -1747,8 +1750,43 @@ final class DaemonServer {
 
     // MARK: - HTTP Routes
 
+    /// Pure decision core of the LAN access policy (issue #145) — nil allows
+    /// the request through to route dispatch; a response short-circuits.
+    /// Unauthenticated LAN peers get exactly one route: a minimal GET /health
+    /// with no pairingToken, no module inventory, no session state.
+    /// Static + input-only so XCTest can cover the deny matrix without a
+    /// listener (HttpAccessPolicyTests).
+    nonisolated static func httpAccessResponse(
+        method: String, path: String, isLocal: Bool, tokenValid: Bool, daemonPort: UInt16
+    ) -> HTTPServer.HTTPResponse? {
+        if isLocal || tokenValid { return nil }
+        if method == "GET", path == "/health" {
+            return .json([
+                "status": "ok", "mode": "daemon", "port": Int(daemonPort),
+                "authRequired": true, "isSwift": true,
+            ])
+        }
+        return .json(["error": "Unauthorized — pairing token required for LAN access"], status: 401)
+    }
+
     private func setupHTTPRoutes() async {
         let daemonPort = self.port
+
+        // LAN default-deny (issue #145, Node http-auth-gate.ts parity): a
+        // request that is neither same-machine nor token-bearing reaches
+        // exactly one route — a minimal GET /health with no pairingToken, no
+        // module inventory, no session state. Everything else 401s before
+        // route dispatch (stream routes included — see HTTPServer.handle).
+        await httpServer.setAccessPolicy { request in
+            let isLocal = AuthManager.shared.isLocalConnection(request.remoteIP)
+            var tokenValid = false
+            if let t = request.queryParams["token"], AuthManager.shared.validateToken(t) { tokenValid = true }
+            if !tokenValid, let auth = request.headers["authorization"], auth.hasPrefix("Bearer "),
+               AuthManager.shared.validateToken(String(auth.dropFirst("Bearer ".count))) { tokenValid = true }
+            return Self.httpAccessResponse(
+                method: request.method, path: request.path,
+                isLocal: isLocal, tokenValid: tokenValid, daemonPort: daemonPort)
+        }
 
         await httpServer.get("/health") { [weak self] _ in
             let health = await self?.buildModuleHealth().value ?? ["state": "disconnected"]

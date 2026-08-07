@@ -432,6 +432,7 @@ program
   .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
   .option('--remote-daemon', 'Opt in to attaching this session to a daemon on another machine (gates --daemon-host and mDNS discovery)')
   .option('--daemon-host <host>', 'Explicit remote daemon endpoint (host or host:port); requires --remote-daemon')
+  .option('--daemon-token <token>', 'Pairing token of the remote hub (~/.agentdeck/auth-token there); or set AGENTDECK_DAEMON_TOKEN')
   .option('--no-env-args', 'Ignore AGENTDECK_COMMANDER_ARGS and AGENTDECK_<AGENT>_ARGS for this invocation')
   .option('--weight <n>', 'Deck/tab sort order override (integer, lower first; default 0)', parseWeight)
   .action(async (opts) => {
@@ -447,6 +448,7 @@ program
       wakeWord: !!opts.wakeWord,
       remoteDaemon: !!opts.remoteDaemon,
       daemonHost: opts.daemonHost,
+      daemonToken: opts.daemonToken,
       weight: opts.weight,
       modules: opts.local ? { mdns: false, adb: false, serial: false, pixoo: false, timebox: false } : {
         mdns: false,   // daemon-only — session bridges never advertise mDNS
@@ -470,6 +472,7 @@ program
   .option('--no-codex-hooks', 'Skip ~/.codex/config.toml hook install')
   .option('--remote-daemon', 'Opt in to attaching this session to a daemon on another machine (gates --daemon-host and mDNS discovery)')
   .option('--daemon-host <host>', 'Explicit remote daemon endpoint (host or host:port); requires --remote-daemon')
+  .option('--daemon-token <token>', 'Pairing token of the remote hub (~/.agentdeck/auth-token there); or set AGENTDECK_DAEMON_TOKEN')
   .option('--no-env-args', 'Ignore AGENTDECK_COMMANDER_ARGS and AGENTDECK_<AGENT>_ARGS for this invocation')
   .option('--weight <n>', 'Deck/tab sort order override (integer, lower first; default 0)', parseWeight)
   .action(async (opts) => {
@@ -503,6 +506,7 @@ program
       postit: opts.postit !== false,
       remoteDaemon: !!opts.remoteDaemon,
       daemonHost: opts.daemonHost,
+      daemonToken: opts.daemonToken,
       weight: opts.weight,
       modules: opts.local ? { mdns: false, adb: false, serial: false, pixoo: false, timebox: false } : {
         mdns: false,   // daemon-only
@@ -526,6 +530,7 @@ program
   .option('--no-opencode-hooks', 'Skip OpenCode observer plugin install')
   .option('--remote-daemon', 'Opt in to attaching this session to a daemon on another machine (gates --daemon-host and mDNS discovery)')
   .option('--daemon-host <host>', 'Explicit remote daemon endpoint (host or host:port); requires --remote-daemon')
+  .option('--daemon-token <token>', 'Pairing token of the remote hub (~/.agentdeck/auth-token there); or set AGENTDECK_DAEMON_TOKEN')
   .option('--no-env-args', 'Ignore AGENTDECK_COMMANDER_ARGS and AGENTDECK_<AGENT>_ARGS for this invocation')
   .option('--weight <n>', 'Deck/tab sort order override (integer, lower first; default 0)', parseWeight)
   .action(async (opts) => {
@@ -559,6 +564,7 @@ program
       postit: opts.postit !== false,
       remoteDaemon: !!opts.remoteDaemon,
       daemonHost: opts.daemonHost,
+      daemonToken: opts.daemonToken,
       weight: opts.weight,
       modules: opts.local ? { mdns: false, adb: false, serial: false, pixoo: false, timebox: false } : {
         mdns: false,
@@ -578,6 +584,7 @@ program
   .option('--local', 'Disable all device modules')
   .option('--remote-daemon', 'Opt in to attaching this session to a daemon on another machine (gates --daemon-host and mDNS discovery)')
   .option('--daemon-host <host>', 'Explicit remote daemon endpoint (host or host:port); requires --remote-daemon')
+  .option('--daemon-token <token>', 'Pairing token of the remote hub (~/.agentdeck/auth-token there); or set AGENTDECK_DAEMON_TOKEN')
   // Commander-layer half only: monitor spawns no agent command to weave into.
   .option('--no-env-args', 'Ignore AGENTDECK_COMMANDER_ARGS for this invocation')
   .option('--weight <n>', 'Deck/tab sort order override (integer, lower first; default 0)', parseWeight)
@@ -593,6 +600,7 @@ program
       debug: opts.debug,
       remoteDaemon: !!opts.remoteDaemon,
       daemonHost: opts.daemonHost,
+      daemonToken: opts.daemonToken,
       weight: opts.weight,
       modules: opts.local ? { mdns: false, adb: false, serial: false, pixoo: false, timebox: false } : undefined,
     });
@@ -1365,6 +1373,28 @@ program
     }
   });
 
+
+program
+  .command('token')
+  .description('Show or rotate the pairing token (~/.agentdeck/auth-token)')
+  .argument('[action]', "'show' (default) prints the token; 'rotate' replaces it", 'show')
+  .action(async (action: string) => {
+    const { getOrCreateToken, rotateToken } = await import('./auth.js');
+    if (action === 'rotate') {
+      const token = rotateToken();
+      log(`New pairing token: ${token}`);
+      log('All paired clients must re-pair: rescan the QR on companion apps (agentdeck qr),');
+      log('re-provision WiFi ESP32 boards (they re-provision automatically over USB serial),');
+      log('and update AGENTDECK_DAEMON_TOKEN on any remote workers.');
+      log('Restart the daemon (agentdeck daemon restart) so it picks up the new token.');
+    } else if (action === 'show') {
+      log(getOrCreateToken());
+      log('(Anyone with this token can control your sessions over the LAN — treat it like a password.)');
+    } else {
+      console.error(`Unknown action '${action}' — use 'show' or 'rotate'.`);
+      process.exitCode = 1;
+    }
+  });
 
 program
   .command('inject-test')

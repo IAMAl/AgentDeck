@@ -652,15 +652,20 @@ export interface ResolveDaemonDeps {
  * (post-PTY, stdout logging is swallowed).
  */
 export function deriveRemoteAttachOpts(
-  cliOpts: { remoteDaemon?: boolean; daemonHost?: string },
+  cliOpts: { remoteDaemon?: boolean; daemonHost?: string; daemonToken?: string },
   env: NodeJS.ProcessEnv = process.env,
-): { remote: boolean; hostHint?: string; ignoredHostHint: boolean } {
+): { remote: boolean; hostHint?: string; tokenHint?: string; ignoredHostHint: boolean } {
   const remote = !!cliOpts.remoteDaemon || env.AGENTDECK_REMOTE_DAEMON === '1';
   const hostHint = cliOpts.daemonHost
     || env.AGENTDECK_DAEMON_HOST
     || env.AGENTDECK_REMOTE_DAEMON_HOST
     || undefined;
-  return { remote, hostHint, ignoredHostHint: !remote && hostHint !== undefined };
+  // Pairing token for the remote hub. Since issue #145 the daemon no longer
+  // hands its token to unauthenticated LAN peers (/health) or broadcasts it
+  // (mDNS TXT), so the worker must be provisioned with it explicitly — the
+  // value lives at ~/.agentdeck/auth-token on the hub machine.
+  const tokenHint = cliOpts.daemonToken || env.AGENTDECK_DAEMON_TOKEN || undefined;
+  return { remote, hostHint, tokenHint, ignoredHostHint: !remote && hostHint !== undefined };
 }
 
 const remoteWarnedHosts = new Set<string>();
@@ -713,11 +718,14 @@ export function warnRemoteOnce(key: string, message: string): void {
  *     (the discover step filters), so an unsupported daemon (e.g. Swift App
  *     Store) is never selected as a remote target.
  *
- * Remote targets carry the daemon's advertised pairing `token`; local targets
- * need none (the daemon treats same-machine connections as authenticated).
+ * Remote targets need the hub's pairing `token`; local targets need none (the
+ * daemon treats same-machine connections as authenticated). Token sourcing
+ * (issue #145): explicit `tokenHint` (`--daemon-token` / AGENTDECK_DAEMON_TOKEN)
+ * first, then whatever a legacy daemon still advertises in `/health` — current
+ * daemons no longer serve their token to unauthenticated LAN peers.
  */
 export async function resolveDaemonTarget(
-  opts?: { remote?: boolean; hostHint?: string },
+  opts?: { remote?: boolean; hostHint?: string; tokenHint?: string },
   deps?: Partial<ResolveDaemonDeps>,
 ): Promise<DaemonTarget | null> {
   const findLocal = deps?.findLocal ?? findDaemonPortAsync;
@@ -770,7 +778,12 @@ export async function resolveDaemonTarget(
           `Daemon at ${host}:${port} does not support remote attach (no sameSocketControl capability — Node CLI daemon required); session stays local-only.`);
         return null;
       }
-      const token = typeof health.pairingToken === 'string' ? health.pairingToken : undefined;
+      const advertised = typeof health.pairingToken === 'string' ? health.pairingToken : undefined;
+      const token = opts?.tokenHint ?? advertised;
+      if (!token) {
+        warn(`token:${host}:${port}`,
+          `No pairing token for remote daemon ${host}:${port} — it will reject this session. Pass --daemon-token <token> or set AGENTDECK_DAEMON_TOKEN (the value is in ~/.agentdeck/auth-token on the hub machine).`);
+      }
       return { host, port, token, sameSocketControl: true };
     }
     return null;
@@ -781,7 +794,12 @@ export async function resolveDaemonTarget(
   const found = await discover();
   if (found.length > 0) {
     const d = found[0];
-    return { host: d.host, port: d.port, token: d.token, sameSocketControl: d.sameSocketControl === true };
+    const token = opts?.tokenHint ?? d.token;
+    if (!token) {
+      warn(`token:${d.host}:${d.port}`,
+        `No pairing token for remote daemon ${d.host}:${d.port} — it will reject this session. Pass --daemon-token <token> or set AGENTDECK_DAEMON_TOKEN (the value is in ~/.agentdeck/auth-token on the hub machine).`);
+    }
+    return { host: d.host, port: d.port, token, sameSocketControl: d.sameSocketControl === true };
   }
 
   return null;

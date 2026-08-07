@@ -114,6 +114,30 @@ describe('daemon-target helpers', () => {
       expect(deps.discover).not.toHaveBeenCalled();
     });
 
+    // Issue #145: current daemons no longer serve pairingToken to
+    // unauthenticated LAN peers, so the worker-side tokenHint
+    // (--daemon-token / AGENTDECK_DAEMON_TOKEN) is the primary source; a
+    // legacy daemon's advertised token remains the fallback.
+    it('prefers an explicit tokenHint over the daemon-advertised token', async () => {
+      const deps = makeDeps();
+      const target = await resolveDaemonTarget(
+        { remote: true, hostHint: 'mainnode.lan:9125', tokenHint: 'provisioned-tok' }, deps);
+      expect(target?.token).toBe('provisioned-tok');
+    });
+
+    it('uses tokenHint on the mDNS path too', async () => {
+      const deps = makeDeps({ discover: vi.fn(async () => [{ host: 'lan.local', port: 9120, sameSocketControl: true }]) });
+      const target = await resolveDaemonTarget({ remote: true, tokenHint: 'provisioned-tok' }, deps);
+      expect(target?.token).toBe('provisioned-tok');
+    });
+
+    it('warns once (with provisioning hint) when a remote target has no token at all', async () => {
+      const deps = makeDeps({ probeHealth: vi.fn(async () => ({ mode: 'daemon', sameSocketControl: true })) });
+      const target = await resolveDaemonTarget({ remote: true, hostHint: 'mainnode.lan:9125' }, deps);
+      expect(target).toEqual({ host: 'mainnode.lan', port: 9125, token: undefined, sameSocketControl: true });
+      expect(deps.warn).toHaveBeenCalledWith('token:mainnode.lan:9125', expect.stringContaining('--daemon-token'));
+    });
+
     it('still returns an incapable local daemon without the switch (local default untouched)', async () => {
       const deps = makeDeps({ findLocal: vi.fn(async () => ({ port: 9120, sameSocketControl: false })) });
       const target = await resolveDaemonTarget({ remote: false }, deps);

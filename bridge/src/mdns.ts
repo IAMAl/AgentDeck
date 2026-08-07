@@ -85,13 +85,18 @@ export function triggerMdnsRecovery(): void {
  * sleep/wake or WiFi reconnect), a periodic check detects the broken state and
  * re-publishes the service.
  *
+ * Security (issue #145): the TXT record must never carry the pairing token.
+ * mDNS is multicast — a TXT token hands the credential to every device on
+ * the network segment. Clients that used to self-serve it (iOS/Android
+ * companions, un-provisioned ESP32 boards) pair via QR / manual URL /
+ * serial provisioning instead.
+ *
  * @returns cleanup function to call on shutdown
  */
 export function advertiseBridge(
   port: number,
   projectName: string,
   agentType: AgentType,
-  token?: string,
 ): () => void {
   let stopped = false;
   let recoveryTimer: ReturnType<typeof setInterval> | null = null;
@@ -137,7 +142,6 @@ export function advertiseBridge(
         v: '3',
         port: String(port),
       };
-      if (token) txt.token = token;
       if (lanIp) txt.ip = lanIp;
 
       const service = instance.publish({

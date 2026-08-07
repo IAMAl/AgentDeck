@@ -158,6 +158,9 @@ export interface SessionOptions {
   remoteDaemon?: boolean;
   /** Explicit daemon endpoint (`host` or `host:port`) for cross-subnet / SSH. */
   daemonHost?: string;
+  /** Pairing token for the remote hub (from ~/.agentdeck/auth-token there);
+   *  required since daemons stopped serving it to unauthenticated LAN peers. */
+  daemonToken?: string;
   /** Explicit deck/tab sort override (default 0); lower sorts first. Lets a user
    *  pin terminal-tab order onto the Stream Deck via `--weight <n>`. */
   weight?: number;
@@ -751,13 +754,14 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   // Remote attach is opt-in: `--remote-daemon` / `AGENTDECK_REMOTE_DAEMON=1`
   // gates BOTH remote paths (explicit host and mDNS). Derivation is shared with
   // the CLI's pre-PTY warning so the two can't drift.
-  const { remote: remoteEnabled, hostHint: daemonHost } = deriveRemoteAttachOpts({
+  const { remote: remoteEnabled, hostHint: daemonHost, tokenHint: daemonToken } = deriveRemoteAttachOpts({
     remoteDaemon: opts.remoteDaemon,
     daemonHost: opts.daemonHost,
+    daemonToken: opts.daemonToken,
   });
 
   const daemonTargetProvider = async (): Promise<DaemonTarget | null> => {
-    const resolved = await resolveDaemonTarget({ remote: remoteEnabled, hostHint: daemonHost });
+    const resolved = await resolveDaemonTarget({ remote: remoteEnabled, hostHint: daemonHost, tokenHint: daemonToken });
     if (!resolved) return null;
     // Never attach to our own port — but only when the resolved target is
     // actually this machine. A remote daemon legitimately shares the port

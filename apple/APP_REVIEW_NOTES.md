@@ -49,7 +49,7 @@ AgentDeck Dashboard requires `com.apple.security.network.server`. The app is not
 
 - Binding is limited to loopback and the local network interfaces. The app opens no firewall rules, performs no port mapping/UPnP, and accepts no traffic from the public internet.
 - Endpoints are read-only dashboard reads plus the local hook POST endpoint.
-- Connections from outside the machine must be paired (the iOS companion pairs via a QR code / auth token shown on the Mac).
+- Connections from outside the machine must be paired (the iOS companion pairs via a QR code / auth token shown on the Mac). This is enforced at the socket layer: a non-local WebSocket upgrade without the pairing token is rejected with 401, non-local HTTP requests without the token are denied except a minimal `GET /health` that carries no credentials or session data, and the Bonjour TXT record never contains the token.
 
 **How to verify during review.** Launch the app, then open Settings → Port to see the active listening port (9120 by default), and use "Pair iPad" in the menu bar to display the pairing QR code the iOS companion scans to connect inbound. With the app running, `lsof -nP -iTCP -sTCP:LISTEN | grep AgentDeck` shows the AgentDeck process listening on it.
 

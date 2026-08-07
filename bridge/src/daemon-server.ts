@@ -128,6 +128,7 @@ import {
 } from './session-registry.js';
 import { fetchUsageFromApi, hasOAuthToken, resetConsecutiveFailures, type ApiUsageData } from './usage-api.js';
 import { isLocalConnection, validateToken } from './auth.js';
+import { buildPublicHealth, gateHttpRequest, isAuthorizedHttpRequest } from './http-auth-gate.js';
 import { getLastFrame, renderPreviewFrame, onFrameRendered, offFrameRendered } from './pixoo/pixoo-bridge.js';
 import { loadIDotMatrixDevices } from './idotmatrix/idotmatrix-settings.js';
 import { handlePixooWake } from './pixoo/pixoo-client.js';
@@ -1298,6 +1299,27 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
 
   // ===== HTTP server =====
   const httpServer = createServer((req, res) => {
+    // LAN default-deny (issue #145): a request that is neither same-machine
+    // nor token-bearing reaches exactly one route — a minimal GET /health
+    // with no pairingToken, no module/device inventory, no session state.
+    // Everything else 401s here, before any route dispatch. The per-route
+    // token checks further down remain as defense in depth.
+    {
+      const gatePathname = (() => {
+        try { return new URL(req.url ?? '/', 'http://localhost').pathname; } catch { return '/'; }
+      })();
+      const decision = gateHttpRequest(req.method ?? 'GET', gatePathname, isAuthorizedHttpRequest(req));
+      if (decision === 'public-health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(buildPublicHealth(port)));
+        return;
+      }
+      if (decision === 'deny') {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized — pairing token required for LAN access' }));
+        return;
+      }
+    }
     // APME routes: auth-gated (task prompts, project paths, hook payloads are sensitive).
     if ((req.url ?? '').startsWith('/apme')) {
       const ip = req.socket.remoteAddress ?? '';
@@ -1321,7 +1343,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     const parsedUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const pathname = parsedUrl.pathname;
 
-    // Health check is public (no auth) — used by iOS/Android for pairing token discovery
+    // Full health — only reachable same-machine or with a valid pairing token
+    // (the LAN gate above serves unauthenticated peers buildPublicHealth
+    // instead). pairingToken stays here for local consumers: sibling bridges,
+    // the TUI, and the macOS companion's file-less fallback.
     if (req.method === 'GET' && pathname === '/health') {
       const snap = core.stateMachine.getSnapshot();
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1615,8 +1640,8 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }
     // ===== Card Feed pull sync (M6) — wake-sync-sleep battery clients =====
     // Auth mirrors /apme: local connections are free; anything else needs the
-    // pairing token (?token=). Devices hold it from provisioning; /health
-    // exposes it for LAN pairing.
+    // pairing token (?token=). Devices hold it from provisioning — since
+    // issue #145 the daemon no longer hands it to unauthenticated LAN peers.
     // ===== Glance Frame (M8) — daemon-rendered pixels of the glance =====
     // The device-side glance renderer is the offline fallback; this is the
     // rich face. `?format=png` returns the exact dithered panel pixels, so a
@@ -2641,6 +2666,12 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     if (!socket.destroyed) socket.destroy();
   });
 
+  // All-interfaces bind is deliberate — companion apps, ESP32 boards, and
+  // pull-sync e-ink clients live on the LAN — and the security boundary is the
+  // pairing token (http-auth-gate.ts default-denies unauthenticated LAN
+  // requests; the WS server has always token-gated non-local peers). Users
+  // with no LAN devices can opt into a loopback-only bind (issue #145).
+  const bindHost = process.env.AGENTDECK_LOOPBACK_ONLY === '1' ? '127.0.0.1' : '0.0.0.0';
   await new Promise<void>((resolve, reject) => {
     httpServer.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
@@ -2650,7 +2681,7 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         reject(err);
       }
     });
-    httpServer.listen(port, '0.0.0.0', () => resolve());
+    httpServer.listen(port, bindHost, () => resolve());
   }).catch(async (err: Error) => {
     // Handle race condition: port became unavailable after our pre-bind probe.
     // This is the concurrent-start case (e.g. two logon-trigger fires landing
@@ -2678,12 +2709,18 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       log(`[agentdeck] Port ${requestedPort} grabbed by ${occupant?.mode ?? 'a non-daemon'}, retrying on ${port}...`);
       await new Promise<void>((resolve, reject) => {
         httpServer.on('error', (e: NodeJS.ErrnoException) => reject(e));
-        httpServer.listen(port, '0.0.0.0', () => resolve());
+        httpServer.listen(port, bindHost, () => resolve());
       });
     } else {
       throw err;
     }
   });
+
+  if (bindHost === '127.0.0.1') {
+    log(`[agentdeck] AGENTDECK_LOOPBACK_ONLY=1 — daemon bound to 127.0.0.1:${port}; LAN devices (companion apps, ESP32/WiFi boards) cannot connect.`);
+  } else {
+    log(`[agentdeck] Daemon listening on all interfaces (:${port}) — LAN requests require the pairing token (~/.agentdeck/auth-token). Set AGENTDECK_LOOPBACK_ONLY=1 for a loopback-only bind.`);
+  }
 
   // Write daemon.json for client discovery (must be after successful bind).
   // Keep the original startedAt stable when the self-heal timer rewrites it.

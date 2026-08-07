@@ -17,7 +17,9 @@ export class MdnsModule implements DeviceModule {
   }
 
   async start(ctx: BridgeContext): Promise<void> {
-    this.cleanup = advertiseBridge(ctx.port, ctx.projectName, this.agentType, ctx.authToken);
+    // No ctx.authToken here on purpose: the TXT record is multicast, so it
+    // must never carry the pairing credential (issue #145).
+    this.cleanup = advertiseBridge(ctx.port, ctx.projectName, this.agentType);
   }
 
   async stop(): Promise<void> {

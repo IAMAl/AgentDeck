@@ -29,6 +29,7 @@ The CLI command is `agentdeck`.
 | `agentdeck monitor` | Hook-only bridge (no PTY — run `claude` separately) |
 
 **Flags:** `-p <port>`, `-c <command>`, `-d` (debug), `--no-update-check`, `--weight <n>`
+**Remote attach flags:** `--remote-daemon`, `--daemon-host <host[:port]>`, `--daemon-token <token>` (pairing token of the remote hub — from `~/.agentdeck/auth-token` there, or `agentdeck token show`; env `AGENTDECK_DAEMON_TOKEN`). Required for a current hub: since issue #145 daemons no longer hand their token to unauthenticated LAN peers.
 **Module flags:** `--local` (all device modules off), `--no-adb` (skip ADB reverse). Hardware modules (mDNS/serial/Pixoo/Timebox) are daemon-only — session bridges never activate them, so there are no per-session `--no-mdns`/`--no-serial`/`--no-pixoo` flags.
 
 The `-c` flag sets the full command AgentDeck spawns inside the session PTY, so any arguments you add are forwarded straight to the underlying agent. For example, to resume an earlier Claude Code session (the interactive picker appears when no id is given):
@@ -116,6 +117,7 @@ a session behaves.
 | `agentdeck dashboard` | TUI monitoring dashboard (alias: `dash`) |
 | `agentdeck devices` | Connected devices (WS, ESP32, Pixoo, Timebox, ADB) |
 | `agentdeck qr` | Pairing QR code + URL |
+| `agentdeck token [show\|rotate]` | Print the pairing token, or rotate it after a leak (all paired clients then re-pair; restart the daemon afterwards) |
 | `agentdeck diag` | Diagnostic dump (`-a` for AI analysis) |
 | `agentdeck inject-test` | Exercise observed-answer injection against one host, for tuning (`--tty <ttysNNN>` or `--app <Name>`; `--label <text>`, `-i <n>`, `--text <text>`) |
 
