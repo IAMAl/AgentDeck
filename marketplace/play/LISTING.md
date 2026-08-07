@@ -8,12 +8,21 @@ created after 2023-11-13 does not apply — production is reachable directly.
 The APK on GitHub Releases stays; Play is an additional channel, not a
 replacement. Nothing in the app changes between them.
 
-## Account state — verified, app record not yet created (2026-08-07)
+## Account state — verified, app record created (2026-08-07)
 
-Both account verification steps are **done**, confirmed on the console home:
-the setup banner and the "개발자 계정 설정 완료" card are gone, and **"앱 만들기"
-/ Create app is enabled**. There is still no app record — creating it is the
-first step of the submission below.
+Both account verification steps are **done** and the app record now exists:
+
+| Field | Value |
+|---|---|
+| App name | **AgentDeck** |
+| Package | `dev.agentdeck` — immutable once created, matches `applicationId` |
+| Type / price | App, free (free→paid is a one-way door on Play, so this is the choice that matters) |
+| Default language | English (US) |
+| Account | Serendipity Bound (organization), ID 7107476187102902603 |
+
+Creating it required accepting three declarations — developer program policy,
+Play App Signing terms, US export law — all of which bind the organization, so
+they were confirmed with the account holder before checking.
 
 What it took, recorded because the console explains none of it up front:
 

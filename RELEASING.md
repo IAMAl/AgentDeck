@@ -84,8 +84,8 @@ macOS has been publicly available since 2026-07-21 at [AgentDeck Dashboard on th
 
 | Platform | Version record | Build | State |
 |---|---|---|---|
-| macOS | `1.0.4` | 4401 | Resubmitted 2026-08-07 — build 4301 was **withdrawn from review** because it predated the client-side pairing-retention fix (#149 follow-up); `1.0.3` (4101) live |
-| iPhone/iPad | `1.0.4` | 4401 | Resubmitted 2026-08-07 alongside macOS, same reason; `1.0.2` (4002) live since 2026-08-06T08:46Z |
+| macOS | `1.0.4` | 4501 | Submitted 2026-08-07, **Waiting for Review**. Builds 4301 and 4401 were withdrawn rather than shipped — each predated a fix that landed the same day; `1.0.3` (4101) live |
+| iPhone/iPad | `1.0.4` | 4501 | Submitted 2026-08-07 alongside macOS, same build, same reason; `1.0.2` (4002) live since 2026-08-06T08:46Z |
 
 iOS was answered as a `1.0.2` resubmission rather than moved up to `1.0.3`: a rejected version keeps its `MARKETING_VERSION`, and attaching the already-uploaded 4002 kept the reply and the binary consistent. macOS had no such constraint, so it went out at `1.0.3` with the newer 4101. **Do not describe an Apple release state from the tag or from the repository's own version numbers** — a single `apple-v*` tag can produce two builds whose store-side version records differ, as it did here. Read App Store Connect → 앱 심사 / App Review, whose submission table gives version, build and state per platform in one place.
 
