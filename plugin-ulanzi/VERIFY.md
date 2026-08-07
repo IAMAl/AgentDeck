@@ -98,6 +98,32 @@ checking whenever the tiles or the schedule change:
 Set `AGENTDECK_ULANZI_ANIM=0` to fall back to static PNG tiles — useful for
 isolating whether a device-side rendering problem involves animation at all.
 
+### What the push path can and cannot tell you
+
+An image push is never acknowledged: neither Studio nor the device replies, and
+the plugin's inbound events are all input and lifecycle. **A frame the panel
+dropped is indistinguishable from one it drew**, so "is the device keeping up?"
+has no software answer here — only the panel itself does. Two things *are*
+measurable, and both were taken on hardware on 2026-08-07:
+
+- **Our socket's send queue** (`peak socket queue` in the `push burst` log line).
+  It was **0 B in every burst**, including a whole 13-key repaint of 136 KB
+  offered in 38 ms with pacing removed (`AGENTDECK_ULANZI_PUSH_PER_TICK=99`,
+  ≈3.6 MB/s). Studio accepts everything offered; the plugin→Studio leg is nowhere
+  near saturation, and the per-tick pacing below is throttling for a downstream
+  we cannot see rather than for this socket.
+- **Studio's own CPU**, compared across restarts with animation on and off (the
+  only way to separate push cost from Studio's startup work). Animation on:
+  1.39 and 1.31 CPU-seconds, settling to idle at 2.0 s. Animation off, same
+  repaint minus every GIF: 1.43 CPU-seconds, also 2.0 s. **The ~112 KB of extra
+  GIF payload costs no measurable Studio time** — the run-to-run spread with an
+  unchanged config (1.31 vs 1.39) is wider than the on/off difference.
+
+So the animation is not something the link has to absorb continuously: after the
+loops land, the plugin goes silent (a 90 s idle window showed zero re-renders)
+and the device plays them by itself. If the panel ever *does* fall behind, the
+first thing to check is the encode/push log above, not the socket.
+
 ## Notes
 - The main service auto-discovers the daemon port from `daemon.json` (Node CLI or
   App Store Swift sandbox), so it works against either daemon.

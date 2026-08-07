@@ -90,19 +90,57 @@ function positions(): string[] {
 // Paced per-key push to the device. Map keeps only the latest image per key.
 interface QueueItem { dataUri: string; isGif: boolean; }
 const pushQueue = new Map<string, QueueItem>();
-const PUSH_PER_TICK = 6;
+// Override for measuring: a large value drains the whole deck in one tick, which
+// is how you find out whether the socket pushes back at all (see pushBurst).
+const PUSH_PER_TICK = Number(process.env.AGENTDECK_ULANZI_PUSH_PER_TICK) || 6;
 const PUSH_TICK_MS = 30;
+
+/**
+ * Depth of our own send queue to Ulanzi Studio.
+ *
+ * The ONLY backpressure signal on this path. An image push is never acknowledged
+ * — neither the device nor Studio replies, and the plugin's inbound events are
+ * all input and lifecycle — so a push that the panel drops is indistinguishable
+ * from one it drew. This number covers the plugin→Studio leg only; anything
+ * queued inside Studio or on the device is invisible from here.
+ */
+function socketQueueBytes(): number {
+  return ($UD as unknown as { websocket?: { bufferedAmount?: number } })
+    .websocket?.bufferedAmount ?? 0;
+}
+
+// Per-burst push accounting, reported when the queue empties (DEBUG only).
+let burstStartedAt = 0;
+let burstBytes = 0;
+let burstPushes = 0;
+let burstPeakQueue = 0;
+
 let drainTimer: ReturnType<typeof setInterval> | null = null;
 function ensureDrainer(): void {
   if (drainTimer) return;
   drainTimer = setInterval(() => {
-    if (pushQueue.size === 0) { if (drainTimer) clearInterval(drainTimer); drainTimer = null; return; }
+    if (pushQueue.size === 0) {
+      if (burstStartedAt !== 0) {
+        const ms = Math.max(1, Date.now() - burstStartedAt);
+        dlog(TAG, `push burst: ${burstPushes} key(s), ${(burstBytes / 1024).toFixed(0)}KB in ${ms}ms `
+          + `(${(burstBytes / 1024 / (ms / 1000)).toFixed(0)}KB/s offered), peak socket queue ${burstPeakQueue}B`);
+        burstStartedAt = 0;
+      }
+      if (drainTimer) clearInterval(drainTimer); drainTimer = null; return;
+    }
+    if (burstStartedAt === 0) {
+      burstStartedAt = Date.now(); burstBytes = 0; burstPushes = 0; burstPeakQueue = 0;
+    }
     let n = 0;
     for (const [ctx, item] of pushQueue) {
       pushQueue.delete(ctx);
       try {
         if (item.isGif) $UD.setGifDataIcon(ctx, item.dataUri);
         else $UD.setBaseDataIcon(ctx, item.dataUri);
+        burstBytes += item.dataUri.length;
+        burstPushes++;
+        const queued = socketQueueBytes();
+        if (queued > burstPeakQueue) burstPeakQueue = queued;
       } catch (err) { derr(TAG, `push failed: ${err}`); }
       if (++n >= PUSH_PER_TICK) break;
     }
