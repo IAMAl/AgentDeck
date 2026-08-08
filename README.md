@@ -5,7 +5,7 @@
 # AgentDeck
 
 <p align="center">
-  <a href="https://apps.apple.com/app/id6784822497"><img src="https://img.shields.io/badge/Mac%20App%20Store-AgentDeck%20Dashboard-1f6157.svg?logo=apple" alt="Mac App Store"></a>
+  <a href="https://apps.apple.com/app/id6784822497"><img src="https://img.shields.io/badge/App%20Store-Mac%20%C2%B7%20iPhone%20%C2%B7%20iPad-1f6157.svg?logo=apple" alt="App Store — Mac, iPhone, and iPad"></a>
   <a href="https://marketplace.elgato.com/product/agentdeck-dce3806b-176e-40f2-be7d-e029bec0f464"><img src="https://img.shields.io/badge/Elgato%20Marketplace-Stream%20Deck%20plugin-1f6157.svg" alt="Elgato Marketplace"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://www.npmjs.com/package/@agentdeck/setup"><img src="https://img.shields.io/npm/v/@agentdeck/setup.svg" alt="npm version"></a>
@@ -49,7 +49,7 @@ about a minute.
 
 ### 1. Install
 
-For the standalone native dashboard, [download AgentDeck Dashboard from the Mac App Store](https://apps.apple.com/app/id6784822497). It carries its own Swift daemon and needs no Node.js.
+For the standalone native dashboard, [download AgentDeck Dashboard from the App Store](https://apps.apple.com/app/id6784822497) — macOS, with an iPhone/iPad companion on the same listing. The Mac app carries its own Swift daemon and needs no Node.js.
 
 For the CLI, terminal dashboard, and PTY steering:
 
@@ -61,6 +61,14 @@ This installs the `agentdeck` CLI and the local daemon, and registers the lifecy
 hooks for whichever agent CLI you already have. Nothing else is required — the
 Stream Deck app, Stream Deck hardware, and Xcode tools are checked and reported,
 but never block the install.
+
+**The two installs compose.** Each is complete on its own: the Mac app is a
+fully standalone dashboard, and the npm CLI is a fully standalone daemon +
+terminal dashboard. Install both on the same Mac and the app automatically
+attaches to the CLI daemon, adding the CLI-tier capabilities on top — Claude
+subscription quota gauges, ADB-driven Android/e-ink surfaces, PTY session
+launching, and cross-machine remote attach. The exact split is documented in
+[docs/appstore-feature-matrix.md](docs/appstore-feature-matrix.md).
 
 **You need:** macOS 15+ (or Windows 11 — see [docs/windows.md](docs/windows.md), or
 Linux — see [docs/linux.md](docs/linux.md)), Node.js 22+, and at least one agent CLI
@@ -115,7 +123,8 @@ Any of these attach to the same daemon, and you can add them in any order:
 |---|---|
 | **Stream Deck / Mini / XL / Plus / + XL** | One click from the [Elgato Marketplace](https://marketplace.elgato.com/product/agentdeck-dce3806b-176e-40f2-be7d-e029bec0f464) — or `cd plugin && streamdeck link bound.serendipity.agentdeck.sdPlugin` from a checkout |
 | **Ulanzi D200H** | Install the plugin in Ulanzi Studio — see [plugin-ulanzi/VERIFY.md](plugin-ulanzi/VERIFY.md) |
-| **macOS app** | [Download on the Mac App Store](https://apps.apple.com/app/id6784822497) — the SwiftUI dashboard carries its own daemon, so it needs no Node.js. iPhone/iPad companion not released yet |
+| **macOS app** | [Download on the App Store](https://apps.apple.com/app/id6784822497) — the SwiftUI dashboard carries its own daemon, so it needs no Node.js |
+| **iPhone / iPad companion** | Same [App Store listing](https://apps.apple.com/app/id6784822497) — pairs with a daemon on your Mac over the LAN (QR pairing) |
 | **Android tablet / e-ink** | Signed APK from [Releases](https://github.com/puritysb/AgentDeck/releases) — see [docs/android.md](docs/android.md) |
 | **ESP32 panels · InkDeck e-ink** | Flash firmware, then Wi-Fi OTA — see [docs/esp32.md](docs/esp32.md) |
 | **Pixoo64 · TC001 · Timebox · iDotMatrix** | `agentdeck pixoo scan` / `agentdeck timebox scan` — see [docs/devices.md](docs/devices.md) |
@@ -247,7 +256,7 @@ builds on [Releases](https://github.com/puritysb/AgentDeck/releases).
 | **Ulanzi Marketplace** — D200H plugin | `ulanzi-v*` | [1.0.2 release](https://github.com/puritysb/AgentDeck/releases/tag/ulanzi-v1.0.2); submitted, review in progress ([details](marketplace/ulanzi/LISTING.md)) |
 | **GitHub Release** — Android APK | `android-v*` | [1.0.6](https://github.com/puritysb/AgentDeck/releases/tag/android-v1.0.6) |
 | **GitHub Release** — ESP32 firmware | `esp32-v*` | [1.0.3](https://github.com/puritysb/AgentDeck/releases/tag/esp32-v1.0.3) — one binary per Shipping board |
-| **Google Play** — Android AAB | `android-v*` | Account verified; AAB, listing copy, assets and a step-by-step console runbook ready in [marketplace/play/](marketplace/play/LISTING.md) — app record not yet created |
+| **Google Play** — Android AAB | `android-v*` | Review submitted 2026-08-07; listing copy, assets and the console runbook in [marketplace/play/](marketplace/play/LISTING.md) |
 
 ---
 
