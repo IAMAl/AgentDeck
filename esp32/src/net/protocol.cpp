@@ -738,6 +738,10 @@ static void handleWifiProvision(JsonObject& obj) {
         g_state.authToken[sizeof(g_state.authToken) - 1] = '\0';
     }
     unlockState();
+    // Durable on every board, not just the two that persist an endpoint below:
+    // a credential the board forgets at reboot is a credential it can never be
+    // handed again over the air.
+    Net::wifiSaveAuthToken(authToken);
 
     bool ok = false;
 #if defined(BOARD_T_DISPLAY_PRO) || \
@@ -786,6 +790,59 @@ static void handleWifiProvision(JsonObject& obj) {
         resp["error"] = "connection failed";
     }
     char buf[256];
+    serializeJson(resp, buf, sizeof(buf));
+    Net::serialWriteJsonLine(buf);
+}
+
+/**
+ * Re-arm the pairing token without touching WiFi.
+ *
+ * `wifi_provision` is the first-setup message: it demands SSID + password and,
+ * on most boards, joins the AP. That makes it the wrong tool for the common
+ * case of a board that is already online but holding a credential the daemon no
+ * longer accepts — re-injecting credentials there fights the firmware's own
+ * radio policy (parking, deferred join, brownout deferral). This message
+ * carries the credential alone.
+ *
+ * It deliberately does not connect anything. `networkTask` already rebuilds the
+ * WS from `g_state.authToken` under every policy guard that matters, so storing
+ * the token is the whole job — duplicating those guards here is how they drift.
+ */
+static void handleAuthProvision(JsonObject& obj) {
+    const char* authToken = obj["authToken"] | "";
+    const char* bridgeIp = obj["bridgeIp"] | "";
+    uint16_t bridgePort = obj["bridgePort"] | 0;
+
+    JsonDocument resp;
+    resp["type"] = "auth_provision_ack";
+
+    if (authToken[0] == '\0') {
+        // An absent token means "no information", never "clear it".
+        resp["success"] = false;
+        resp["error"] = "missing token";
+    } else {
+        lockState();
+        const bool changed = strncmp(g_state.authToken, authToken, sizeof(g_state.authToken) - 1) != 0;
+        strncpy(g_state.authToken, authToken, sizeof(g_state.authToken) - 1);
+        g_state.authToken[sizeof(g_state.authToken) - 1] = '\0';
+        if (bridgeIp[0] != '\0') {
+            strncpy(g_state.bridgeIp, bridgeIp, sizeof(g_state.bridgeIp) - 1);
+            g_state.bridgeIp[sizeof(g_state.bridgeIp) - 1] = '\0';
+        }
+        if (bridgePort != 0) g_state.bridgePort = bridgePort;
+        unlockState();
+
+        Net::wifiSaveAuthToken(authToken);
+        if (bridgeIp[0] != '\0' && bridgePort != 0) {
+            Net::wifiSaveProvisionedBridge(bridgeIp, bridgePort, authToken);
+        }
+
+        if (changed) Serial.println("[Provision] Pairing token re-armed");
+        resp["success"] = true;
+        resp["changed"] = changed;
+    }
+
+    char buf[128];
     serializeJson(resp, buf, sizeof(buf));
     Net::serialWriteJsonLine(buf);
 }
@@ -1210,6 +1267,8 @@ void parseMessage(const char* json, size_t length) {
         handleTimelineHistory(obj);
     } else if (strcmp(type, "wifi_provision") == 0) {
         handleWifiProvision(obj);
+    } else if (strcmp(type, "auth_provision") == 0) {
+        handleAuthProvision(obj);
     } else if (strcmp(type, "device_info_request") == 0) {
         sendDeviceInfo();
     } else if (strcmp(type, "esp32_ota_begin") == 0) {

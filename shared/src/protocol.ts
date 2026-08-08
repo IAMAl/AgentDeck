@@ -574,6 +574,27 @@ export interface WifiProvisionMessage {
   authToken: string;
 }
 
+/**
+ * Re-arm a board's pairing token over USB serial without touching its WiFi.
+ *
+ * `wifi_provision` is the first-setup message — it demands SSID + password and
+ * on most boards joins the AP — which makes it the wrong tool for a board that
+ * is already online but holding a credential the daemon no longer accepts.
+ * That case stopped being hypothetical when discovery stopped carrying the
+ * token (#145/#149): a board can be perfectly connected to WiFi and still be
+ * closed 4001 on every dial, with serial as the only channel left to fix it.
+ *
+ * An absent `authToken` means "no information" and must never blank a working
+ * credential — the board rejects the message instead.
+ */
+export interface AuthProvisionMessage {
+  type: 'auth_provision';
+  authToken: string;
+  /** Optional endpoint refresh, applied only when both fields are present. */
+  bridgeIp?: string;
+  bridgePort?: number;
+}
+
 // ===== ESP32 Serial → Bridge =====
 
 export interface DeviceInfoMessage {
@@ -744,6 +765,14 @@ export interface WifiProvisionAckMessage {
   success: boolean;
   ip?: string;           // assigned IP on success
   error?: string;        // reason on failure
+}
+
+export interface AuthProvisionAckMessage {
+  type: 'auth_provision_ack';
+  success: boolean;
+  /** True when the board was holding a different token before this message. */
+  changed?: boolean;
+  error?: string;
 }
 
 export interface WifiStatusMessage {
@@ -1120,6 +1149,7 @@ export const CARD_FEED_ACTIVE_PULL_SEC = 900;
 export type ESP32ToHostMessage =
   | DeviceInfoMessage
   | WifiProvisionAckMessage
+  | AuthProvisionAckMessage
   | WifiStatusMessage
   | Esp32OtaAckCommand
   | Esp32OtaErrorCommand

@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
 import type { BridgeEvent, PluginCommand } from './types.js';
 import { isLocalConnection, validateToken } from './auth.js';
-import { debug } from './logger.js';
+import { debug, log } from './logger.js';
 import { WS_PING_INTERVAL_MS } from '@agentdeck/shared';
 
 export class WsServer {
@@ -15,6 +15,13 @@ export class WsServer {
   private onDisconnectCallback: ((ws: WebSocket) => void) | null = null;
   private clientAlive = new Map<WebSocket, boolean>();
   private esp32Clients = new Set<WebSocket>();
+  // Unauthorized closes used to be debug-only, which made a fleet-wide
+  // credential mismatch invisible: every board reconnected every few seconds,
+  // got closed 4001, and the daemon log stayed empty — the diagnosis needed
+  // `netstat`. Report it at normal level, throttled per IP so a flapping board
+  // describes the problem instead of becoming one.
+  private unauthorizedByIp = new Map<string, { loggedAt: number; suppressed: number }>();
+  private static readonly UNAUTHORIZED_LOG_INTERVAL_MS = 60_000;
   // Per-IP connect timestamps for the flap guard (window: 30s, threshold: >6).
   private recentConnectsByIp = new Map<string, number[]>();
   private flappingClients = new Set<WebSocket>();
@@ -73,7 +80,7 @@ export class WsServer {
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
         const token = url.searchParams.get('token') || '';
         if (!validateToken(token)) {
-          debug('WS', `Rejected remote connection from ${remoteIp} (invalid token)`);
+          this.logUnauthorized(remoteIp, token.length > 0);
           ws.close(4001, 'Unauthorized');
           return;
         }
@@ -299,6 +306,31 @@ export class WsServer {
     const byId = new Map<string, { id: string; name: string }>();
     for (const info of this.tuiClients.values()) byId.set(info.id, info);
     return [...byId.values()];
+  }
+
+  /**
+   * Report a 4001 close once per IP per minute, naming the likely cause. The
+   * two cases read very differently to an operator: a peer that presented
+   * nothing is usually an unpaired client, while a peer that presented a token
+   * we do not accept is a provisioned device whose credential went stale —
+   * which USB serial can re-arm and nothing else can.
+   */
+  private logUnauthorized(ip: string, presentedToken: boolean): void {
+    const now = Date.now();
+    const prev = this.unauthorizedByIp.get(ip);
+    if (prev && now - prev.loggedAt < WsServer.UNAUTHORIZED_LOG_INTERVAL_MS) {
+      prev.suppressed++;
+      return;
+    }
+    // Bound the map: it is keyed by LAN peers, but a long-lived daemon on a
+    // busy network should not accumulate them forever.
+    if (this.unauthorizedByIp.size > 64) this.unauthorizedByIp.clear();
+    const repeated = prev?.suppressed ? ` — plus ${prev.suppressed} more since the last line` : '';
+    this.unauthorizedByIp.set(ip, { loggedAt: now, suppressed: 0 });
+    log(presentedToken
+      ? `[agentdeck] Rejected ${ip}: pairing token not accepted${repeated}. `
+        + `A provisioned device looping here needs its token re-armed over USB serial.`
+      : `[agentdeck] Rejected ${ip}: no pairing token${repeated}. Pair it with "agentdeck qr".`);
   }
 
   close(): void {

@@ -10,19 +10,24 @@ static bool portalActive = false;
 static bool wifiWasConnected = false;
 static bool radioParked = false;
 
-#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
-// Daemon-provisioned credential store ("adwifi"), shared by the two boards
-// whose WiFi bring-up is power-sensitive: IPS10 (hosted C6 radio) and the
-// T-Display-S3-Pro strip (WiFi join concurrent with display bring-up tripped
-// the brownout detector on the camera unit, 2026-07-27). Constant names keep
-// their IPS10_ prefix from the original IPS10-only implementation.
+// Daemon-provisioned store ("adwifi"). The namespace and the pairing-token key
+// are board-agnostic — every board has to be able to remember its credential
+// across a reboot (see `wifiSaveAuthToken`) — while the rest of the store stays
+// with the two boards whose WiFi bring-up is power-sensitive.
 namespace {
-constexpr const char* IPS10_WIFI_PREFS_NS = "adwifi";
-constexpr const char* IPS10_WIFI_PREFS_SSID = "ssid";
-constexpr const char* IPS10_WIFI_PREFS_PASSWORD = "password";
-constexpr const char* IPS10_WIFI_PREFS_BRIDGE_IP = "bridge_ip";
-constexpr const char* IPS10_WIFI_PREFS_BRIDGE_PORT = "bridge_port";
-constexpr const char* IPS10_WIFI_PREFS_BRIDGE_TOKEN = "bridge_token";
+constexpr const char* WIFI_PREFS_NS = "adwifi";
+constexpr const char* WIFI_PREFS_BRIDGE_TOKEN = "bridge_token";
+}  // namespace
+
+#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
+// The credential/endpoint keys owned by IPS10 (hosted C6 radio) and the
+// T-Display-S3-Pro strip (WiFi join concurrent with display bring-up tripped
+// the brownout detector on the camera unit, 2026-07-27).
+namespace {
+constexpr const char* WIFI_PREFS_SSID = "ssid";
+constexpr const char* WIFI_PREFS_PASSWORD = "password";
+constexpr const char* WIFI_PREFS_BRIDGE_IP = "bridge_ip";
+constexpr const char* WIFI_PREFS_BRIDGE_PORT = "bridge_port";
 constexpr size_t IPS10_SSID_MAX = 64;
 constexpr size_t IPS10_PASSWORD_MAX = 128;
 
@@ -32,9 +37,9 @@ bool loadIps10ProvisionedWifi(char* ssid, size_t ssidLen, char* password, size_t
     password[0] = '\0';
 
     Preferences prefs;
-    if (!prefs.begin(IPS10_WIFI_PREFS_NS, true)) return false;
-    size_t ssidBytes = prefs.getString(IPS10_WIFI_PREFS_SSID, ssid, ssidLen);
-    size_t passwordBytes = prefs.getString(IPS10_WIFI_PREFS_PASSWORD, password, passwordLen);
+    if (!prefs.begin(WIFI_PREFS_NS, true)) return false;
+    size_t ssidBytes = prefs.getString(WIFI_PREFS_SSID, ssid, ssidLen);
+    size_t passwordBytes = prefs.getString(WIFI_PREFS_PASSWORD, password, passwordLen);
     prefs.end();
 
     ssid[ssidLen - 1] = '\0';
@@ -46,12 +51,12 @@ void saveIps10ProvisionedWifi(const char* ssid, const char* password) {
     if (!ssid || !password || ssid[0] == '\0' || password[0] == '\0') return;
 
     Preferences prefs;
-    if (!prefs.begin(IPS10_WIFI_PREFS_NS, false)) {
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
         Serial.println("[WiFi] IPS10 credential save failed: Preferences open failed");
         return;
     }
-    prefs.putString(IPS10_WIFI_PREFS_SSID, ssid);
-    prefs.putString(IPS10_WIFI_PREFS_PASSWORD, password);
+    prefs.putString(WIFI_PREFS_SSID, ssid);
+    prefs.putString(WIFI_PREFS_PASSWORD, password);
     prefs.end();
 }
 }  // namespace
@@ -310,31 +315,55 @@ bool wifiTryDeferredJoin() {
 }
 #endif
 
-void wifiSaveProvisionedBridge(const char* ip, uint16_t port, const char* token) {
-#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
-    if (!ip || ip[0] == '\0' || port == 0) return;
-
-    Preferences prefs;
-    if (!prefs.begin(IPS10_WIFI_PREFS_NS, false)) {
-        Serial.println("[WiFi] IPS10 bridge endpoint save failed: Preferences open failed");
-        return;
-    }
-    prefs.putString(IPS10_WIFI_PREFS_BRIDGE_IP, ip);
-    prefs.putUShort(IPS10_WIFI_PREFS_BRIDGE_PORT, port);
+void wifiSaveAuthToken(const char* token) {
     // A caller with no token to offer must not be able to erase the one this
     // board was provisioned with. Endpoint self-heal (DHCP drift) legitimately
     // rewrites ip/port while knowing nothing about credentials, and discovery
     // stopped carrying the token entirely in GitHub #145 — so an empty
-    // argument means "leave it alone", never "clear it". Only serial
-    // provisioning, which is handed a real token, replaces it.
-    if (token && token[0] != '\0') {
-        prefs.putString(IPS10_WIFI_PREFS_BRIDGE_TOKEN, token);
+    // argument means "leave it alone", never "clear it". Only provisioning,
+    // which is handed a real token, replaces it.
+    if (!token || token[0] == '\0') return;
+
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
+        Serial.println("[WiFi] Auth token save failed: Preferences open failed");
+        return;
     }
+    prefs.putString(WIFI_PREFS_BRIDGE_TOKEN, token);
+    prefs.end();
+}
+
+bool wifiLoadAuthToken(char* token, size_t tokenLen) {
+    if (!token || tokenLen == 0) return false;
+    token[0] = '\0';
+
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREFS_NS, true)) return false;
+    prefs.getString(WIFI_PREFS_BRIDGE_TOKEN, token, tokenLen);
+    prefs.end();
+
+    token[tokenLen - 1] = '\0';
+    return token[0] != '\0';
+}
+
+void wifiSaveProvisionedBridge(const char* ip, uint16_t port, const char* token) {
+    // The credential is board-agnostic even though the endpoint is not.
+    wifiSaveAuthToken(token);
+
+#if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
+    if (!ip || ip[0] == '\0' || port == 0) return;
+
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREFS_NS, false)) {
+        Serial.println("[WiFi] IPS10 bridge endpoint save failed: Preferences open failed");
+        return;
+    }
+    prefs.putString(WIFI_PREFS_BRIDGE_IP, ip);
+    prefs.putUShort(WIFI_PREFS_BRIDGE_PORT, port);
     prefs.end();
 #else
     (void)ip;
     (void)port;
-    (void)token;
 #endif
 }
 
@@ -346,10 +375,10 @@ bool wifiLoadProvisionedBridge(char* ip, size_t ipLen, uint16_t* port, char* tok
 
 #if defined(BOARD_IPS10) || defined(BOARD_T_DISPLAY_PRO)
     Preferences prefs;
-    if (!prefs.begin(IPS10_WIFI_PREFS_NS, true)) return false;
-    size_t ipBytes = prefs.getString(IPS10_WIFI_PREFS_BRIDGE_IP, ip, ipLen);
-    uint16_t savedPort = prefs.getUShort(IPS10_WIFI_PREFS_BRIDGE_PORT, 0);
-    prefs.getString(IPS10_WIFI_PREFS_BRIDGE_TOKEN, token, tokenLen);
+    if (!prefs.begin(WIFI_PREFS_NS, true)) return false;
+    size_t ipBytes = prefs.getString(WIFI_PREFS_BRIDGE_IP, ip, ipLen);
+    uint16_t savedPort = prefs.getUShort(WIFI_PREFS_BRIDGE_PORT, 0);
+    prefs.getString(WIFI_PREFS_BRIDGE_TOKEN, token, tokenLen);
     prefs.end();
 
     ip[ipLen - 1] = '\0';

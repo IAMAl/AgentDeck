@@ -66,6 +66,8 @@ enum AgentDeckPaths {
     static var daemonJson: URL { baseDirectory.appendingPathComponent("daemon.json") }
     static var daemonCrashLog: URL { baseDirectory.appendingPathComponent("daemon-crash.log") }
     static var authToken: URL { baseDirectory.appendingPathComponent("auth-token") }
+    /// Tokens still accepted but no longer handed out — see `AuthManager.adoptPeerToken`.
+    static var authTokenAccepted: URL { baseDirectory.appendingPathComponent("auth-token-accepted") }
     static var sessionsJson: URL { baseDirectory.appendingPathComponent("sessions.json") }
     static var settingsJson: URL { baseDirectory.appendingPathComponent("settings.json") }
     static var timelineJson: URL { baseDirectory.appendingPathComponent("timeline.json") }

@@ -71,6 +71,7 @@ Dispatch on the top-level `"type"`. The forwarded sets are defined in `protocol.
 | `timeline_history` | Backfill of recent timeline rows on (re)connect. A reply to `query_session_timeline` includes top-level `sessionId`; constrained clients may replace their mixed live ring with that session-specific batch so unrelated busy sessions cannot evict the requested Detail rows. |
 | `display_state` | Host display on/off + optional `dim {enabled, mode, level}`. Absent `dim` ⇒ legacy full-off. Level is percent 1–100 → scale to the board's backlight domain, floored at 1. |
 | `wifi_provision` | Credentials pushed over serial (USB provisioning flow). |
+| `auth_provision` | Pairing token pushed over serial, on its own: `{authToken, bridgeIp?, bridgePort?}`. Store the token durably (NVS) and restore it at boot — a board that forgets its credential is closed 4001 on every dial (#145) and discovery no longer carries one (#149), so serial is the only way back. Do **not** join WiFi or reconnect from this message; the existing reconnect path picks the new token up under its own policy guards. An absent/empty `authToken` means "no information" — never clear a working credential. Reply `auth_provision_ack {success, changed?, error?}`. |
 | `set_orientation` | `landscape` bool; portrait↔landscape toggle. |
 | `device_info_request` | Reply with `device_info` (see below). X3/X4 already announce `device_info` on initial connect; request/reply parity remains recommended for host diagnostics. |
 

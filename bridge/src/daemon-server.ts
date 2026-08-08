@@ -79,6 +79,14 @@ const OBSERVED_APPROVAL_ENABLED = process.env.AGENTDECK_OBSERVED_APPROVAL !== '0
 /** How long a held gate waits for a device decision before releasing the tool
  *  call to Claude's own permission flow. Must stay well under the hook curl's
  *  --max-time 60 so the release reaches Claude before curl gives up. */
+/**
+ * How long a board gets to answer `auth_provision` before the daemon assumes
+ * its firmware predates the message and falls back to the legacy WiFi provision
+ * path. Generous relative to a serial round-trip (a board acks in ms) but short
+ * enough that a locked-out fleet heals within one connect.
+ */
+const LEGACY_REARM_GRACE_MS = 3_000;
+
 const OBSERVED_APPROVAL_HOLD_MS = Math.min(
   50_000,
   Math.max(5_000, Number(process.env.AGENTDECK_APPROVAL_HOLD_MS) || 25_000),
@@ -127,7 +135,7 @@ import {
   getOwnTimelineFile,
 } from './session-registry.js';
 import { fetchUsageFromApi, hasOAuthToken, resetConsecutiveFailures, type ApiUsageData } from './usage-api.js';
-import { isLocalConnection, validateToken } from './auth.js';
+import { getOrCreateToken, isLocalConnection, validateToken } from './auth.js';
 import { buildPublicHealth, gateHttpRequest, isAuthorizedHttpRequest } from './http-auth-gate.js';
 import { getLastFrame, renderPreviewFrame, onFrameRendered, offFrameRendered } from './pixoo/pixoo-bridge.js';
 import { loadIDotMatrixDevices } from './idotmatrix/idotmatrix-settings.js';
@@ -158,7 +166,7 @@ import {
   type DeviceModule,
 } from './modules/index.js';
 import { SerialModule } from './modules/serial-module.js';
-import { esp32ConnectionCount, getESP32DeviceInfo, onESP32Message, sendWifiProvisionToAll, handleESP32Wake, getESP32Ports, getSerialConnectionStatus, getSerialLastError, getSerialReachableBoards } from './esp32-serial.js';
+import { esp32ConnectionCount, getESP32DeviceInfo, onESP32Message, sendAuthProvisionToAll, sendWifiProvision, sendWifiProvisionToAll, handleESP32Wake, getESP32Ports, getSerialConnectionStatus, getSerialLastError, getSerialReachableBoards } from './esp32-serial.js';
 import { loadWifiConfig } from './wifi-config.js';
 import { getConnectedAdbDevices, hasAdb, getAdbDeviceCount } from './adb-reverse.js';
 import { getPixooDeviceDetails, pixooDeviceCount } from './pixoo/pixoo-bridge.js';
@@ -3189,30 +3197,87 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }, 30_000);
     wifiDeviceInfoPoll.unref?.();
 
-    // WiFi auto-provisioning for ESP32 (enables independent WiFi operation)
+    // ONE serial message handler. `onESP32Message` REPLACES rather than adds,
+    // so a second registration silently unhooks the first — which is why the
+    // credential re-arm below shares this callback with WiFi auto-provisioning
+    // instead of registering beside it.
     const wifiConfig = loadWifiConfig();
-    if (wifiConfig?.autoProvision) {
-      const lanIp = getLanIp();
-      onESP32Message((portPath, msg) => {
-        const shouldRefreshIps10Endpoint = msg.type === 'device_info' &&
-          msg.board === 'ips_10' &&
-          msg.wifiConnected &&
-          !msg.wifiRadioParked;
-        if (msg.type === 'device_info' && (!msg.wifiConnected || shouldRefreshIps10Endpoint)) {
-          const sent = sendWifiProvisionToAll({
-            type: 'wifi_provision' as const,
-            ssid: wifiConfig.ssid,
-            password: wifiConfig.password,
-            bridgeIp: lanIp,
-            bridgePort: port,
-            authToken: core.authToken,
-          });
-          if (sent > 0) log(`[agentdeck] WiFi provision sent to ${sent} ESP32 device(s) after ${portPath}`);
-        } else if (msg.type === 'wifi_provision_ack') {
-          log(msg.success ? `[agentdeck] ESP32 WiFi connected: ${msg.ip} ✓` : `[agentdeck] ESP32 WiFi failed: ${msg.error || 'unknown'}`);
+    const lanIp = getLanIp();
+    // Boards flashed before `auth_provision` existed cannot be re-armed by it —
+    // they drop the unknown type silently, and the daemon has no way to tell
+    // "understood" from "ignored" except by the ack not arriving. So a board
+    // that stays quiet falls back to the one message its firmware does
+    // understand. It is a FALLBACK because it costs a WiFi re-associate: it
+    // fires once per board per token, only after the silence, and only when the
+    // user has auto-provisioning on (it carries their WiFi credentials).
+    const legacyRearmTimers = new Map<string, NodeJS.Timeout>();
+    const cancelLegacyRearm = (portPath: string): void => {
+      const timer = legacyRearmTimers.get(portPath);
+      if (!timer) return;
+      clearTimeout(timer);
+      legacyRearmTimers.delete(portPath);
+    };
+    onESP32Message((portPath, msg) => {
+      // Keep every serial-attached board armed with the token this daemon is
+      // actually serving. Deliberately not gated on auto-provision: a board
+      // needs a valid credential whether or not this machine hands out WiFi
+      // credentials, and it needs one most when its radio is already up — the
+      // case `shouldSendWifiProvision` skips on purpose. Reads the token live
+      // rather than through `core.authToken` so a handover adoption reaches
+      // the fleet.
+      if (msg.type === 'device_info') {
+        const armed = sendAuthProvisionToAll({
+          type: 'auth_provision',
+          authToken: getOrCreateToken(),
+          bridgeIp: lanIp,
+          bridgePort: port,
+        });
+        if (armed.length > 0) log(`[agentdeck] Pairing token armed on ${armed.length} ESP32 device(s) after ${portPath}`);
+        if (wifiConfig?.autoProvision) {
+          for (const armedPort of armed) {
+            if (legacyRearmTimers.has(armedPort)) continue;
+            const timer = setTimeout(() => {
+              legacyRearmTimers.delete(armedPort);
+              const sent = sendWifiProvision(armedPort, {
+                type: 'wifi_provision' as const,
+                ssid: wifiConfig.ssid,
+                password: wifiConfig.password,
+                bridgeIp: lanIp,
+                bridgePort: port,
+                authToken: getOrCreateToken(),
+              });
+              if (sent) {
+                log(`[agentdeck] ${armedPort}: firmware predates auth_provision — re-armed over the legacy WiFi provision path`);
+              }
+            }, LEGACY_REARM_GRACE_MS);
+            timer.unref?.();
+            legacyRearmTimers.set(armedPort, timer);
+          }
         }
-      });
-    }
+      } else if (msg.type === 'auth_provision_ack') {
+        cancelLegacyRearm(portPath);
+        if (msg.changed) log(`[agentdeck] ESP32 pairing token re-armed on ${portPath}`);
+      }
+
+      if (!wifiConfig?.autoProvision) return;
+      const shouldRefreshIps10Endpoint = msg.type === 'device_info' &&
+        msg.board === 'ips_10' &&
+        msg.wifiConnected &&
+        !msg.wifiRadioParked;
+      if (msg.type === 'device_info' && (!msg.wifiConnected || shouldRefreshIps10Endpoint)) {
+        const sent = sendWifiProvisionToAll({
+          type: 'wifi_provision' as const,
+          ssid: wifiConfig.ssid,
+          password: wifiConfig.password,
+          bridgeIp: lanIp,
+          bridgePort: port,
+          authToken: getOrCreateToken(),
+        });
+        if (sent > 0) log(`[agentdeck] WiFi provision sent to ${sent} ESP32 device(s) after ${portPath}`);
+      } else if (msg.type === 'wifi_provision_ack') {
+        log(msg.success ? `[agentdeck] ESP32 WiFi connected: ${msg.ip} ✓` : `[agentdeck] ESP32 WiFi failed: ${msg.error || 'unknown'}`);
+      }
+    });
   }
 
   log(`[agentdeck] WebSocket server ready on port ${port}`);

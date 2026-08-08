@@ -59,6 +59,22 @@ void wifiSaveProvisionedBridge(const char* ip, uint16_t port, const char* token)
 bool wifiLoadProvisionedBridge(char* ip, size_t ipLen, uint16_t* port, char* token, size_t tokenLen);
 
 /**
+ * Store/load the daemon pairing token, on EVERY board.
+ *
+ * The endpoint above is deliberately board-specific — which transport is
+ * primary, and whether a saved IP helps, differs per board. A credential does
+ * not: a board that cannot remember its token across a reboot has no way back
+ * onto the daemon at all, because the daemon rejects an unauthenticated peer
+ * (#145) and discovery stopped carrying the token (#149). That is precisely
+ * how a WiFi-only 86 Box ended up dialing tokenless every few seconds forever
+ * with no channel left to fix it over.
+ *
+ * An empty token never clears the stored one — absence is "no information".
+ */
+void wifiSaveAuthToken(const char* token);
+bool wifiLoadAuthToken(char* token, size_t tokenLen);
+
+/**
  * True when firmware intentionally powered WiFi down because another transport
  * is primary. Distinguishes "offline by design" from connection loss.
  */

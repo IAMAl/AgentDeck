@@ -656,6 +656,7 @@ daemon
   .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
   .action(async (opts) => {
     const { findExistingDaemon, probeDaemonHealth, readDaemonInfo, removeDaemonInfo, removeDaemonSession, requestDaemonStandDown, requestDaemonShutdown, waitForDaemonExit, waitForPortBindable } = await import('./session-registry.js');
+    const { adoptPeerToken } = await import('./auth.js');
 
     // Reverse two-tier upgrade path: the macOS app may already own the canonical
     // port with its in-process Swift daemon (Tier 1 — limited: no ADB devices,
@@ -668,6 +669,14 @@ daemon
     const targetPort = opts.port ? parseInt(String(opts.port), 10) : BRIDGE_WS_PORT;
     const incumbent = await probeDaemonHealth(targetPort);
     if (incumbent?.mode === 'daemon') {
+      // Take over the fleet's credential along with the port. The app's daemon
+      // keeps its token inside its sandbox container, unreadable from here, so
+      // this loopback answer is the only place we can learn what every paired
+      // board is currently holding. Adopting it BEFORE the stand-down means the
+      // handover costs no device its pairing.
+      if (adoptPeerToken(incumbent.pairingToken)) {
+        log(`Adopted the incumbent daemon's pairing token so paired devices survive the handover.`);
+      }
       if (incumbent.isSwift) {
         log(`AgentDeck app's in-process daemon holds port ${targetPort} — requesting stand-down to take over with the full CLI feature set…`);
         // Prefer /stand-down (clean demote: the app stays running as a client).

@@ -300,7 +300,14 @@ actor WebSocketServer {
             let parsed = HTTPServer.parseHTTPRequest(requestData, remoteIP: remoteIP)
             let token = parsed.queryParams["token"] ?? ""
             guard AuthManager.shared.validateToken(token) else {
-                DaemonLogger.shared.info("WS: rejected unauthenticated LAN peer \(remoteIP)")
+                // The two cases read very differently to an operator: a peer
+                // that presented nothing is usually an unpaired client, while a
+                // peer presenting a token we do not accept is a provisioned
+                // device whose credential went stale — which USB serial can
+                // re-arm and nothing else can.
+                DaemonLogger.shared.info(token.isEmpty
+                    ? "WS: rejected \(remoteIP) — no pairing token"
+                    : "WS: rejected \(remoteIP) — pairing token not accepted; a looping device needs re-arming over USB serial")
                 let body = Data("{\"error\":\"Unauthorized — pairing token required\"}".utf8)
                 let response = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
                 nwConn.send(content: Data(response.utf8) + body, completion: .contentProcessed({ _ in nwConn.cancel() }))

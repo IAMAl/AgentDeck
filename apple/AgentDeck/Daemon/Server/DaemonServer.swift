@@ -1710,38 +1710,86 @@ final class DaemonServer {
         }
         DaemonLogger.shared.info("startDeviceModules: wsServer.onBroadcast done")
 
-        // Wire ESP32 WiFi auto-provisioning
-        if let wifiConfig = WifiConfigManager.load(), wifiConfig.autoProvision {
-            let lanIp = AuthManager.getLanIP() ?? "127.0.0.1"
-            let provisionMsg = SendableDict([
+        // Wire the ESP32 serial message handler. ONE handler: `setOnMessage`
+        // replaces rather than adds, so everything the serial channel drives
+        // shares it. It used to live inside the `autoProvision` branch below,
+        // which also silently took the device→daemon command channel and the
+        // credential re-arm with it whenever this machine had no WiFi config.
+        let lanIp = AuthManager.getLanIP() ?? "127.0.0.1"
+        let wifiConfig = WifiConfigManager.load()
+        let provisionMsg: SendableDict? = wifiConfig.map { config in
+            SendableDict([
                 "type": "wifi_provision",
-                "ssid": wifiConfig.ssid,
-                "password": wifiConfig.password,
+                "ssid": config.ssid,
+                "password": config.password,
                 "bridgeIp": lanIp,
                 "bridgePort": Int(port),
                 "authToken": auth.token,
             ])
-            await serial.serial.setOnMessage { [weak self] portPath, msg in
-                guard let self else { return }
-                if let type = msg["type"] as? String {
-                    // Device→daemon command channel over serial. A board whose
-                    // WiFi is parked (serial-primary) still steers; without this
-                    // its taps were dropped by the device_info-only parser.
-                    // Node parity: setSerialCommandSink in bridge/src/esp32-serial.ts.
-                    if Self.serialForwardableCommands.contains(type) {
-                        let box = SendableDict(msg)
-                        Task { @DaemonActor [weak self] in
-                            self?.handleCommand(box.value)
-                        }
-                        return
+        }
+        let autoProvision = wifiConfig?.autoProvision == true
+        let daemonPort = Int(port)
+        await serial.serial.setOnMessage { [weak self] portPath, msg in
+            guard let self else { return }
+            guard let type = msg["type"] as? String else { return }
+            // Device→daemon command channel over serial. A board whose WiFi is
+            // parked (serial-primary) still steers; without this its taps were
+            // dropped by the device_info-only parser.
+            // Node parity: setSerialCommandSink in bridge/src/esp32-serial.ts.
+            if Self.serialForwardableCommands.contains(type) {
+                let box = SendableDict(msg)
+                Task { @DaemonActor [weak self] in
+                    self?.handleCommand(box.value)
+                }
+                return
+            }
+            if type == "auth_provision_ack" {
+                Task { await self.serialModule?.serial.noteAuthProvisionAck(port: portPath) }
+                return
+            }
+            guard type == "device_info" else { return }
+
+            // Keep every serial-attached board armed with the token this daemon
+            // serves — regardless of the auto-provision setting, and regardless
+            // of whether the board's radio is up. A board that is online but
+            // holding a credential we no longer accept is closed 4001 on every
+            // dial, and serial is the only channel left to fix it over.
+            Task {
+                let armed = await self.serialModule?.serial.sendAuthProvisionToAll(
+                    token: AuthManager.shared.token, bridgeIP: lanIp, bridgePort: daemonPort) ?? []
+                if !armed.isEmpty {
+                    DaemonLogger.shared.info("Pairing token armed on \(armed.count) ESP32 connection(s); trigger port \(portPath)")
+                }
+                // Firmware that predates `auth_provision` drops it silently, and
+                // silence is the only signal we get. Give it a moment, then fall
+                // back to the one message it does understand. It costs a WiFi
+                // re-associate, hence: once per board per token, only after the
+                // silence, and only with auto-provisioning on (it carries the
+                // user's WiFi credentials).
+                guard !armed.isEmpty, autoProvision, let config = wifiConfig else { return }
+                try? await Task.sleep(for: .milliseconds(Self.legacyRearmGraceMilliseconds))
+                let legacy = SendableDict([
+                    "type": "wifi_provision",
+                    "ssid": config.ssid,
+                    "password": config.password,
+                    "bridgeIp": lanIp,
+                    "bridgePort": daemonPort,
+                    "authToken": AuthManager.shared.token,
+                ])
+                for armedPort in armed {
+                    let sent = await self.serialModule?.serial
+                        .sendLegacyProvisionIfUnacked(port: armedPort, legacy.value) ?? false
+                    if sent {
+                        DaemonLogger.shared.info("\(armedPort): firmware predates auth_provision — re-armed over the legacy WiFi provision path")
                     }
-                    if type == "device_info", msg["wifiConnected"] as? Bool != true {
-                        Task {
-                            let sent = await self.serialModule?.serial.sendWifiProvisionToAll(provisionMsg.value) ?? 0
-                            if sent > 0 {
-                                DaemonLogger.shared.info("WiFi provision sent to \(sent) ESP32 connection(s); trigger port \(portPath)")
-                            }
-                        }
+                }
+            }
+
+            if autoProvision, let provisionMsg, msg["wifiConnected"] as? Bool != true {
+                Task {
+                    let sent = await self.serialModule?.serial.sendWifiProvisionToAll(provisionMsg.value) ?? 0
+                    if sent > 0 {
+                        DaemonLogger.shared.info("WiFi provision sent to \(sent) ESP32 connection(s); trigger port \(portPath)")
                     }
                 }
             }
@@ -4949,6 +4997,11 @@ final class DaemonServer {
     /// Commands a board may originate over USB serial (Node parity with the
     /// `setSerialCommandSink` passlist). Everything else on that wire is
     /// device telemetry, not a command.
+    /// How long a board gets to answer `auth_provision` before the daemon
+    /// assumes its firmware predates the message and falls back to the legacy
+    /// WiFi provision path. Node parity: `LEGACY_REARM_GRACE_MS`.
+    nonisolated static let legacyRearmGraceMilliseconds = 3_000
+
     nonisolated static let serialForwardableCommands: Set<String> = [
         "select_option", "session_command", "permission_decision",
         "peripheral_event", "query_session_timeline", "focus_session", "review_run",
