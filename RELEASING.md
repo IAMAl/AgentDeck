@@ -72,8 +72,8 @@ Tag prefixes remain because channels ship independently and may point to differe
 
 1. Verify all four public npm manifests match each other and that the target version is unused on npm.
 2. Run `pnpm build` and tests.
-3. Publish the leaf packages `hooks` and `shared` first, then bridge, then setup.
-4. Confirm each package's `latest` dist-tag matches the npm target version.
+3. Publish with `node scripts/publish-npm.mjs` — it enforces the dependency order (`shared`+`hooks` → `bridge` → `setup`) and rewrites `workspace:*` around each publish. Do **not** use `pnpm publish`: pnpm (verified 11.5.2) uploads README.md inside the tarball but never attaches it to the registry packument, and npmjs.com renders the package page from the packument — that is why every @agentdeck page was blank through 1.0.14.
+4. Confirm each package's `latest` dist-tag matches the npm target version and that `npm view @agentdeck/setup readme` is non-empty.
 5. Tag the exact published commit as `npm-v<TARGET_VERSION>` and push it.
 
 `npm-release.yml` runs on the tag: it re-verifies the version, builds, tests, and creates the GitHub Release. **Publishing stays manual by default** — step 3 above is still yours. To hand publishing to CI, set the repo variable `NPM_PUBLISH_ENABLED=true` and add an `NPM_TOKEN` secret holding a *granular automation* token (a 2FA-on-publish token cannot run unattended); the workflow then publishes in dependency order.

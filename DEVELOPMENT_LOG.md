@@ -40,6 +40,18 @@ hooks는 `repository`/`license` 필드조차 없었다.
 교훈: **발행 수명주기 훅(prepack)에서 머신 상태에 의존하는 아티팩트를 굽지 말 것.**
 "내 머신에서 발행하면 잘 된다"는 발행자가 한 명일 때만 성립하는 암묵 전제다.
 
+### 후기 — 1.0.15: pnpm publish는 README를 packument에 안 싣는다
+
+1.0.14를 `pnpm --filter publish`로 내보낸 뒤 npm 페이지가 여전히 비어 있었다.
+tarball **안에는** README.md가 있는데 레지스트리 packument의 `readme` 필드가 빈
+문자열 — npmjs.com은 packument를 렌더링하므로 페이지에는 아무것도 안 뜬다(비교:
+vite packument에는 readme 본문이 실려 있음. pnpm 11.5.2에서 검증). 해결은
+`scripts/publish-npm.mjs`: 각 패키지 **디렉토리에서 `npm publish`** 를 실행하고
+(디렉토리 발행만 read-package-json이 readme를 manifest에 채운다), pnpm이 해주던
+`workspace:*` → 구체 버전 재작성은 발행 전후 write/restore로 대신한다. 수동 발행과
+npm-release.yml CI 발행이 같은 스크립트를 타도록 워크플로도 교체. 1.0.14는 레지스트리에
+남는 중간 버전(immutable)이고 공식 태그는 npm-v1.0.15만 만든다.
+
 ### 문제
 
 D200H VOICE 키를 누르면 녹음은 시작되는데 세션에 아무것도 들어오지 않았다.
