@@ -87,8 +87,9 @@ describe('fm-helper build invariants', () => {
     expect(script).toContain(`'${bundleId}'`);
   });
 
-  // Only meaningful where a build has run (darwin dev machines, post-prepack);
-  // the binary is not tracked, so its absence is not a failure.
+  // Only meaningful where a dev build has run (`pnpm --filter @agentdeck/bridge
+  // build:fm-helper`); the binary is not tracked or packaged — the npm install
+  // compiles on demand — so its absence is not a failure.
   it.skipIf(!existsSync(binaryPath))('ships a binary carrying the usage strings', () => {
     const bytes = readFileSync(binaryPath);
     for (const key of REQUIRED_KEYS) {

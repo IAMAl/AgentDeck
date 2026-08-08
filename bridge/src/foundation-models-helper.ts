@@ -47,6 +47,46 @@ function isExecutable(path: string): boolean {
   }
 }
 
+const CPU_TYPE_X86_64 = 0x01000007;
+const CPU_TYPE_ARM64 = 0x0100000c;
+
+/**
+ * True when this Mach-O header carries a slice that runs natively on `arch`.
+ * The npm tarball ships no helper binary (it compiles on demand), but a dev
+ * tree, an `AGENTDECK_FM_HELPER` override, or a `~/.agentdeck` cache migrated
+ * from another Mac can still present one built for the other CPU — and spawn()
+ * fails with EBADARCH only *after* resolution has committed to that path, so
+ * without this check the source-compile fallback never runs. Rosetta translates
+ * x86_64 → arm64 only; an arm64 binary on an Intel Mac is simply dead.
+ */
+export function machoMatchesArch(header: Buffer, arch: string = process.arch): boolean {
+  const want = arch === 'arm64' ? CPU_TYPE_ARM64 : arch === 'x64' ? CPU_TYPE_X86_64 : null;
+  if (want == null || header.length < 8) return false;
+  const leMagic = header.readUInt32LE(0);
+  if (leMagic === 0xfeedfacf || leMagic === 0xfeedface) {
+    return header.readUInt32LE(4) === want;
+  }
+  const beMagic = header.readUInt32BE(0);
+  if (beMagic === 0xcafebabe || beMagic === 0xcafebabf) {
+    const entrySize = beMagic === 0xcafebabe ? 20 : 32;
+    const count = header.readUInt32BE(4);
+    for (let i = 0; i < count; i += 1) {
+      const offset = 8 + i * entrySize;
+      if (offset + 4 > header.length) return false;
+      if (header.readUInt32BE(offset) === want) return true;
+    }
+  }
+  return false;
+}
+
+function helperMatchesArch(path: string): boolean {
+  try {
+    return machoMatchesArch(readFileSync(path));
+  } catch {
+    return false;
+  }
+}
+
 function supportsFoundationModelsRuntime(): boolean {
   if (process.platform !== 'darwin') return false;
   const darwinMajor = Number(release().split('.')[0] ?? '0');
@@ -101,7 +141,12 @@ function compileHelper(output: string): FoundationModelsHelperStatus {
     chmodSync(output, 0o755);
     return { available: true, path: output };
   } catch (err) {
-    return { available: false, reason: `failed to build Foundation Models helper: ${String(err).slice(0, 160)}` };
+    return {
+      available: false,
+      reason:
+        `failed to build Foundation Models helper: ${String(err).slice(0, 160)} — ` +
+        'the helper compiles on demand and needs the Swift toolchain; install Xcode Command Line Tools (xcode-select --install) and retry',
+    };
   }
 }
 
@@ -134,14 +179,20 @@ export function resolveFoundationModelsHelper(): FoundationModelsHelperStatus {
 
   const envPath = process.env.AGENTDECK_FM_HELPER;
   if (envPath) {
-    helperPathCache = isExecutable(envPath)
-      ? { available: true, path: envPath }
-      : { available: false, reason: `AGENTDECK_FM_HELPER is not executable: ${envPath}` };
+    if (!isExecutable(envPath)) {
+      helperPathCache = { available: false, reason: `AGENTDECK_FM_HELPER is not executable: ${envPath}` };
+    } else if (!helperMatchesArch(envPath)) {
+      // An explicit override is a statement of intent — refuse loudly rather
+      // than silently falling back to a different binary than the one named.
+      helperPathCache = { available: false, reason: `AGENTDECK_FM_HELPER is built for a different CPU architecture (need ${process.arch}): ${envPath}` };
+    } else {
+      helperPathCache = { available: true, path: envPath };
+    }
     return helperPathCache;
   }
 
   const bundled = bundledHelperPath();
-  const bundledUsable = isExecutable(bundled);
+  const bundledUsable = isExecutable(bundled) && helperMatchesArch(bundled);
   if (bundledUsable && hasVoiceUsageDescriptions(bundled)) {
     helperPathCache = { available: true, path: bundled };
     return helperPathCache;
@@ -156,7 +207,7 @@ export function resolveFoundationModelsHelper(): FoundationModelsHelperStatus {
   }
 
   const cached = cachedHelperPath();
-  if (isExecutable(cached) && hasVoiceUsageDescriptions(cached) && !sourceIsNewer(source, cached)) {
+  if (isExecutable(cached) && helperMatchesArch(cached) && hasVoiceUsageDescriptions(cached) && !sourceIsNewer(source, cached)) {
     helperPathCache = { available: true, path: cached };
     return helperPathCache;
   }

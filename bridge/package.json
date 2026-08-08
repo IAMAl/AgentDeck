@@ -1,8 +1,25 @@
 {
   "name": "@agentdeck/bridge",
-  "version": "1.0.13",
+  "version": "1.0.14",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "AgentDeck CLI and daemon — steer Claude Code, Codex, and OpenCode sessions from Stream Deck, tablets, e-ink, ESP32 panels, and your terminal",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://puritysb.github.io/AgentDeck/",
+  "bugs": "https://github.com/puritysb/AgentDeck/issues",
+  "keywords": [
+    "agentdeck",
+    "claude-code",
+    "codex",
+    "opencode",
+    "stream-deck",
+    "ai-agents",
+    "daemon",
+    "cli",
+    "dashboard"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/puritysb/AgentDeck.git",
@@ -12,7 +29,6 @@
     "dist",
     "!dist/__tests__",
     "assets/fonts",
-    "assets/fm-helper",
     "fm-helper",
     "scripts/build-fm-helper.mjs",
     "python",
@@ -27,7 +43,6 @@
   "scripts": {
     "build": "tsc",
     "build:fm-helper": "node scripts/build-fm-helper.mjs",
-    "prepack": "node scripts/build-fm-helper.mjs",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",

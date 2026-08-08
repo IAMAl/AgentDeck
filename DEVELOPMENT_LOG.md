@@ -2,7 +2,43 @@
 
 ---
 
-## 2026-08-08 — D200H 음성이 "아무 일도 안 일어나던" 두 가지 이유
+## 2026-08-08 — npm 1.0.14: tarball을 발행 머신에서 독립시키다
+
+### 문제
+
+npm 페이지 점검("설치 방법이 안 보인다")에서 시작해 배포 방식 자체의 결함으로 이어졌다.
+
+**① 네 패키지 모두 README·description·keywords가 전혀 없었다** (`readmeFilename=''`).
+hooks는 `repository`/`license` 필드조차 없었다.
+
+**② tarball 내용이 발행한 머신에 따라 달라졌다.** bridge의 `prepack`이
+`assets/fm-helper/agentdeck-fm-helper`(gitignored, arch 전용, ad-hoc 서명 Mach-O)를
+발행 머신에서 구워 넣었다. 1.0.13은 arm64 Mac에서 발행되어 **arm64 전용 바이너리**를
+실었고, Intel Mac에서 발행하면 x86_64가, CI ubuntu에서 발행하면 **아무것도** 실리지
+않는다(files 항목 부재는 npm이 조용히 건너뜀). 같은 버전 번호가 세 가지 산출물이 되는
+구조였고, CI 발행(NPM_PUBLISH_ENABLED)을 켜는 순간 지뢰가 터질 예정이었다.
+
+**③ 소비 측도 그레이스풀하지 않았다.** `resolveFoundationModelsHelper`는 arch 검사가
+없어서 Intel Mac이 1.0.13의 arm64 바이너리를 그대로 spawn → `EBADARCH`로 죽고,
+해석이 이미 그 경로에 커밋된 뒤라 소스 컴파일 폴백은 영영 돌지 않았다.
+
+### 해결
+
+- **결정적 tarball**: `prepack` 제거, files에서 `assets/fm-helper` 제거. 헬퍼는 Swift
+  소스 + 빌드 스크립트로만 실리고 데몬이 첫 사용 시 `~/.agentdeck/fm-helper/`로
+  온디맨드 컴파일한다(macOS 26+, Xcode CLT 필요 — 실패 시 사유에 설치 안내 포함).
+- **arch 게이트**: `machoMatchesArch`(thin/fat 헤더 파싱)를 env override·dev 트리
+  bundled·캐시 세 경로 모두에 적용. 다른 CPU용 바이너리는 spawn 대신 재컴파일.
+  env override의 arch 불일치는 조용한 폴백이 아니라 명시적 거부(의도 선언이므로).
+- **게이트**: `fm-helper-arch.test.ts` — Mach-O 판정 + "files에 assets/fm-helper 금지,
+  prepack 금지, 소스+스크립트 필수" 패키징 불변식.
+- **메타데이터**: 4패키지 README 신규(환경별 설치 절차 포함, npm은 상대링크가 깨지므로
+  절대 URL만), `description`/`homepage`/`keywords`/`engines>=22` 추가.
+- RELEASING.md npm 섹션에 머신 독립 불변식 명문화, docs/voice-setup.md에 온디맨드
+  컴파일 경로 추가.
+
+교훈: **발행 수명주기 훅(prepack)에서 머신 상태에 의존하는 아티팩트를 굽지 말 것.**
+"내 머신에서 발행하면 잘 된다"는 발행자가 한 명일 때만 성립하는 암묵 전제다.
 
 ### 문제
 

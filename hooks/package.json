@@ -1,8 +1,20 @@
 {
   "name": "@agentdeck/hooks",
-  "version": "1.0.13",
+  "version": "1.0.14",
+  "engines": {
+    "node": ">=22"
+  },
   "private": false,
+  "description": "Agent lifecycle hook installers for AgentDeck (internal dependency of @agentdeck/bridge)",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/puritysb/AgentDeck.git",
+    "directory": "hooks"
+  },
+  "homepage": "https://github.com/puritysb/AgentDeck#readme",
+  "bugs": "https://github.com/puritysb/AgentDeck/issues",
   "files": [
     "dist",
     "!dist/__tests__"

@@ -1,8 +1,23 @@
 {
   "name": "@agentdeck/setup",
-  "version": "1.0.13",
+  "version": "1.0.14",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "One-command installer for AgentDeck — put AI coding agents (Claude Code, Codex, OpenCode) on physical control surfaces",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://puritysb.github.io/AgentDeck/",
+  "bugs": "https://github.com/puritysb/AgentDeck/issues",
+  "keywords": [
+    "agentdeck",
+    "claude-code",
+    "codex",
+    "opencode",
+    "stream-deck",
+    "ai-agents",
+    "installer"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/puritysb/AgentDeck.git",
