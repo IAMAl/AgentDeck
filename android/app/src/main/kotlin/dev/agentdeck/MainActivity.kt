@@ -10,6 +10,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.lifecycleScope
@@ -331,6 +334,11 @@ fun TabletDashboard(
     val connectionStatus by connection.status.collectAsState()
     val currentUrl by connection.url.collectAsState()
     val context = LocalContext.current
+    // False only while the ws://127.0.0.1 (adb reverse) attempt is still in
+    // flight. The LAN fallback waits on it so a USB-attached device — which is
+    // same-machine over the tunnel and needs no pairing token — is not pushed
+    // onto an endpoint it has no credential for.
+    var localAttemptSettled by remember { mutableStateOf(false) }
 
     // Auto-connect: localhost (USB) → saved URL → mDNS (WiFi)
     LaunchedEffect(Unit) {
@@ -350,6 +358,9 @@ fun TabletDashboard(
             connection.connect(BridgeConstants.LOCALHOST_WS_URL)
             delay(3000)
         }
+        // The USB attempt has had its turn — release the LAN fallback whether it
+        // succeeded or not, so a device with no reverse tunnel is not stranded.
+        localAttemptSettled = true
         if (savedUrl != null && connection.status.value != ConnectionStatus.CONNECTED) {
             connection.autoConnect(savedUrl)
             delay(5000)
@@ -391,27 +402,39 @@ fun TabletDashboard(
         }
     }
 
-    // Preempt the localhost (USB) phase whenever mDNS can see a daemon: adb reverse
-    // only exists under the Node CLI daemon, so against the Swift in-process daemon
-    // the ws://127.0.0.1 attempt can never succeed and the bounded discovery windows
-    // in the effects above/below can keep missing a slow NSD resolve. Runs whenever
-    // not connected; re-resolving per connection also heals a saved URL whose port
-    // went stale after a daemon restart (e.g. 9121→9120).
+    // Fall through to the mDNS-discovered LAN endpoint once the USB attempt has
+    // had its turn. This used to preempt the localhost phase the moment mDNS
+    // resolved anything, on the reasoning that adb reverse only exists under the
+    // Node CLI daemon so ws://127.0.0.1 can never succeed against the Swift one.
+    // True for that case — but the condition tested "is a daemon visible", which
+    // says nothing about whether the reverse tunnel works, so it also preempted
+    // the USB path on devices where it was live. That matters most for the
+    // devices least able to recover: an e-ink reader has no camera to scan a
+    // pairing QR, and over adb reverse it is same-machine and needs no token at
+    // all. A loopback probe fails in milliseconds when the tunnel is absent, so
+    // waiting for it costs little and the LAN endpoint is still reached.
+    // Re-resolving per connection also heals a saved URL whose port went stale
+    // after a daemon restart (e.g. 9121→9120).
     LaunchedEffect(connectionStatus, currentUrl) {
         if (connectionStatus == ConnectionStatus.CONNECTED) return@LaunchedEffect
         val discovery = BridgeDiscovery(context)
         discovery.discover().collect { bridges ->
             val daemon = bridges.firstOrNull {
                 it.agentType == "daemon" && it.port == BridgeConstants.WS_PORT
+            } ?: return@collect
+            if (connection.status.value == ConnectionStatus.CONNECTED) return@collect
+            if (!PairingCredential.mayDialDiscovered(
+                    discoveredUrl = daemon.wsUrl(),
+                    currentUrl = connection.url.value,
+                    localAttemptSettled = localAttemptSettled,
+                    unauthorizedEndpoint = connection.unauthorizedEndpoint.value,
+                    savedUrl = connection.pairedUrl,
+                )
+            ) {
+                return@collect
             }
-            val cur = connection.url.value
-            val curIsLocalOrNone = cur == null ||
-                cur.contains("127.0.0.1") || cur.contains("localhost")
-            if (daemon != null && curIsLocalOrNone &&
-                connection.status.value != ConnectionStatus.CONNECTED) {
-                mainDebug { "mDNS preempts USB attempt: ${daemon.name} at ${daemon.wsUrl()}" }
-                connection.connect(daemon.wsUrl(), daemon.fallbackWsUrl())
-            }
+            mainDebug { "mDNS fallback after USB: ${daemon.name} at ${daemon.wsUrl()}" }
+            connection.connect(daemon.wsUrl(), daemon.fallbackWsUrl())
         }
     }
 

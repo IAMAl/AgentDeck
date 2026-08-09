@@ -92,6 +92,17 @@ class BridgeConnection private constructor() {
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
+    /**
+     * Endpoint (host:port) that closed us 4001, remembered as its own fact.
+     *
+     * Stopping the socket-level reconnect is not enough: the same handler
+     * clears `_url`, and the auto-connect layer reads a null URL as "nothing
+     * has been tried", so it redialled on every mDNS emission. A rejection has
+     * to survive that clearing — see `PairingCredential.mayDialDiscovered`.
+     */
+    private val _unauthorizedEndpoint = MutableStateFlow<String?>(null)
+    val unauthorizedEndpoint: StateFlow<String?> = _unauthorizedEndpoint.asStateFlow()
+
     /** True when actively trying to reconnect to a known URL. */
     private val _isReconnecting = MutableStateFlow(false)
     val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
@@ -130,6 +141,13 @@ class BridgeConnection private constructor() {
         // Only keep a fallback that's actually distinct from the primary.
         this.fallbackUrl = fallbackUrl?.takeIf { it != wsUrl }
         triedFallback = false
+
+        // A dial that carries a credential is new information about this
+        // endpoint, so it retires the earlier refusal. Same for the loopback
+        // path, which is trusted by being same-machine rather than by a token.
+        if (PairingCredential.tokenIn(wsUrl) != null || PairingCredential.isLoopback(wsUrl)) {
+            _unauthorizedEndpoint.value = null
+        }
 
         _url.value = wsUrl
         _status.value = ConnectionStatus.DISCONNECTED
@@ -237,6 +255,10 @@ class BridgeConnection private constructor() {
                 if (code == 4001) {
                     Log.w(TAG, "Auth rejected (4001) — stopping reconnect")
                     shouldReconnect = false
+                    // Remember WHICH endpoint refused us before clearing the URL:
+                    // the layer above treats a null URL as "never tried" and would
+                    // otherwise redial this same endpoint on every discovery tick.
+                    _unauthorizedEndpoint.value = PairingCredential.endpointOf(_url.value)
                     _url.value = null
                     _lastError.value = "Unauthorized — check pairing token"
                 } else {

@@ -90,4 +90,56 @@ object PairingCredential {
         if (tokenIn(candidate) != null) return true
         return !(sameEndpoint(candidate, stored) && tokenIn(stored) != null)
     }
+
+    /** True for the `adb reverse` loopback endpoint, which needs no credential. */
+    fun isLoopback(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return url.contains("127.0.0.1") || url.contains("localhost")
+    }
+
+    /**
+     * Whether a discovered LAN endpoint may be dialled right now.
+     *
+     * Two rules, one per way the old unconditional preempt failed.
+     *
+     * **The USB path answers first.** `adb reverse` puts the daemon on
+     * 127.0.0.1, where it is same-machine and needs no token at all — so a
+     * USB-attached device should never be asked to pair. Preempting that
+     * attempt the moment mDNS resolves (mDNS visibility says nothing about
+     * whether the reverse tunnel works) is what pushed camera-less e-ink
+     * readers into a QR flow they cannot complete. A loopback probe fails in
+     * milliseconds when the tunnel is absent, so letting it settle costs
+     * almost nothing and the LAN endpoint is still reached.
+     *
+     * **A 4001 endpoint is not dialable again without a credential.** The
+     * socket layer stops its own reconnect on 4001 — and also clears the URL,
+     * which made "rejected" indistinguishable from "never tried" to the layer
+     * above, so every discovery emission redialled it (measured at ~25/s
+     * against a live daemon). Rejection has to be remembered as its own fact,
+     * keyed by ENDPOINT like every other credential decision here.
+     *
+     * Android-only, unlike the rest of this object: `adb reverse` has no Apple
+     * analogue and Apple's reconnect ladder lives in `AgentStateHolder`. The
+     * cases shared with `PairingCredentialTests` cover the functions above.
+     */
+    fun mayDialDiscovered(
+        discoveredUrl: String,
+        currentUrl: String?,
+        localAttemptSettled: Boolean,
+        unauthorizedEndpoint: String?,
+        savedUrl: String?,
+    ): Boolean {
+        // Already dialling a real endpoint — leave it alone.
+        if (currentUrl != null && !isLoopback(currentUrl)) return false
+        // The loopback attempt is still in flight; it gets to answer first.
+        if (!localAttemptSettled) return false
+        // Rejected here before, and we still have nothing new to offer it.
+        val endpoint = endpointOf(discoveredUrl)
+        if (endpoint != null && endpoint == unauthorizedEndpoint &&
+            tokenIn(resolve(discoveredUrl, savedUrl)) == null
+        ) {
+            return false
+        }
+        return true
+    }
 }
