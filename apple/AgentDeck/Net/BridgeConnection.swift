@@ -23,6 +23,14 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
     private static let initialBackoffMs = 1000
     private static let maxBackoffMs = 8000
     private static let maxReconnectAttempts = 5
+    /// The application close code both daemons use to refuse an unpaired peer.
+    /// Not in `URLSessionWebSocketTask.CloseCode` — 4001 is application-defined
+    /// (`ws.close(4001, 'Unauthorized')` in `bridge/src/ws-server.ts`).
+    static let unauthorizedCloseCode = 4001
+    /// Shown when the daemon refuses this device's credential. Says what is
+    /// wrong and what to do — a refusal is not a generic connection failure,
+    /// and the retry that follows a generic failure cannot fix it.
+    static let unauthorizedMessage = "Unauthorized — re-pair this device (scan the QR from \"agentdeck qr\")"
     // Keepalive cadence. The daemon (ws-server.ts) pings every 15s and evicts any
     // client that hasn't ponged within one 15s window, so we keep the path warm
     // well inside that budget: an 8s interval gives ~2x margin, and the first ping
@@ -447,13 +455,30 @@ final class BridgeConnection: ObservableObject, @unchecked Sendable {
                 DispatchQueue.main.async { self.onDisconnect?() }
             }
 
-            // Check for auth rejection (4001)
-            if let urlError = error as? URLError,
-               urlError.code == .userAuthenticationRequired {
+            // Auth rejection, by either shape it can arrive in.
+            //
+            // `URLError.userAuthenticationRequired` only appears when the
+            // UPGRADE is refused with HTTP 401, which is what the Swift daemon
+            // does. The Node daemon — what `npx @agentdeck/setup` installs, so
+            // what most people run — completes the handshake with 101 and only
+            // then closes `4001 Unauthorized`. URLSession reports that as an
+            // ordinary close, so this branch never fired for it: a wrong or
+            // missing pairing token spent the whole reconnect budget and
+            // surfaced as "Connection failed", with the one word that explains
+            // it — Unauthorized — never reaching the screen. Reported as #171 by
+            // a user who could load /health from the same phone and could not
+            // work out why pairing failed; they had no way to, from the app.
+            //
+            // docs/daemon.md has said "check for the close code, not the status
+            // line" since #145. This is the client that wasn't.
+            let closeCode = self.webSocket?.closeCode
+            let refusedByCloseCode = closeCode.map { $0.rawValue == Self.unauthorizedCloseCode } ?? false
+            let refusedByUpgrade = (error as? URLError)?.code == .userAuthenticationRequired
+            if refusedByCloseCode || refusedByUpgrade {
                 self.isHandlingDisconnect = false  // No reconnect will follow
                 DispatchQueue.main.async {
                     self.status = .disconnected
-                    self.lastError = "Unauthorized — check pairing token"
+                    self.lastError = Self.unauthorizedMessage
                     self.shouldReconnect = false
                     self.isReconnecting = false
                 }
