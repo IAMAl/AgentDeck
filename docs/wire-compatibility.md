@@ -2,7 +2,7 @@
 id: spec.wire-compatibility
 title: Wire Compatibility Contract
 description: What may change on the daemon↔client wire without breaking software already in users' hands — change classes, the retain-on-absent merge rule, freshness axes, and how to introduce a genuinely breaking change.
-category: Engineering
+category: Specs
 locale: en
 canonical: true
 status: stable

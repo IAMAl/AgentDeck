@@ -2,7 +2,7 @@
 id: arch.daemon
 title: Daemon Hub
 description: The singleton daemon on port 9120 — session-bridge push, mDNS recovery, usage relay, multi-surface monitoring.
-category: Engineering
+category: Specs
 locale: en
 canonical: true
 status: stable

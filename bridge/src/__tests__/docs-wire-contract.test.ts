@@ -51,6 +51,44 @@ describe('documented LAN boundary matches the gate', () => {
   });
 });
 
+/**
+ * The published design-system rail renders one collapsible group, closed by
+ * default. A contract nobody opens is a contract nobody reads, so the auth and
+ * wire specs must not sit inside it — they belong in an always-expanded
+ * category alongside the other surface specs.
+ */
+describe('auth and wire specs stay visible in the published rail', () => {
+  const AUTH_AND_WIRE_DOCS = [
+    'docs/wire-compatibility.md',
+    'docs/protocol.md',
+    'docs/gateway-protocol.md',
+    'docs/daemon.md',
+  ];
+
+  /** The one category the viewer collapses, read from the viewer itself. */
+  function collapsibleCategory(): string {
+    const app = read('agentdeck-design-system/viewer/app.js');
+    const match = app.match(/const isProject = category === '([^']+)'/);
+    if (!match) throw new Error('viewer no longer marks a single collapsible category');
+    return match[1];
+  }
+
+  function categoryOf(rel: string): string {
+    const match = read(rel).match(/^category:\s*(.+)$/m);
+    if (!match) throw new Error(`${rel} has no category frontmatter`);
+    return match[1].trim();
+  }
+
+  it.each(AUTH_AND_WIRE_DOCS)('%s is not in the collapsed group', (rel: string) => {
+    expect(categoryOf(rel)).not.toBe(collapsibleCategory());
+  });
+
+  it('groups them with the other surface specs', () => {
+    const categories = new Set(AUTH_AND_WIRE_DOCS.map(categoryOf));
+    expect(categories).toEqual(new Set([categoryOf('docs/esp32-client-contract.md')]));
+  });
+});
+
 describe('wire compatibility contract stays bound to its subjects', () => {
   const doc = read('docs/wire-compatibility.md');
 
