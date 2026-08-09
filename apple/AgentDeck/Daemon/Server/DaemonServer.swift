@@ -7612,11 +7612,14 @@ final class DaemonServer {
         mergeEngineSnapshot(into: &e)
         let ts = usageAPI.tokenStatus
         if ts != .unknown { e["tokenStatus"] = ts.rawValue }
-        if let codex = codexAuthStatusSnapshot() {
+        let codexAuth = codexAuthStatusSnapshot()
+        if let codex = codexAuth {
             Self.writeCodexAuthStatus(codex, into: &e)
         }
-        if let rateLimits = usageAPI.codexRateLimits {
-            e["codexRateLimits"] = Self.codexRateLimitsPayload(rateLimits)
+        if let payload = Self.codexRateLimitsPayload(
+            usageAPI.codexRateLimits, accountPlan: codexAuth?.planType
+        ) {
+            e["codexRateLimits"] = payload
         }
         if let antigravity = cachedAntigravityStatus {
             e["antigravityStatus"] = antigravityPayload(antigravity)
@@ -7685,7 +7688,31 @@ final class DaemonServer {
         return -date.timeIntervalSinceNow > graceSeconds
     }
 
-    private static func codexRateLimitsPayload(_ limits: CodexRateLimitsLocal) -> [String: Any] {
+    /// Wire payload for the rollout snapshot, reconciled against the LIVE account
+    /// tier from `auth.json`.
+    ///
+    /// Returns nil only when there is nothing at all to say about Codex. Once the
+    /// account tier is known the result is always a dictionary — possibly one
+    /// with no windows — because every client merges usage fields
+    /// RETAIN-ON-ABSENT: omitting the key means "no information" and would pin a
+    /// retired plan's gauge on the dashboard forever (the `usageStale` latch
+    /// shape, CLAUDE.md). Voiding has to ride the wire explicitly. Mirrors
+    /// `normalizeCodexRateLimits` in bridge/src/usage-event.ts.
+    private static func codexRateLimitsPayload(
+        _ limits: CodexRateLimitsLocal?,
+        accountPlan: String?
+    ) -> [String: Any]? {
+        // A snapshot minted under a plan the account no longer holds is void, not
+        // old (`CodexPlanRules.snapshotMatchesAccountPlan`). Everything measured
+        // under the old plan goes with it — windows, credits, limitId, capturedAt
+        // — and only the live tier survives, so surfaces can still say
+        // "ChatGPT Free" instead of nothing.
+        guard let limits, CodexPlanRules.snapshotMatchesAccountPlan(
+            snapshot: limits.planType, account: accountPlan
+        ) else {
+            guard let accountPlan, !accountPlan.isEmpty else { return nil }
+            return ["planType": accountPlan]
+        }
         func window(_ w: CodexRateLimitWindowLocal?) -> [String: Any]? {
             guard let w else { return nil }
             var d: [String: Any] = ["usedPercent": w.usedPercent, "windowMinutes": w.windowMinutes]

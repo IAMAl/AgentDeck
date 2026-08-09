@@ -191,6 +191,12 @@ export class StateStore {
       // Pass it straight through so the layout engine can draw CX 5H/7D tiles
       // alongside Claude's, mirroring how fiveHourPercent is surfaced.
       codexRateLimits: this.usage.codexRateLimits,
+      // Per-model scoped caps (e.g. the weekly "Fable" limit) ride the same
+      // event. `buildUsageTiles` needs them to draw the scoped tile at all —
+      // without this the D200H never showed one, so a free-tier Codex account
+      // simply lost the third strip key instead of spending it on the cap that
+      // actually binds.
+      scopedLimits: this.usage.scopedLimits,
       usageKnown,
     };
   }

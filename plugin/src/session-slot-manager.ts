@@ -5,8 +5,8 @@
  * - List View: each button shows one session (OC first, then CC by startedAt)
  * - Detail View: button 1=BACK, button 2=session info, buttons 3-7=options, button 8=ESC/STOP
  */
-import type { SessionInfo, StatusCardTone, StatusIconKind, CodexRateLimits } from '@agentdeck/shared';
-import { State, sortSessions, assignDisplayNames, foldCodexSessionsForDisplay, aliasModelName, Brand, usageWindowKind, usageWindowLabel, codexUsageFootnote, UI } from '@agentdeck/shared';
+import type { SessionInfo, StatusCardTone, StatusIconKind, CodexRateLimits, ScopedUsageLimit } from '@agentdeck/shared';
+import { State, sortSessions, assignDisplayNames, foldCodexSessionsForDisplay, aliasModelName, Brand, formatScopedLabel, scopedLimitClaimsUsageKey, codexWindowsBeside, usageWindowKind, usageWindowLabel, codexUsageFootnote, UI } from '@agentdeck/shared';
 import type { PromptOption } from '@agentdeck/shared';
 import { dlog } from './log.js';
 import { stateFromSession } from './focused-detail-state.js';
@@ -34,9 +34,13 @@ export interface UsageGauge {
   /** Codex freshness note ("stale" / "3h ago"): replaces the countdown and dims
    *  the tile so a frozen passive read can't pass for a live one. */
   footnote?: string;
+  /** Scoped per-model cap that isn't the binding one — drawn muted rather than
+   *  on the critical ramp (mirrors the D200H scoped tile and the E2 encoder). */
+  inactive?: boolean;
 }
 
-/** Max bottom-row keys usage may claim: Claude 5h/7d + Codex 5h/7d. */
+/** Max bottom-row keys usage may claim: Claude 5h/7d + Codex 5h/7d (or, when
+ *  Codex reports nothing, the scoped cap standing in for it). */
 const MAX_USAGE_RESERVE = 4;
 
 const CLAUDE_USAGE_COLOR = Brand.claudeCode;
@@ -74,6 +78,8 @@ export interface SessionSlotConfig {
   usageWindow?: '5h' | '7d';
   usageResetsAt?: string;
   usageFootnote?: string;
+  /** Scoped cap that isn't the binding one — muted ramp, never critical. */
+  usageInactive?: boolean;
 }
 
 export interface DeckLayout {
@@ -272,6 +278,9 @@ export class SessionSlotManager {
    *  never stored as a boolean — a stored flag would freeze exactly like the
    *  percent it is meant to qualify. */
   private _codexCapturedAt: string | undefined;
+  /** Worst per-model scoped cap (e.g. the weekly "Fable" limit). Competes with
+   *  Codex for a reserved key rather than adding one — see `usageGauges`. */
+  private _worstScoped: ScopedUsageLimit | undefined;
   // Page cursor for the (Phase-1-dormant) gauge paging when present gauges
   // exceed MAX_USAGE_RESERVE. Never advances with ≤4 gauges.
   private _usagePage = 0;
@@ -388,6 +397,7 @@ export class SessionSlotManager {
     sevenDayResetsAt?: string;
     usageStale?: boolean;
     codexRateLimits?: CodexRateLimits;
+    scopedLimits?: ScopedUsageLimit[];
   }): void {
     const stale = usage.usageStale === true;
     this._fiveHourPercent = usage.fiveHourPercent ?? 0;
@@ -408,12 +418,17 @@ export class SessionSlotManager {
       ? { percent: cx.secondary.usedPercent, resetsAt: cx.secondary.resetsAt, windowMinutes: cx.secondary.windowMinutes, stale: cx.secondary.stale === true }
       : null;
     this._codexCapturedAt = cx?.capturedAt;
+    // Worst-first already (active desc, then percent desc) — only [0] can ever
+    // reach a key, so the rest is dead work here. Paging through them lives on
+    // the E2 encoder, which has room for it.
+    this._worstScoped = stale ? undefined : usage.scopedLimits?.[0];
   }
 
   /**
    * Present water-tank gauges in left-to-right (then bottom-row) display order:
-   * Claude 5h, Claude 7d, Codex 5h, Codex 7d. Hide-if-absent — an agent with no
-   * live quota contributes nothing, so it claims no keys.
+   * Claude 5h, Claude 7d, then Codex — with the worst per-model scoped cap
+   * competing for one of Codex's keys (see below). Hide-if-absent throughout: an
+   * agent with no live quota contributes nothing, so it claims no keys.
    */
   private usageGauges(): UsageGauge[] {
     const gauges: UsageGauge[] = [];
@@ -429,13 +444,39 @@ export class SessionSlotManager {
         known: this._sevenDayKnown, color: CLAUDE_USAGE_COLOR,
       });
     }
+    // The worst per-model scoped cap (e.g. the weekly "Fable" limit) is otherwise
+    // keypad-invisible: it rides the E2 encoder and the opt-in `limit-key`,
+    // neither of which a classic Stream Deck / XL user necessarily has. Whether it
+    // earns one of the reserved keys is `scopedLimitClaimsUsageKey`, and what Codex
+    // keeps once it has is `codexWindowsBeside` — both shared with the D200H strip
+    // so the two decks can't disagree about which limit the user is looking at. An
+    // ACTIVE cap is the binding one, goes ahead of Codex and TAKES one of its keys
+    // (the reserve is carved out of session keys, so a replacement must not
+    // quietly become an addition); an inactive one only lands on a key Codex left
+    // spare, which is the ordinary state of a free ChatGPT tier.
+    const allCodexWindows = [this._codexPrimary, this._codexSecondary]
+      .filter((w): w is CodexWindowSnapshot => w != null);
+    const scoped = this._worstScoped;
+    const scopedClaims = scopedLimitClaimsUsageKey(scoped, allCodexWindows.length);
+    const codexWindows = codexWindowsBeside(allCodexWindows, scopedClaims);
+    const scopedGauge: UsageGauge | undefined =
+      scopedClaims && scoped
+        ? {
+            agent: 'claude', window: '7d', label: formatScopedLabel(scoped.label, 6),
+            percent: scoped.percent, resetsAt: scoped.resetsAt,
+            known: true, color: CLAUDE_USAGE_COLOR,
+            // Missing `active` (relayed/legacy) → NOT binding, so an inactive cap
+            // renders muted rather than latching the critical ramp (CLAUDE.md).
+            inactive: scoped.active !== true,
+          }
+        : undefined;
+    if (scopedGauge && scoped?.active === true) gauges.push(scopedGauge);
     // Codex windows carry the same short "5H"/"7D" labels as Claude — the agent
     // is conveyed by the gauge's brand dot, not a "CX " prefix. Label each
     // present window by its own length (windowMinutes), never by slot: Codex now
     // sometimes reports the weekly (10080-min) window as `primary` with
     // `secondary` null, so a slot-based "7D = secondary" would drop the gauge.
-    for (const w of [this._codexPrimary, this._codexSecondary]) {
-      if (w == null) continue;
+    for (const w of codexWindows) {
       gauges.push({
         agent: 'codex', window: usageWindowKind(w.windowMinutes), label: usageWindowLabel(w.windowMinutes) || '5H',
         percent: w.percent, resetsAt: w.resetsAt,
@@ -443,6 +484,7 @@ export class SessionSlotManager {
         footnote: codexUsageFootnote(w, this._codexCapturedAt)?.text,
       });
     }
+    if (scopedGauge && scoped?.active !== true) gauges.push(scopedGauge);
     return gauges;
   }
 
@@ -743,6 +785,7 @@ export class SessionSlotManager {
             usageWindow: g.window,
             usageResetsAt: g.resetsAt,
             usageFootnote: g.footnote,
+            usageInactive: g.inactive === true,
           };
         }
         return { type: 'empty' };

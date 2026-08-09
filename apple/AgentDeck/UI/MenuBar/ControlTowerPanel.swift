@@ -482,10 +482,19 @@ struct ControlTowerPanel: View {
     /// feature-complete instead of broken.
     @ViewBuilder
     private var rateLimitsSection: some View {
+        // Presence of the Codex block is NOT gauge data: the daemon also emits a
+        // windowless one carrying only the account tier (a free ChatGPT plan has
+        // no rolling windows, and the block still has to ride the wire so clients
+        // can retract a retired plan's gauge). Gating on `!= nil` drew an empty
+        // "RATE LIMITS" header for every free-tier account — most visibly on a
+        // standalone App Store daemon, where Codex is the only quota path there is.
+        let codexHasGauge = stateHolder.state.codexRateLimits.map {
+            $0.primary != nil || $0.secondary != nil || $0.credits != nil || $0.limitId != nil
+        } ?? false
         let hasGauges = stateHolder.state.fiveHourPercent != nil
             || stateHolder.state.sevenDayPercent != nil
             || (stateHolder.state.costLimit != nil && stateHolder.state.costLimit! > 0)
-            || stateHolder.state.codexRateLimits != nil
+            || codexHasGauge
         let externalDaemonActive = daemonService.isUsingExternalDaemon
         if hasGauges || externalDaemonActive {
             VStack(alignment: .leading, spacing: 6) {

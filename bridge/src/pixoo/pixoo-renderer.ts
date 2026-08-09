@@ -1040,16 +1040,24 @@ function renderCompact32Frame(
     ? undefined : usageEvent?.codexRateLimits?.primary?.usedPercent;
   const secondary = usageEvent?.codexRateLimits?.secondary?.stale === true
     ? undefined : usageEvent?.codexRateLimits?.secondary?.usedPercent;
-  const telemetry: Array<[number | undefined, RGB]> = [
-    [usageEvent?.fiveHourPercent, [42, 220, 154]],
-    [usageEvent?.sevenDayPercent, [54, 154, 255]],
-    [primary, [185, 86, 255]],
-    [secondary, [104, 116, 255]],
-  ];
+  // One-pixel telemetry rails, PRESENT ONES ONLY. On a 32-row panel each rail is
+  // 3% of the whole display, so reserving a row for a provider that reports
+  // nothing (a Claude-only user, a free-tier Codex account, the App Store Swift
+  // daemon with no Claude quota path) spent that height on a dead black stripe.
+  // Building the list first and anchoring it to the BOTTOM edge keeps the rails
+  // where the eye expects them while every unclaimed row falls back to the tank.
+  const telemetry: Array<[number, RGB]> = [];
+  const rail = (raw: number | undefined, brand: RGB): void => {
+    if (raw != null) telemetry.push([raw, brand]);
+  };
+  rail(usageEvent?.fiveHourPercent, [42, 220, 154]);
+  rail(usageEvent?.sevenDayPercent, [54, 154, 255]);
+  rail(primary, [185, 86, 255]);
+  rail(secondary, [104, 116, 255]);
+  const firstRailY = 32 - telemetry.length;
   telemetry.forEach(([raw, brand], row) => {
-    const y = 28 + row;
+    const y = firstRailY + row;
     for (let x = 0; x < 32; x++) set(x, y, [5, 8, 14]);
-    if (raw == null) return;
     const pct = Math.max(0, Math.min(100, raw));
     const color: RGB = pct >= 90 ? [255, 58, 72] : pct >= 70 ? [255, 183, 38] : brand;
     set(0, y, brand); set(1, y, brand);

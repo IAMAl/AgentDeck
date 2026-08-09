@@ -25,7 +25,8 @@ const projectDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 
 const HEADER =
   'GENERATED FILE — DO NOT EDIT.\n' +
-  'Source of truth: shared/src/format-utils.ts (CODEX_SNAPSHOT_STALE_MS, codexUsageFootnote)\n' +
+  'Source of truth: shared/src/format-utils.ts (CODEX_SNAPSHOT_STALE_MS, codexUsageFootnote,\n' +
+  'codexSnapshotMatchesAccountPlan)\n' +
   'Regenerate: pnpm generate-codex-freshness-rules (drift gated by shared/src/__tests__/codex-freshness-rules.test.ts)';
 
 function comment(prefix) {
@@ -101,6 +102,42 @@ enum CodexUsageFreshness {
         if stale { return "stale" }
         guard isSnapshotAged(capturedAt, now: now) else { return nil }
         return formatSnapshotAge(capturedAt, now: now) ?? "stale"
+    }
+}
+
+/// Which plan a passively-read Codex usage snapshot belongs to.
+///
+/// A THIRD axis, independent of the two above: freshness asks "how current is
+/// this number", this asks "is it still this account's number at all". Codex
+/// stamps \`plan_type\` into every \`rate_limits\` snapshot it writes, and the live
+/// tier is read separately from \`auth.json\`. When they disagree the snapshot was
+/// minted under a plan the account no longer holds, and neither freshness axis
+/// can retire it — \`stale\` waits for \`resetsAt\` (a retired weekly window stays
+/// future-dated for up to 7 days) and \`capturedAt\` only dims, because an aged
+/// reading of a LIVE window is still that window's last true value.
+///
+/// Mirrored on the Swift daemon only: both daemons PRODUCE the wire snapshot, so
+/// both must void it identically. Pure consumers (Android, firmware) already
+/// hide-if-absent and need no copy.
+enum CodexPlanRules {
+    /// True when the ChatGPT tier carries no paid Codex subscription.
+    static func isFreePlan(_ plan: String?) -> Bool {
+        return normalized(plan) == "free"
+    }
+
+    /// True when the snapshot still belongs to the plan the account holds.
+    /// Unknown on either side matches: absence is "no information", never a
+    /// licence to void real data (an API-key install reports no account tier, a
+    /// pre-\`plan_type\` rollout reports no snapshot tier).
+    static func snapshotMatchesAccountPlan(snapshot: String?, account: String?) -> Bool {
+        let snap = normalized(snapshot)
+        let acct = normalized(account)
+        if snap.isEmpty || acct.isEmpty { return true }
+        return snap == acct
+    }
+
+    private static func normalized(_ value: String?) -> String {
+        return (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }
 `;

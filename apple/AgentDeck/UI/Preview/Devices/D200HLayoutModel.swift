@@ -24,7 +24,7 @@
 // against; `scripts/check-preview-mirror-sync.mjs` verifies they match the
 // current `git hash-object` of each file and fails CI when the origin drifts
 // ahead of this mirror. Update them whenever you re-port.
-// SYNC-HASH shared/src/d200h-layout.ts ac3803d2c1ec2da0360014c74b5ab6e85dba3907
+// SYNC-HASH shared/src/d200h-layout.ts bf1f4798a011ff041242ba42997180b8b4f4f521
 // SYNC-HASH shared/src/session-utils.ts b08adbcca7a9fe3386a44801248b2ec06b572a0e
 //
 // INTENTIONALLY OMITTED (not needed by a read-only preview):
@@ -650,29 +650,41 @@ public enum D200HLayoutModel {
         if usage.known, let p = usage.sevenDayPercent {
             tiles.append((.usageGauge(agent: "claude", window: "7d", percent: p, known: true, stale: false, inactive: false, footnote: nil), "7D", "claude"))
         }
-        // Per-model scoped weekly caps (e.g. "Fable") beneath 7D. An inactive cap
-        // renders muted (informational cyan), never the critical ramp — mirrors the
-        // TS buildUsageTiles scoped loop. The 3-slot usage region caps this at the
-        // worst cap[0] in practice; extra models overflow to session tiles.
-        if usage.known {
-            for s in usage.scopedLimits {
-                let label = s.label
-                    .replacingOccurrences(of: "\n", with: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .uppercased()
-                let capped = String(label.prefix(6))
-                tiles.append((.usageGauge(agent: "claude", window: "7d", percent: s.percent, known: true, stale: false, inactive: !s.active, footnote: nil), capped.isEmpty ? "MODEL" : capped, "claude"))
-            }
-        }
-        // Label each present Codex window by its own length, never by slot: Codex
-        // now sometimes reports the weekly (10080-min) window as `primary` with
+        // The worst per-model scoped weekly cap (e.g. "Fable") and the third strip
+        // key it competes with Codex for. Inclusion, placement and what Codex keeps
+        // come from the shared arbiters `scopedLimitClaimsUsageKey` /
+        // `codexWindowsBeside` (TS format-utils), restated here as the same
+        // clauses: an ACTIVE cap is the binding limit, goes AHEAD of Codex and
+        // TAKES one of its keys (a replacement, never a stack); an inactive one
+        // only lands on a key Codex left spare — the ordinary state of a free
+        // ChatGPT tier with nothing to meter. Rendered muted (informational cyan),
+        // never the critical ramp. Only cap[0] can reach the 3-slot usage region,
+        // matching the TS builder.
+        // Codex windows are labelled by their own length, never by slot: Codex now
+        // sometimes reports the weekly (10080-min) window as `primary` with
         // `secondary` null, so a slot-based "7D = secondary" would drop the gauge.
+        var codexTiles: [(D200HSlotKind, String, String)] = []
         if let p = usage.codexPrimaryPercent {
-            tiles.append((.usageGauge(agent: "codex", window: usageWindowKind(usage.codexPrimaryWindowMinutes), percent: p, known: true, stale: usage.codexPrimaryStale, inactive: false, footnote: codexFootnote(stale: usage.codexPrimaryStale, capturedAt: usage.codexCapturedAt)), usageWindowLabel(usage.codexPrimaryWindowMinutes), "codex"))
+            codexTiles.append((.usageGauge(agent: "codex", window: usageWindowKind(usage.codexPrimaryWindowMinutes), percent: p, known: true, stale: usage.codexPrimaryStale, inactive: false, footnote: codexFootnote(stale: usage.codexPrimaryStale, capturedAt: usage.codexCapturedAt)), usageWindowLabel(usage.codexPrimaryWindowMinutes), "codex"))
         }
         if let s = usage.codexSecondaryPercent {
-            tiles.append((.usageGauge(agent: "codex", window: usageWindowKind(usage.codexSecondaryWindowMinutes), percent: s, known: true, stale: usage.codexSecondaryStale, inactive: false, footnote: codexFootnote(stale: usage.codexSecondaryStale, capturedAt: usage.codexCapturedAt)), usageWindowLabel(usage.codexSecondaryWindowMinutes), "codex"))
+            codexTiles.append((.usageGauge(agent: "codex", window: usageWindowKind(usage.codexSecondaryWindowMinutes), percent: s, known: true, stale: usage.codexSecondaryStale, inactive: false, footnote: codexFootnote(stale: usage.codexSecondaryStale, capturedAt: usage.codexCapturedAt)), usageWindowLabel(usage.codexSecondaryWindowMinutes), "codex"))
         }
+        let worstScoped = usage.known ? usage.scopedLimits.first : nil
+        let scopedClaims = worstScoped.map { $0.active || codexTiles.isEmpty } ?? false
+        if scopedClaims && !codexTiles.isEmpty { codexTiles.removeLast() }
+        let scopedTile: (D200HSlotKind, String, String)? = {
+            guard scopedClaims, let s = worstScoped else { return nil }
+            let label = s.label
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .uppercased()
+            let capped = String(label.prefix(6))
+            return (.usageGauge(agent: "claude", window: "7d", percent: s.percent, known: true, stale: false, inactive: !s.active, footnote: nil), capped.isEmpty ? "MODEL" : capped, "claude")
+        }()
+        if let scopedTile, worstScoped?.active == true { tiles.append(scopedTile) }
+        tiles.append(contentsOf: codexTiles)
+        if let scopedTile, worstScoped?.active != true { tiles.append(scopedTile) }
         return tiles
     }
 

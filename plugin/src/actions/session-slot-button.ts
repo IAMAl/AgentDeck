@@ -14,7 +14,7 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State, PASSIVE_OFFLINE_LABEL, OPEN_AGENTDECK_LABEL } from '@agentdeck/shared';
-import type { SessionInfo, PromptOption, CodexRateLimits } from '@agentdeck/shared';
+import type { SessionInfo, PromptOption, CodexRateLimits, ScopedUsageLimit } from '@agentdeck/shared';
 import { SessionSlotManager, type DeckLayout, type SessionSlotConfig } from '../session-slot-manager.js';
 import {
   renderSessionSlot,
@@ -89,7 +89,9 @@ export function updateSessionSlotSessions(sessions: SessionInfo[]): void {
 }
 
 
-/** Feed latest Claude 5H/7D + Codex quota; re-render only the list view (where usage tiles live). */
+/** Feed latest Claude 5H/7D + Codex quota (and the scoped caps that stand in for
+ *  Codex when it reports nothing); re-render only the list view (where usage
+ *  tiles live). */
 export function updateSlotUsage(usage: {
   fiveHourPercent?: number;
   fiveHourResetsAt?: string;
@@ -97,6 +99,7 @@ export function updateSlotUsage(usage: {
   sevenDayResetsAt?: string;
   usageStale?: boolean;
   codexRateLimits?: CodexRateLimits;
+  scopedLimits?: ScopedUsageLimit[];
 }): void {
   manager.updateUsage(usage);
   if (manager.view === 'list') refreshAll();
@@ -383,6 +386,7 @@ function renderSlotSvg(config: SessionSlotConfig, _slot: number): string {
         resetsAt: config.usageResetsAt,
         known: config.usageKnown !== false,
         footnote: config.usageFootnote,
+        inactive: config.usageInactive === true,
       });
 
     case 'usage-page':

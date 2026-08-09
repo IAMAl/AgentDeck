@@ -263,6 +263,95 @@ export function codexUsageFootnote(
 }
 
 /**
+ * Does the worst per-model scoped cap (e.g. the weekly "Fable" limit) earn one of
+ * the few keys a fixed-width usage strip has?
+ *
+ * Both decks pin usage to a short strip — three keys on the D200H, four on a
+ * classic Stream Deck — and Claude 5H/7D always take the first two, so this
+ * decides what happens to the remainder. Shared so the two decks cannot disagree
+ * about which limit a user is looking at.
+ *
+ * Two ways in, and only two:
+ *   - the cap is ACTIVE, i.e. it is the limit currently binding. Then it outranks
+ *     Codex and is placed ahead of it: the whole point of surfacing scoped caps
+ *     is that a per-model weekly cap can sit at 98% while 5H/7D still read low
+ *     (issue #99). A strip that shows only the windows that aren't binding is
+ *     worse than one gauge short.
+ *   - Codex contributes no window at all — no Codex account, or a free ChatGPT
+ *     tier with nothing to meter. The key is going spare, so an inactive cap is
+ *     better context than an empty tile.
+ *
+ * An inactive cap never displaces a live Codex window: "not currently binding" is
+ * weaker information than a real quota the user is spending right now.
+ *
+ * The cap TAKES Codex's key rather than adding one beside it (see
+ * `codexWindowsBeside`) — the strip is a fixed budget carved out of session keys,
+ * and a limit the user cannot act on should not cost them a session tile.
+ */
+export function scopedLimitClaimsUsageKey(
+  scoped: { active?: boolean } | undefined | null,
+  codexWindowCount: number,
+): boolean {
+  if (!scoped) return false;
+  return scoped.active === true || codexWindowCount === 0;
+}
+
+/**
+ * The Codex windows that still fit once the scoped cap has taken its key.
+ *
+ * A claiming cap REPLACES a Codex gauge, it does not stack onto the strip: the
+ * usage block is a fixed budget carved out of session keys, so growing it to fit
+ * both would quietly cost the user a session tile. The trailing (longer) window
+ * yields first — with Codex's usual single weekly/monthly window that means the
+ * cap simply takes its place, which is the whole point.
+ */
+export function codexWindowsBeside<T>(
+  codexWindows: T[],
+  scopedClaimsKey: boolean,
+): T[] {
+  if (!scopedClaimsKey || codexWindows.length === 0) return codexWindows;
+  return codexWindows.slice(0, -1);
+}
+
+/**
+ * True when the ChatGPT tier carries no paid Codex subscription.
+ *
+ * The tier string comes from `~/.codex/auth.json` (`chatgpt_plan_type`), which is
+ * the LIVE account fact — it is rewritten on every token refresh, unlike the
+ * rollout snapshots below.
+ */
+export function isCodexFreePlan(plan?: string | null): boolean {
+  return (plan ?? '').trim().toLowerCase() === 'free';
+}
+
+/**
+ * True when a rollout usage snapshot still belongs to the plan the account
+ * actually holds.
+ *
+ * Codex stamps `plan_type` into every `rate_limits` snapshot it writes, and
+ * AgentDeck reads the live tier separately from `auth.json`. When the two
+ * disagree the snapshot was minted under a plan the account no longer has, and
+ * its windows are not merely OLD — they are VOID. Neither existing freshness
+ * axis can retire them: `stale` only fires once `resetsAt` has passed (a retired
+ * weekly window stays future-dated for up to 7 days) and `capturedAt` only dims,
+ * because an aged reading of a *live* window is still that window's last true
+ * value. A window whose plan is gone has no true value at all.
+ *
+ * Unknown on either side → matches. Absence is "no information", never a licence
+ * to void real data: an API-key Codex install reports no account tier, and a
+ * pre-`plan_type` rollout reports no snapshot tier.
+ */
+export function codexSnapshotMatchesAccountPlan(
+  snapshotPlan?: string | null,
+  accountPlan?: string | null,
+): boolean {
+  const snap = (snapshotPlan ?? '').trim().toLowerCase();
+  const account = (accountPlan ?? '').trim().toLowerCase();
+  if (!snap || !account) return true;
+  return snap === account;
+}
+
+/**
  * Antigravity plan name → compact "AGY <tier>" chip.
  *
  *   "Google AI Pro"   → "AGY Pro"

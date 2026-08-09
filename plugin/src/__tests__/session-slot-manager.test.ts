@@ -813,3 +813,102 @@ describe('SessionSlotManager detail cache ownership', () => {
     expect(manager.detailModelName).toBeUndefined();
   });
 });
+
+// The scoped per-model cap (e.g. the weekly "Fable" limit) and the keypad key it
+// competes with Codex for. `scopedLimitClaimsUsageKey` is the shared arbiter —
+// the D200H strip runs the same rule, so the two decks can never disagree about
+// which limit the user is looking at.
+describe('SessionSlotManager scoped cap vs the Codex usage keys', () => {
+  const fewSessions = (n: number) =>
+    Array.from({ length: n }, (_, i) => makeSession({ id: `s${i}`, port: 9121 + i, projectName: `p${i}` }));
+
+  const CODEX_WEEKLY = { secondary: { usedPercent: 12, windowMinutes: 10080, resetsAt: '2099-01-08T00:00:00Z' } };
+  // What a free ChatGPT tier reaches the plugin as: the account tier survives so
+  // surfaces can still name the plan, but there are no rolling windows at all.
+  const CODEX_FREE = { planType: 'free' };
+  const FABLE = { label: 'Fable', percent: 98, active: true };
+  const FABLE_IDLE = { label: 'Fable', percent: 61, active: false };
+
+  const gauges = (usage: Parameters<SessionSlotManager['updateUsage']>[0]) => {
+    const manager = new SessionSlotManager();
+    manager.updateUsage(usage);
+    manager.updateSessions(fewSessions(3));
+    return Array.from({ length: 15 }, (_, i) => manager.getSlotConfig(i, SD_CLASSIC_LAYOUT))
+      .filter((c) => c.type === 'usage');
+  };
+
+  it('gives the key Codex vacated to the scoped cap on a free ChatGPT tier', () => {
+    const tiles = gauges({
+      fiveHourPercent: 42, sevenDayPercent: 17,
+      codexRateLimits: CODEX_FREE, scopedLimits: [FABLE_IDLE],
+    });
+    expect(tiles).toHaveLength(3);
+    expect(tiles.some((t) => t.usageAgent === 'codex')).toBe(false);
+    expect(tiles[2]).toMatchObject({ usageLabel: 'FABLE', usagePercent: 61, usageInactive: true });
+  });
+
+  it('lets an ACTIVE cap TAKE the Codex key — it is the limit that binds', () => {
+    const tiles = gauges({
+      fiveHourPercent: 42, sevenDayPercent: 17,
+      codexRateLimits: CODEX_WEEKLY, scopedLimits: [FABLE],
+    });
+    // Replacement, not addition: the reserve is carved out of session keys, so
+    // three gauges stay three. The lone Codex weekly is what the cap took.
+    expect(tiles.map((t) => t.usageLabel)).toEqual(['5H', '7D', 'FABLE']);
+    expect(tiles[2]).toMatchObject({ usageInactive: false, usageAgent: 'claude' });
+    expect(tiles.some((t) => t.usageAgent === 'codex')).toBe(false);
+  });
+
+  it('keeps the first Codex window when Codex reports two', () => {
+    const tiles = gauges({
+      fiveHourPercent: 42, sevenDayPercent: 17,
+      codexRateLimits: {
+        primary: { usedPercent: 30, windowMinutes: 300 },
+        secondary: { usedPercent: 12, windowMinutes: 10080 },
+      },
+      scopedLimits: [FABLE],
+    });
+    expect(tiles.map((t) => t.usageLabel)).toEqual(['5H', '7D', 'FABLE', '5H']);
+    expect(tiles[3]).toMatchObject({ usageAgent: 'codex' });
+  });
+
+  it('never lets an INACTIVE cap displace a live Codex window', () => {
+    const tiles = gauges({
+      fiveHourPercent: 42, sevenDayPercent: 17,
+      codexRateLimits: CODEX_WEEKLY, scopedLimits: [FABLE_IDLE],
+    });
+    expect(tiles.map((t) => t.usageLabel)).toEqual(['5H', '7D', '7D']);
+    expect(tiles[2]).toMatchObject({ usageAgent: 'codex' });
+  });
+
+  it('drops the scoped cap along with the Claude gauges when usage goes stale', () => {
+    // `usageStale` says the whole Claude account half is untrustworthy; a scoped
+    // cap read from that same payload is no more current than the 5H/7D beside it.
+    const tiles = gauges({
+      fiveHourPercent: 42, sevenDayPercent: 17, usageStale: true,
+      codexRateLimits: CODEX_FREE, scopedLimits: [FABLE],
+    });
+    expect(tiles).toHaveLength(0);
+  });
+
+  it('handles the live free-tier shape: a lone 30-day window yields to the binding cap', () => {
+    // Verbatim from the daemon on a free ChatGPT tier (2026-08-08): one 43200-min
+    // window at 0% and no credits. It is a real window, so it is NOT voided — but
+    // an active weekly cap at 76% is the limit the user is actually up against.
+    const tiles = gauges({
+      fiveHourPercent: 45, sevenDayPercent: 65,
+      codexRateLimits: {
+        secondary: { usedPercent: 0, windowMinutes: 43200, resetsAt: '2026-09-07T05:06:33.000Z' },
+        planType: 'free', limitId: 'codex',
+        credits: { hasCredits: false, unlimited: false },
+      },
+      scopedLimits: [{ label: 'Fable', percent: 76, active: true }],
+    });
+    expect(tiles.map((t) => t.usageLabel)).toEqual(['5H', '7D', 'FABLE']);
+  });
+
+  it('shows the scoped cap for a Codex-less, Claude-only user too', () => {
+    const tiles = gauges({ fiveHourPercent: 42, sevenDayPercent: 17, scopedLimits: [FABLE] });
+    expect(tiles.map((t) => t.usageLabel)).toEqual(['5H', '7D', 'FABLE']);
+  });
+});

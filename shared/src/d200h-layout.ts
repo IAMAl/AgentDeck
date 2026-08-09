@@ -24,11 +24,11 @@ import {
 } from './svg-renderers/index.js';
 import { State, type PromptOption } from './states.js';
 import { sortSessions, foldCodexSessionsForDisplay } from './session-utils.js';
-import type { SessionInfo, SubscriptionInfo, CodexRateLimits, ScopedUsageLimit } from './protocol.js';
+import type { SessionInfo, SubscriptionInfo, CodexRateLimits, CodexRateLimitWindow, ScopedUsageLimit } from './protocol.js';
 import { Brand, UI } from './design-tokens.js';
 import { PASSIVE_OFFLINE_LABEL, OPEN_AGENTDECK_LABEL } from './connection-status.js';
 import { CLAUDE_LOGO_PATH, CODEX_LOGO_PATH } from './svg-renderers/agent-logos.js';
-import { formatScopedLabel, codexUsageFootnote } from './format-utils.js';
+import { formatScopedLabel, codexUsageFootnote, scopedLimitClaimsUsageKey, codexWindowsBeside } from './format-utils.js';
 
 /** Command dispatched when a key is pressed. `null` = inert tile (info/empty). */
 export type ButtonCommand = { type: string; [k: string]: unknown };
@@ -427,24 +427,30 @@ function buildUsageTiles(state: DashState): SessionDeckCell[] {
   // reach a key, and building the rest is dead work. Paging through them lives on
   // the SD+ encoder, which has room for it.
   //
-  // NOTE: a scoped tile does not stack onto the strip, it EVICTS Codex 5H from it
-  // (5H + 7D + scoped fills all three keys). That trade is deliberate — the point
-  // of issue #99 is that the per-model cap can be the limit that actually binds —
-  // but it means a D200H with a scoped cap present shows no Codex usage at all.
-  const worstScoped = known ? state.scopedLimits?.[0] : undefined;
-  if (worstScoped) {
-    tiles.push({ svg: renderUsageGauge({ agent: 'claude', window: '7d', label: formatScopedLabel(worstScoped.label, 6), usedPercent: worstScoped.percent, resetsAt: worstScoped.resetsAt, known: true, inactive: worstScoped.active !== true }), action });
-  }
+  // Whether it takes a key at all is `scopedLimitClaimsUsageKey`, and what Codex
+  // keeps once it has is `codexWindowsBeside` — both shared with the Stream Deck
+  // keypad strip so the two decks can't disagree about which limit the user is
+  // looking at. An ACTIVE cap is placed ahead of Codex and TAKES one of its keys
+  // (it replaces, never stacks); an inactive one only lands when Codex reports
+  // nothing at all.
   const cx = state.codexRateLimits;
+  const allCodexWindows = [cx?.primary, cx?.secondary].filter((w): w is CodexRateLimitWindow => w != null);
+  const worstScoped = known ? state.scopedLimits?.[0] : undefined;
+  const scopedClaims = scopedLimitClaimsUsageKey(worstScoped, allCodexWindows.length);
+  const codexWindows = codexWindowsBeside(allCodexWindows, scopedClaims);
+  const scopedTile = scopedClaims && worstScoped
+    ? { svg: renderUsageGauge({ agent: 'claude' as const, window: '7d' as const, label: formatScopedLabel(worstScoped.label, 6), usedPercent: worstScoped.percent, resetsAt: worstScoped.resetsAt, known: true, inactive: worstScoped.active !== true }), action }
+    : undefined;
+  if (scopedTile && worstScoped?.active === true) tiles.push(scopedTile);
   // Codex windows carry the same short "5H"/"7D" labels — the brand dot conveys
   // the agent, not a "CX " prefix. Label each present window by its own length
   // (windowMinutes), never by slot: Codex now sometimes reports the weekly
   // (10080-min) window as `primary` with `secondary` null, so a slot-based "7D
   // = secondary" would drop the gauge entirely.
-  for (const w of [cx?.primary, cx?.secondary]) {
-    if (!w) continue;
+  for (const w of codexWindows) {
     tiles.push({ svg: renderUsageGauge({ agent: 'codex', window: usageWindowKind(w.windowMinutes), label: usageWindowLabel(w.windowMinutes) || '5H', usedPercent: w.usedPercent, resetsAt: w.resetsAt, known: true, stale: w.stale === true, footnote: codexUsageFootnote(w, cx?.capturedAt)?.text }), action });
   }
+  if (scopedTile && worstScoped?.active !== true) tiles.push(scopedTile);
   // Credit-based Codex plan: no windows, show the credits balance instead so the
   // Codex usage doesn't silently vanish.
   if (!cx?.primary && !cx?.secondary && (cx?.credits || cx?.limitId)) {

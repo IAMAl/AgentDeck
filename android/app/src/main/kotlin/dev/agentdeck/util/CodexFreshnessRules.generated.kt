@@ -1,5 +1,6 @@
 // GENERATED FILE — DO NOT EDIT.
-// Source of truth: shared/src/format-utils.ts (CODEX_SNAPSHOT_STALE_MS, codexUsageFootnote)
+// Source of truth: shared/src/format-utils.ts (CODEX_SNAPSHOT_STALE_MS, codexUsageFootnote,
+// codexSnapshotMatchesAccountPlan)
 // Regenerate: pnpm generate-codex-freshness-rules (drift gated by shared/src/__tests__/codex-freshness-rules.test.ts)
 package dev.agentdeck.util
 

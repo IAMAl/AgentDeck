@@ -48,6 +48,20 @@ describe('generated mirrors in sync', () => {
     expect(emitKotlin(rules)).toContain(`SNAPSHOT_STALE_MS: Long = ${CODEX_SNAPSHOT_STALE_MS}L`);
   });
 
+  it('mirrors the plan-reconciliation rule to Swift (the other PRODUCER of the wire snapshot)', () => {
+    // Both daemons build `codexRateLimits`, so both must void a snapshot minted
+    // under a retired plan identically — a Swift-daemon user would otherwise
+    // keep seeing a lapsed subscription's 94% while the Node daemon dropped it.
+    // Kotlin gets no copy on purpose: Android only consumes the wire.
+    const swift = emitSwift(rules);
+    expect(swift).toContain('enum CodexPlanRules');
+    expect(swift).toContain('static func snapshotMatchesAccountPlan(snapshot: String?, account: String?) -> Bool');
+    expect(swift).toContain('static func isFreePlan(_ plan: String?) -> Bool');
+    // Unknown on either side matches — absence is "no information".
+    expect(swift).toContain('if snap.isEmpty || acct.isEmpty { return true }');
+    expect(emitKotlin(rules)).not.toContain('CodexPlanRules');
+  });
+
   it('emits the same three footnote states the TS SSOT resolves', () => {
     for (const src of [emitSwift(rules), emitKotlin(rules)]) {
       expect(src).toContain('"stale"');   // window ended

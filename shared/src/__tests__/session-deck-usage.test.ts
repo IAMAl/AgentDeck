@@ -285,3 +285,68 @@ describe('buildSessionDeck list-view usage tiles', () => {
     expect(deck.get('0_0')!.action?.kind).toBe('open');
   });
 });
+
+// The scoped per-model cap (e.g. the weekly "Fable" limit) and the third strip
+// key it competes with Codex for. `scopedLimitClaimsUsageKey` is the shared
+// arbiter — the Stream Deck keypad strip runs the same rule, so the two decks
+// can never disagree about which limit the user is looking at.
+describe('buildSessionDeck scoped cap vs the third usage key', () => {
+  const FABLE = { label: 'Fable', percent: 98, active: true };
+  const FABLE_IDLE = { label: 'Fable', percent: 61, active: false };
+  const codexWeekly = {
+    codexRateLimits: {
+      secondary: { usedPercent: 10, windowMinutes: 10080 },
+      planType: 'plus',
+    },
+  };
+  // What a free ChatGPT tier reaches the deck as: the account tier survives so
+  // surfaces can still name the plan, but there are no rolling windows at all.
+  const codexFree = { codexRateLimits: { planType: 'free' } };
+
+  const svgs = (state: Record<string, unknown>) =>
+    usageCells(buildSessionDeck(baseState(2, state), { mode: 'list', showUsage: true }, POS))
+      .map((c) => c.svg);
+
+  it('gives the key Codex vacated to the scoped cap on a free ChatGPT tier', () => {
+    const tiles = svgs({ ...codexFree, scopedLimits: [FABLE_IDLE] });
+    expect(tiles).toHaveLength(3);
+    expect(tiles.join('')).not.toContain(CODEX_MARK);
+    expect(tiles[2]).toContain('FABLE');
+    expect(tiles[2]).toContain('>61<');
+  });
+
+  it('lets an ACTIVE cap TAKE the Codex key — it is the limit that binds', () => {
+    // Replacement, not addition: the strip is a fixed budget carved out of
+    // session keys, so a cap the user cannot act on must not cost them a tile.
+    const tiles = svgs({ ...codexWeekly, scopedLimits: [FABLE] });
+    expect(tiles).toHaveLength(3);
+    expect(tiles[2]).toContain('FABLE');
+    expect(tiles[2]).toContain('>98<');
+    expect(tiles.join('')).not.toContain(CODEX_MARK);
+  });
+
+  it('leaves the first Codex window standing when Codex reports two', () => {
+    const bothWindows = {
+      codexRateLimits: {
+        primary: { usedPercent: 30, windowMinutes: 300 },
+        secondary: { usedPercent: 10, windowMinutes: 10080 },
+        planType: 'plus',
+      },
+    };
+    const tiles = svgs({ ...bothWindows, scopedLimits: [FABLE] });
+    // 5H, 7D, FABLE, CX-5H → the 3-key strip keeps the first three.
+    expect(tiles).toHaveLength(3);
+    expect(tiles[2]).toContain('FABLE');
+  });
+
+  it('never lets an INACTIVE cap displace a live Codex window', () => {
+    const tiles = svgs({ ...codexWeekly, scopedLimits: [FABLE_IDLE] });
+    expect(tiles).toHaveLength(3);
+    expect(tiles[2]).toContain(CODEX_MARK);
+    expect(tiles.join('')).not.toContain('FABLE');
+  });
+
+  it('shows nothing but Claude when neither Codex nor a scoped cap exists', () => {
+    expect(svgs(codexFree)).toHaveLength(2);
+  });
+});

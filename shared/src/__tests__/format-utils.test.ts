@@ -10,6 +10,10 @@ import {
   codexUsageFootnote,
   formatSnapshotAge,
   isCodexSnapshotAged,
+  codexSnapshotMatchesAccountPlan,
+  isCodexFreePlan,
+  scopedLimitClaimsUsageKey,
+  codexWindowsBeside,
 } from '../format-utils.js';
 
 describe('formatDurationSec', () => {
@@ -277,5 +281,90 @@ describe('formatResetTime', () => {
 
   it('passes through pre-formatted strings (no T)', () => {
     expect(formatResetTime('4h 12m')).toBe('4h 12m');
+  });
+});
+
+describe('codexSnapshotMatchesAccountPlan', () => {
+  it('voids a snapshot minted under a plan the account no longer holds', () => {
+    // The lapsed-ChatGPT-Plus case. Neither existing freshness axis can retire
+    // this: `stale` waits on resetsAt (days out on a weekly window) and
+    // capturedAt only dims. The plan is the only signal that says "not yours".
+    expect(codexSnapshotMatchesAccountPlan('plus', 'free')).toBe(false);
+    // Symmetric — an upgrade must not keep showing the old tier's numbers.
+    expect(codexSnapshotMatchesAccountPlan('free', 'pro')).toBe(false);
+  });
+
+  it('keeps a matching snapshot, free included — free is a plan, not a synonym for void', () => {
+    expect(codexSnapshotMatchesAccountPlan('plus', 'plus')).toBe(true);
+    expect(codexSnapshotMatchesAccountPlan('free', 'free')).toBe(true);
+    expect(codexSnapshotMatchesAccountPlan(' Plus ', 'plus')).toBe(true);
+  });
+
+  it('treats an unknown tier on either side as no information, never as licence to void', () => {
+    // API-key installs report no account tier; pre-`plan_type` rollouts report
+    // no snapshot tier. Voiding real data on absence is the bug, not the fix.
+    expect(codexSnapshotMatchesAccountPlan('plus', undefined)).toBe(true);
+    expect(codexSnapshotMatchesAccountPlan(undefined, 'free')).toBe(true);
+    expect(codexSnapshotMatchesAccountPlan('', '')).toBe(true);
+  });
+});
+
+describe('isCodexFreePlan', () => {
+  it('recognises the free tier regardless of case or padding', () => {
+    expect(isCodexFreePlan('free')).toBe(true);
+    expect(isCodexFreePlan(' FREE ')).toBe(true);
+  });
+
+  it('is false for every paid tier and for an unknown one', () => {
+    for (const plan of ['plus', 'pro', 'team', 'enterprise', undefined, '']) {
+      expect(isCodexFreePlan(plan)).toBe(false);
+    }
+  });
+});
+
+describe('scopedLimitClaimsUsageKey', () => {
+  const active = { active: true };
+  const idle = { active: false };
+
+  it('lets an ACTIVE cap take a key even when Codex is reporting', () => {
+    // The point of surfacing scoped caps (issue #99): a weekly per-model cap can
+    // sit at 98% while 5H/7D read low, so it outranks a non-binding window.
+    expect(scopedLimitClaimsUsageKey(active, 2)).toBe(true);
+  });
+
+  it('never lets an INACTIVE cap displace a live Codex window', () => {
+    expect(scopedLimitClaimsUsageKey(idle, 1)).toBe(false);
+  });
+
+  it('gives an inactive cap the key Codex left spare', () => {
+    // The ordinary free-ChatGPT-tier state: no rolling windows at all.
+    expect(scopedLimitClaimsUsageKey(idle, 0)).toBe(true);
+  });
+
+  it('claims nothing when there is no cap', () => {
+    expect(scopedLimitClaimsUsageKey(undefined, 0)).toBe(false);
+    expect(scopedLimitClaimsUsageKey(null, 2)).toBe(false);
+  });
+
+  it('treats a missing `active` as not binding (wire-flag rule)', () => {
+    expect(scopedLimitClaimsUsageKey({}, 1)).toBe(false);
+    expect(scopedLimitClaimsUsageKey({}, 0)).toBe(true);
+  });
+});
+
+describe('codexWindowsBeside', () => {
+  it('drops the trailing window when the scoped cap claims a key', () => {
+    // The cap REPLACES a Codex gauge. Growing the strip to fit both would
+    // quietly cost a session tile, which is the budget the strip is carved from.
+    expect(codexWindowsBeside(['5h', '7d'], true)).toEqual(['5h']);
+    expect(codexWindowsBeside(['7d'], true)).toEqual([]);
+  });
+
+  it('leaves Codex untouched when no cap claims a key', () => {
+    expect(codexWindowsBeside(['5h', '7d'], false)).toEqual(['5h', '7d']);
+  });
+
+  it('has nothing to drop when Codex reports nothing', () => {
+    expect(codexWindowsBeside([], true)).toEqual([]);
   });
 });

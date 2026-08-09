@@ -481,3 +481,81 @@ describe('mergeRelayedSessionUsage', () => {
     expect(relayed.inputTokens).toBe(12_000);
   });
 });
+
+describe('buildUsageEvent Codex plan reconciliation', () => {
+  const future = new Date(Date.now() + 3 * 86_400_000).toISOString();
+  const weekly = { usedPercent: 94, windowMinutes: 10080, resetsAt: future };
+
+  const args = (
+    codexRateLimits: unknown,
+    codexAuth: { planType?: string } | undefined,
+  ) =>
+    [
+      snapshot(),
+      null, // apiUsage
+      undefined, undefined, undefined, undefined,
+      codexAuth,
+      undefined, undefined, undefined, undefined, undefined,
+      codexRateLimits,
+    ] as Parameters<typeof buildUsageEvent>;
+
+  it('voids a snapshot minted under a plan the account no longer holds', () => {
+    // The exact shape a lapsed ChatGPT Plus leaves behind: the rollout still
+    // carries a 94% weekly window whose resetsAt is days in the future, so
+    // neither `stale` (window ended) nor `capturedAt` (aged read) can retire it.
+    const evt = buildUsageEvent(
+      ...args({ primary: weekly, planType: 'plus', limitId: 'codex', capturedAt: future }, { planType: 'free' }),
+    ) as UsageEvent;
+
+    expect(evt.codexRateLimits).toEqual({ planType: 'free' });
+  });
+
+  it('keeps a snapshot whose plan still matches the account', () => {
+    const evt = buildUsageEvent(
+      ...args({ primary: weekly, planType: 'plus' }, { planType: 'plus' }),
+    ) as UsageEvent;
+
+    expect(evt.codexRateLimits!.secondary!.usedPercent).toBe(94);
+  });
+
+  it('keeps a genuine free-tier snapshot — free is a plan, not a synonym for void', () => {
+    const evt = buildUsageEvent(
+      ...args({ primary: weekly, planType: 'free' }, { planType: 'free' }),
+    ) as UsageEvent;
+
+    expect(evt.codexRateLimits!.secondary!.usedPercent).toBe(94);
+  });
+
+  it('keeps the snapshot when either side reports no plan (absence is no information)', () => {
+    const noAccountPlan = buildUsageEvent(
+      ...args({ primary: weekly, planType: 'plus' }, { planType: undefined }),
+    ) as UsageEvent;
+    expect(noAccountPlan.codexRateLimits!.secondary!.usedPercent).toBe(94);
+
+    const noSnapshotPlan = buildUsageEvent(
+      ...args({ primary: weekly }, { planType: 'free' }),
+    ) as UsageEvent;
+    expect(noSnapshotPlan.codexRateLimits!.secondary!.usedPercent).toBe(94);
+  });
+
+  it('emits the account tier even with no rollout at all, so a client can RETRACT', () => {
+    // Every client merges usage fields retain-on-absent, so omitting the key
+    // means "no information" — the retired plan's gauge would stay pinned
+    // forever (the usageStale latch shape, CLAUDE.md).
+    const evt = buildUsageEvent(...args(null, { planType: 'free' })) as UsageEvent;
+    expect(evt.codexRateLimits).toEqual({ planType: 'free' });
+  });
+
+  it('stays absent for a user with no Codex account at all', () => {
+    const evt = buildUsageEvent(...args(null, undefined)) as UsageEvent;
+    expect(evt.codexRateLimits).toBeUndefined();
+  });
+
+  it('still names the plan in the subscriptions footer after voiding', () => {
+    const evt = buildUsageEvent(
+      ...args({ primary: weekly, planType: 'plus' }, { planType: 'free' }),
+    ) as UsageEvent;
+
+    expect(evt.subscriptions).toEqual([{ name: 'ChatGPT Free' }]);
+  });
+});
