@@ -16,6 +16,8 @@ validators: [pnpm generate-protocol, pnpm test]
 
 Internal reference for the AgentDeck state machine, WebSocket protocol, and project structure.
 
+This document describes **what** the daemon and its clients say to each other. Before changing any of it, read the [Wire Compatibility Contract](wire-compatibility.md) — most consumers are software we cannot update (App Store apps, marketplace plugins, flashed firmware), and it sets out which changes are safe, which look additive but break the fleet, and how to introduce one that genuinely isn't.
+
 ---
 
 ## Architecture Diagram

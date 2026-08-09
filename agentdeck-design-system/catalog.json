@@ -20,6 +20,7 @@
     "hardware.compatibility": { "en": "Compatibility", "ko": "호환성", "ja": "互換性" },
     "spec.devices": { "en": "Devices", "ko": "디바이스", "ja": "デバイス" },
     "spec.esp32": { "en": "ESP32 firmware", "ko": "ESP32 펌웨어", "ja": "ESP32 firmware" },
+    "spec.wire-compatibility": { "en": "Wire compatibility", "ko": "와이어 호환성", "ja": "ワイヤ互換性" },
     "spec.esp32-client": { "en": "ESP32 client", "ko": "ESP32 클라이언트", "ja": "ESP32 client" },
     "spec.android": { "en": "Android app", "ko": "Android 앱", "ja": "Android app" },
     "design.android-ui": { "en": "Android UI", "ko": "Android UI", "ja": "Android UI" },
@@ -140,6 +141,12 @@
       "id": "spec.esp32",
       "sources": {
         "en": "docs/esp32.md"
+      }
+    },
+    {
+      "id": "spec.wire-compatibility",
+      "sources": {
+        "en": "docs/wire-compatibility.md"
       }
     },
     {
