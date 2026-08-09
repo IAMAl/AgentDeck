@@ -183,6 +183,35 @@ fun BridgeAutoConnect(
 private fun isStorableBridgeUrl(url: String?): Boolean =
     !url.isNullOrBlank() && !PairingCredential.isLoopback(url)
 
+/**
+ * Adopt a credential the user just obtained as this device's pairing, and dial it.
+ *
+ * The one entry point for "the user handed us a token", so the two ways that can
+ * happen — redeeming a pairing code, or typing a `?token=` URL — cannot drift on
+ * the part that matters: seeding [BridgeConnection.pairedUrl] as well as
+ * persisting. Only `pairedUrl` is consulted by [PairingCredential.resolve], so a
+ * pairing that is persisted but not seeded works until the app restarts and then
+ * looks like a device that was never paired.
+ *
+ * The dial happens whether or not the store accepts the URL. [PairingCredential.mayPersist]
+ * refuses a *downgrade*, which is a statement about what to keep on disk, not
+ * about whether this credential works — and a user who just typed a code is owed
+ * a connection attempt either way.
+ */
+suspend fun adoptPairedUrl(
+    connection: BridgeConnection,
+    displayPrefs: DisplayPreferences,
+    wsUrl: String,
+) {
+    if (PairingCredential.mayPersist(wsUrl, displayPrefs.lastBridgeUrlFlow.first())) {
+        displayPrefs.setLastBridgeUrl(wsUrl)
+    }
+    if (PairingCredential.tokenIn(wsUrl) != null) {
+        connection.pairedUrl = wsUrl
+    }
+    connection.connect(wsUrl)
+}
+
 /** Pure ladder rules, kept out of the composable so they have a test. */
 object AutoConnectRules {
 

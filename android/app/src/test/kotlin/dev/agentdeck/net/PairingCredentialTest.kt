@@ -163,9 +163,21 @@ class PairingCredentialTest {
             setOf("192.168.1.10:9120"),
         )
         assertEquals(
-            "Not paired with 192.168.1.10:9120 — attach USB, or enter ws://192.168.1.10:9120?token=… in Settings",
+            "Not paired with 192.168.1.10:9120 — run \"agentdeck pair\" on your Mac, " +
+                "then enter the code in Settings",
             detail,
         )
+    }
+
+    @Test
+    fun `the advice a camera-less reader is given is one it can actually take`() {
+        // This copy is the whole recovery path on a device with no camera and no
+        // cable, so it must not send the user back to typing a token URL on an
+        // e-ink keyboard — that was the old text, and it is why these readers
+        // stayed unpaired.
+        val detail = PairingCredential.disconnectedDetail(null, setOf("192.168.1.10:9120"))!!
+        assertTrue(detail.contains("agentdeck pair"))
+        assertFalse(detail.contains("token="))
     }
 
     @Test

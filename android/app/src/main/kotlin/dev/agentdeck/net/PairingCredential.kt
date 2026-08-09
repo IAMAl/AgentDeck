@@ -104,11 +104,15 @@ object PairingCredential {
      * does not stop being true because a later probe failed differently.
      *
      * Android-only: an e-ink reader has no camera, so the answer here is never
-     * "scan the pairing QR".
+     * "scan the pairing QR". It used to be "enter ws://…?token=… in Settings",
+     * which is a 32-hex-character string typed on an e-ink keyboard — advice
+     * technically possible and practically not taken. A pairing code is six
+     * digits, so that is what this points at now; see [PairingCodeClient].
      */
     fun disconnectedDetail(lastError: String?, unauthorizedEndpoints: Set<String>): String? {
         val endpoint = unauthorizedEndpoints.firstOrNull() ?: return lastError
-        return "Not paired with $endpoint — attach USB, or enter ws://$endpoint?token=… in Settings"
+        return "Not paired with $endpoint — run \"agentdeck pair\" on your Mac, " +
+            "then enter the code in Settings"
     }
 
     /** True for the `adb reverse` loopback endpoint, which needs no credential. */

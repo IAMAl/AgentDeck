@@ -172,8 +172,23 @@ device tiering:
 | Path | Credential | Who it serves |
 |------|-----------|---------------|
 | `ws://127.0.0.1:9120` via `adb reverse` | none — same-machine | any adb-attached device, USB **or** tcpip:5555 |
-| saved URL with `?token=` | typed once in Settings | devices with no adb link |
+| saved URL with `?token=` | a pairing code redeemed in Settings, or a URL typed once | devices with no adb link |
 | mDNS-discovered LAN endpoint | inherits a stored token for the same endpoint | reconnect / daemon moved |
+
+The saved URL's credential now arrives by **pairing code**, not by typing.
+`agentdeck pair` on the Mac prints six digits; Settings → Connection → *Pair
+with code* redeems them against the daemon mDNS already found
+(`net/PairingCodeClient.kt`) and hands the resulting `ws://host:port?token=…` to
+`adoptPairedUrl`, which is the single place allowed to seed
+`BridgeConnection.pairedUrl` **and** persist. Seeding matters as much as
+persisting: only `pairedUrl` is consulted by `PairingCredential.resolve`, so a
+pairing that is written to disk but not seeded works until the next launch and
+then looks like a device that was never paired.
+
+This is what the "camera-less reader cannot scan a pairing QR" rule below is
+now an answer to rather than just an explanation. `disconnectedDetail` points at
+it too — it used to advise typing `ws://…?token=…` on an e-ink keyboard, which
+is possible and never actually done.
 
 Rules any new dial site must keep:
 
