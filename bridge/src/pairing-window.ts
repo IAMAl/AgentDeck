@@ -48,6 +48,16 @@ interface ActiveWindow extends PairingWindowSnapshot {
   /** Every wrong-code attempt, so the CLI can show an attack as it happens. */
   failures: Array<{ at: number; ip: string }>;
   redemptions: PairingRedemption[];
+  /**
+   * ESP32 peers the operator named for adoption, by IP.
+   *
+   * A board cannot type a code — it has no keyboard — so the code cannot be
+   * what authorizes it. What authorizes it is that the operator read this
+   * address off the daemon's own refusal log and named it in the command. That
+   * keeps the grant addressed to one peer instead of to anything on the LAN
+   * claiming `clientType=esp32`, which is a claim nobody can check.
+   */
+  adoptEsp32Ips: Set<string>;
   timer: NodeJS.Timeout | null;
 }
 
@@ -128,10 +138,16 @@ function closeActive(reason: CloseReason): void {
  * a stale window left running beside it would be a second valid secret nobody
  * is watching.
  */
-export function openPairingWindow(opts: { ttlMs?: number; redemptions?: number } = {}): {
+export function openPairingWindow(opts: {
+  ttlMs?: number;
+  redemptions?: number;
+  /** ESP32 peer IPs the operator named for cable-free re-arming. */
+  adoptEsp32Ips?: string[];
+} = {}): {
   code: string;
   expiresAt: number;
   redemptions: number;
+  adoptEsp32Ips: string[];
 } {
   closeActive('operator');
   // A fresh window starts with a fresh receipt: the previous run's redemptions
@@ -145,6 +161,14 @@ export function openPairingWindow(opts: { ttlMs?: number; redemptions?: number }
   const ttlMs = Math.min(Math.max(Math.trunc(opts.ttlMs ?? PAIRING_WINDOW_MS), 15_000), 600_000);
   const redemptions = Math.min(Math.max(Math.trunc(opts.redemptions ?? DEFAULT_PAIRING_REDEMPTIONS), 1), 16);
 
+  // Only well-formed addresses, so a typo cannot become a wildcard and the set
+  // is safe to log. Bounded like every other operator-supplied quantity here.
+  const adoptEsp32Ips = new Set(
+    (opts.adoptEsp32Ips ?? [])
+      .filter((ip): ip is string => typeof ip === 'string' && /^[0-9a-fA-F:.]{3,45}$/.test(ip))
+      .slice(0, 16),
+  );
+
   const window: ActiveWindow = {
     code: mintCode(),
     expiresAt: now + ttlMs,
@@ -153,6 +177,7 @@ export function openPairingWindow(opts: { ttlMs?: number; redemptions?: number }
     openedAt: now,
     failures: [],
     redemptions: [],
+    adoptEsp32Ips,
     timer: null,
   };
   window.timer = setTimeout(() => {
@@ -164,7 +189,56 @@ export function openPairingWindow(opts: { ttlMs?: number; redemptions?: number }
 
   log(`[agentdeck] Pairing window open for ${Math.round(ttlMs / 1000)}s — code ${formatPairingCode(window.code)}`
     + `, ${redemptions} device(s). Enter it on the device to pair without USB or a QR scan.`);
-  return { code: window.code, expiresAt: window.expiresAt, redemptions };
+  if (adoptEsp32Ips.size > 0) {
+    log(`[agentdeck] Also re-arming ESP32 board(s) at ${[...adoptEsp32Ips].join(', ')} on their next connect.`);
+  }
+  return {
+    code: window.code,
+    expiresAt: window.expiresAt,
+    redemptions,
+    adoptEsp32Ips: [...adoptEsp32Ips],
+  };
+}
+
+/**
+ * Whether an ESP32 peer at `ip` may be re-armed over the socket it just opened.
+ *
+ * A board has no keyboard, so a pairing code cannot authorize it. The operator
+ * naming its address does — they read that address off this daemon's own refusal
+ * log. Deliberately NOT "any peer claiming clientType=esp32 while a window is
+ * open": that claim is unverifiable, and a window opened to pair a phone would
+ * then hand the token to anything on the segment that asked for it.
+ *
+ * The grant is still bounded by the window: it expires with it, and it survives
+ * no longer than the operator's attention.
+ */
+export function mayAdoptEsp32(ip: string, now = Date.now()): boolean {
+  const window = getActive(now);
+  if (!window) return false;
+  return window.adoptEsp32Ips.has(ip);
+}
+
+/**
+ * Record that a board was re-armed, and stop offering to do it again.
+ *
+ * Removed from the set on success so a board that keeps reconnecting is not
+ * re-provisioned on every dial — the second push would be indistinguishable
+ * from the first failing, which is exactly the signal the operator needs.
+ */
+export function noteEsp32Adopted(ip: string, board: string | undefined, now = Date.now()): void {
+  const window = getActive(now);
+  if (!window) return;
+  window.adoptEsp32Ips.delete(ip);
+  window.redemptions.push({
+    at: now,
+    ip,
+    name: sanitizeLabel(board, 'esp32 board', 24),
+    kind: 'esp32',
+  });
+  log(`[agentdeck] Re-armed ${board ?? 'ESP32 board'} at ${ip} over WiFi — no cable needed.`);
+  if (window.adoptEsp32Ips.size === 0 && window.redemptionsRemaining <= 0) {
+    closeActive('redeemed');
+  }
 }
 
 /** Close the window early (operator cancelled, daemon shutting down). */
@@ -200,6 +274,8 @@ export function getPairingWindowStatus(now = Date.now()): {
   redemptionsRemaining: number;
   redemptions: PairingRedemption[];
   failures: Array<{ at: number; ip: string }>;
+  /** ESP32 peers still awaiting a re-arm on their next connect. */
+  adoptEsp32Pending: string[];
 } {
   const window = getActive(now);
   if (!window) {
@@ -214,6 +290,7 @@ export function getPairingWindowStatus(now = Date.now()): {
       redemptionsRemaining: 0,
       redemptions: closed ? [...closed.redemptions] : [],
       failures: closed ? [...closed.failures] : [],
+      adoptEsp32Pending: [],
     };
   }
   return {
@@ -224,6 +301,7 @@ export function getPairingWindowStatus(now = Date.now()): {
     redemptionsRemaining: window.redemptionsRemaining,
     redemptions: [...window.redemptions],
     failures: [...window.failures],
+    adoptEsp32Pending: [...window.adoptEsp32Ips],
   };
 }
 
@@ -258,7 +336,11 @@ export function redeemPairingCode(
     window.redemptionsRemaining -= 1;
     const token = mintToken();
     log(`[agentdeck] Paired ${name} (${kind}) at ${peer.ip} with a pairing code.`);
-    if (verdict.closes) closeActive('redeemed');
+    // A window has two halves — a code for devices with a keyboard, and an adopt
+    // list for boards that have none — and it may only close when BOTH are done.
+    // Closing on the code alone abandons a board the operator is still waiting
+    // on, and a board that dials once a minute will always lose that race.
+    if (verdict.closes && window.adoptEsp32Ips.size === 0) closeActive('redeemed');
     return { outcome: verdict.outcome, status: verdict.status, attemptsRemaining: verdict.attemptsRemaining, token };
   }
 

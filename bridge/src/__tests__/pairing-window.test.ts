@@ -11,6 +11,8 @@ import { PAIRING_MAX_FAILED_ATTEMPTS, PAIRING_WINDOW_MS } from '@agentdeck/share
 import {
   closePairingWindow,
   getPairingWindowStatus,
+  mayAdoptEsp32,
+  noteEsp32Adopted,
   openPairingWindow,
   pairingWindowOpen,
   redeemPairingCode,
@@ -150,6 +152,114 @@ describe('redemption', () => {
     const { code } = openPairingWindow();
     const spaced = `${code.slice(0, 3)} ${code.slice(3)}`;
     expect(redeemPairingCode(spaced, PEER, mintToken).outcome).toBe('accepted');
+  });
+});
+
+describe('cable-free ESP32 re-arm', () => {
+  const BOARD_IP = '192.168.68.54';
+
+  it('is off unless the operator named the board', () => {
+    // The default must be closed: a window opened to pair a phone must not hand
+    // the token to anything on the segment claiming to be an ESP32.
+    openPairingWindow();
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(false);
+  });
+
+  it('adopts only the addresses the operator named', () => {
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP] });
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(true);
+    expect(mayAdoptEsp32('192.168.68.99')).toBe(false);
+  });
+
+  it('is closed when no window is open at all', () => {
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(false);
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP] });
+    closePairingWindow();
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(false);
+  });
+
+  it('expires with the window, enforced on read', () => {
+    vi.useFakeTimers();
+    openPairingWindow({ ttlMs: 20_000, adoptEsp32Ips: [BOARD_IP] });
+    vi.setSystemTime(Date.now() + 21_000);
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(false);
+  });
+
+  it('re-arms a board once, not on every reconnect', () => {
+    // A board that keeps dialling must not be re-provisioned each time: the
+    // second push would look identical to the first one having failed, which is
+    // the signal the operator needs to see.
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP] });
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(true);
+    noteEsp32Adopted(BOARD_IP, '86box');
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(false);
+  });
+
+  it('reports the re-armed board to the operator', () => {
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP], redemptions: 2 });
+    noteEsp32Adopted(BOARD_IP, '86box');
+    const status = getPairingWindowStatus();
+    expect(status.redemptions).toHaveLength(1);
+    expect(status.redemptions[0]).toMatchObject({ ip: BOARD_IP, name: '86box', kind: 'esp32' });
+  });
+
+  it('sanitizes a board name from an unauthenticated peer', () => {
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP], redemptions: 2 });
+    noteEsp32Adopted(BOARD_IP, 'x'.repeat(200));
+    expect(getPairingWindowStatus().redemptions[0].name.length).toBeLessThanOrEqual(24);
+  });
+
+  it('names an unflashed board generically rather than blank', () => {
+    // `&board=` only arrives from firmware that carries it; older boards are the
+    // ones most likely to need this path.
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP], redemptions: 2 });
+    noteEsp32Adopted(BOARD_IP, undefined);
+    expect(getPairingWindowStatus().redemptions[0].name).toBe('esp32 board');
+  });
+
+  it('rejects malformed addresses instead of storing them', () => {
+    // A typo must not become a wildcard, and the set is logged.
+    const opened = openPairingWindow({
+      adoptEsp32Ips: ['192.168.68.54', 'not an ip', '', 'rm -rf /', '::1'],
+    });
+    expect(opened.adoptEsp32Ips.sort()).toEqual(['192.168.68.54', '::1']);
+    expect(mayAdoptEsp32('not an ip')).toBe(false);
+  });
+
+  it('bounds how many boards one window may re-arm', () => {
+    const many = Array.from({ length: 40 }, (_, i) => `192.168.68.${i + 10}`);
+    expect(openPairingWindow({ adoptEsp32Ips: many }).adoptEsp32Ips).toHaveLength(16);
+  });
+
+  it('shows what is still pending, so a silent board is visible', () => {
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP, '192.168.68.76'] });
+    expect(getPairingWindowStatus().adoptEsp32Pending.sort()).toEqual(['192.168.68.54', '192.168.68.76']);
+    noteEsp32Adopted(BOARD_IP, '86box');
+    expect(getPairingWindowStatus().adoptEsp32Pending).toEqual(['192.168.68.76']);
+  });
+
+  // A window has two halves — a code, for devices with a keyboard, and an adopt
+  // list, for boards that have none. It may only close when BOTH are spent.
+  it('stays open for the code after every board is re-armed', () => {
+    openPairingWindow({ adoptEsp32Ips: [BOARD_IP], redemptions: 1 });
+    noteEsp32Adopted(BOARD_IP, '86box');
+    expect(pairingWindowOpen()).toBe(true);
+  });
+
+  it('stays open for a pending board after the code is redeemed', () => {
+    // A board dials on its own schedule and will always lose a race against a
+    // human typing six digits. Closing on the code alone abandons it.
+    const { code } = openPairingWindow({ adoptEsp32Ips: [BOARD_IP], redemptions: 1 });
+    expect(redeemPairingCode(code, PEER, mintToken).outcome).toBe('accepted');
+    expect(pairingWindowOpen()).toBe(true);
+    expect(mayAdoptEsp32(BOARD_IP)).toBe(true);
+  });
+
+  it('closes once both halves are spent', () => {
+    const { code } = openPairingWindow({ adoptEsp32Ips: [BOARD_IP], redemptions: 1 });
+    redeemPairingCode(code, PEER, mintToken);
+    noteEsp32Adopted(BOARD_IP, '86box');
+    expect(pairingWindowOpen()).toBe(false);
   });
 });
 

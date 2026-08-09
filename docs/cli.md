@@ -136,6 +136,17 @@ agentdeck pair -n 3         # pair three readers from one window
 agentdeck pair -t 300       # a longer walk to the shelf
 ```
 
+An ESP32 has no keyboard, so it cannot type a code. Name its address instead —
+copy it from the daemon's `Rejected <ip> (esp32)` line — and the credential is
+pushed down the socket the board opens next, no cable involved:
+
+```bash
+agentdeck pair --adopt 192.168.68.54 192.168.68.76
+```
+
+See [daemon.md § Re-arming an ESP32 without a cable](daemon.md) for the
+authorization model and the firmware floor this needs.
+
 The command then watches the window and reports each device as it pairs — and
 each wrong code as it arrives, which is the point of a short window somebody is
 standing in front of. The window closes on success, on expiry, or after five

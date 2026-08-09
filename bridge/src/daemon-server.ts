@@ -1477,7 +1477,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
         try { body = await readJsonBody(req, 4096); } catch { /* defaults */ }
         const ttlMs = typeof body.ttlMs === 'number' ? body.ttlMs : undefined;
         const redemptions = typeof body.redemptions === 'number' ? body.redemptions : undefined;
-        const opened = openPairingWindow({ ttlMs, redemptions });
+        // Operator-named ESP32 peers for a cable-free re-arm. A board cannot type
+        // a code, so the address the operator read off the refusal log is what
+        // authorizes it — see pairing-window.ts `mayAdoptEsp32`.
+        const adoptEsp32Ips = Array.isArray(body.adoptEsp32Ips)
+          ? body.adoptEsp32Ips.filter((x): x is string => typeof x === 'string')
+          : undefined;
+        const opened = openPairingWindow({ ttlMs, redemptions, adoptEsp32Ips });
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify(opened));
       })().catch(() => {
@@ -3260,6 +3266,15 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     // Include ESP32 serial connections in client count for polling guards
     core.setExternalClientCountProvider(() => esp32ConnectionCount());
   }
+
+  // Cable-free ESP32 re-arm (daemon only — a session bridge shares WsServer and
+  // has no business provisioning boards). Reads the token live, like every other
+  // provisioning path, so a handover reaches a board re-arming right now.
+  core.wsServer.setEsp32AdoptionProvider(() => ({
+    authToken: getOrCreateToken(),
+    bridgeIp: getLanIp(),
+    bridgePort: port,
+  }));
 
   // WS-path display_state re-sync: the 5s serial heartbeat above only covers
   // USB-attached boards. WiFi boards (InkDeck) receive display_state edge-

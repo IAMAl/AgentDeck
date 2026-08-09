@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
 import type { BridgeEvent, PluginCommand } from './types.js';
 import { isLocalConnection, validateToken } from './auth.js';
+import { mayAdoptEsp32, noteEsp32Adopted } from './pairing-window.js';
 import { debug, log } from './logger.js';
 import { WS_PING_INTERVAL_MS } from '@agentdeck/shared';
 
@@ -32,6 +33,15 @@ export class WsServer {
   // connect board-class from byte one, so the ≤4096B invariant holds and a
   // heap-tight board can't be killed by its own welcome payload.
   private knownBoardIps = new Set<string>();
+  /**
+   * Supplies the credential for a cable-free ESP32 re-arm, or null when this
+   * server must not hand one out. Injected rather than imported so the WS layer
+   * never reaches for a token itself — a session bridge shares this class and
+   * has no business provisioning boards.
+   */
+  private esp32AdoptionProvider:
+    | (() => { authToken: string; bridgeIp: string; bridgePort: number } | null)
+    | null = null;
   private socketRemoteIp = new Map<WebSocket, string>();
   private eventTransformer: ((event: BridgeEvent, client: WebSocket) => BridgeEvent | null) | null = null;
   // Clients that registered as the Ulanzi Studio plugin. Their WebSocket
@@ -86,6 +96,36 @@ export class WsServer {
             ?? (url.searchParams.get('esp32') === '1' ? 'esp32' : null);
           const peerKind = claimed?.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 24)
             || (this.knownBoardIps.has(remoteIp) ? 'esp32' : undefined);
+
+          // Cable-free re-arm. A board cannot type a pairing code, so the
+          // operator names its address instead (`agentdeck pair --adopt <ip>`)
+          // and the daemon pushes the credential down the socket the board just
+          // opened. `auth_provision` reaches the same firmware handler over the
+          // WebSocket as over serial, and that handler persists to NVS — so this
+          // survives the board's next reboot, which is the whole point.
+          //
+          // The socket is still unauthenticated and stays that way: it is never
+          // registered as a client, never added to any roster, and receives this
+          // one frame and nothing else. The board reconnects holding the token.
+          if (peerKind === 'esp32' && this.esp32AdoptionProvider && mayAdoptEsp32(remoteIp)) {
+            const payload = this.esp32AdoptionProvider();
+            if (payload) {
+              const board = url.searchParams.get('board')?.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 24);
+              try {
+                ws.send(JSON.stringify({ type: 'auth_provision', ...payload }));
+              } catch { /* peer vanished mid-handshake */ }
+              noteEsp32Adopted(remoteIp, board || undefined);
+              // Normal close, not 4001: the board should redial immediately with
+              // its new credential, not treat this endpoint as one that refused
+              // it. Delayed so the frame flushes first.
+              const bye = setTimeout(() => {
+                try { ws.close(1000, 'Re-armed — reconnect with the new token'); } catch { /* gone */ }
+              }, 500);
+              bye.unref?.();
+              return;
+            }
+          }
+
           this.logUnauthorized(remoteIp, token.length > 0, peerKind);
           ws.close(4001, 'Unauthorized');
           return;
@@ -279,6 +319,18 @@ export class WsServer {
         try { client.send(clientPayload); } catch { /* client disconnecting */ }
       }
     }
+  }
+
+  /**
+   * Enable cable-free ESP32 re-arming on this server (daemon only).
+   *
+   * Whether any given board is re-armed is still decided by the operator's
+   * window (`mayAdoptEsp32`); this only grants the server the ability at all.
+   */
+  setEsp32AdoptionProvider(
+    provider: (() => { authToken: string; bridgeIp: string; bridgePort: number } | null) | null,
+  ): void {
+    this.esp32AdoptionProvider = provider;
   }
 
   onClientConnect(callback: (ws: WebSocket) => void): void {

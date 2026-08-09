@@ -804,9 +804,20 @@ static void handleWifiProvision(JsonObject& obj) {
  * radio policy (parking, deferred join, brownout deferral). This message
  * carries the credential alone.
  *
- * It deliberately does not connect anything. `networkTask` already rebuilds the
- * WS from `g_state.authToken` under every policy guard that matters, so storing
- * the token is the whole job — duplicating those guards here is how they drift.
+ * It does not CONNECT anything — `networkTask` owns that, under policy guards
+ * (radio parking, serial primacy, brownout deferral) that must not be duplicated
+ * here. But it must DISCONNECT a socket carrying the superseded token, and that
+ * distinction is what this handler originally got wrong.
+ *
+ * The token rides the WebSocket URL, so it is fixed at `wsConnect` time. The
+ * WebSockets library then auto-reconnects on its own using the path string built
+ * back then, which keeps `connected || connecting` true — and `wsConnect`
+ * early-returns on exactly that. So `networkTask` never rebuilt anything: it saw
+ * a live socket and left it alone, forever, dialing the old credential. Measured
+ * on two boards (2026-08-09): both accepted `auth_provision` over WiFi, saved it
+ * to NVS, and went on being closed 4001 for as long as anyone watched, because
+ * nothing ever asked for a new URL. Dropping the stale socket lets the
+ * supervisor's next tick rebuild it with the credential we just stored.
  */
 static void handleAuthProvision(JsonObject& obj) {
     const char* authToken = obj["authToken"] | "";
@@ -840,11 +851,34 @@ static void handleAuthProvision(JsonObject& obj) {
         if (changed) Serial.println("[Provision] Pairing token re-armed");
         resp["success"] = true;
         resp["changed"] = changed;
+
+        // Drop a socket that is still presenting the superseded token, so the
+        // supervisor rebuilds the URL with the new one. Only on a real change:
+        // the daemon re-arms idempotently on every device_info, and tearing down
+        // a healthy socket each time would be a self-inflicted flap.
+        //
+        // Ack first, below — this disconnect can take the very socket the ack
+        // would leave on, so it happens after the reply is on the wire.
+        if (changed) {
+            char ackBuf[128];
+            serializeJson(resp, ackBuf, sizeof(ackBuf));
+            Net::serialWriteJsonLine(ackBuf);
+            if (Net::wsConnected()) Net::wsSend(ackBuf);
+            if (Net::wsConnected() || Net::wsConnecting()) {
+                Serial.println("[Provision] Dropping WS so it redials with the new token");
+                Net::wsDisconnect();
+            }
+            return;
+        }
     }
 
     char buf[128];
     serializeJson(resp, buf, sizeof(buf));
     Net::serialWriteJsonLine(buf);
+    // Also answer on the WebSocket: this message now arrives over WiFi too (a
+    // cable-free re-arm), and a serial-only ack left the daemon unable to tell
+    // "understood" from "ignored" — which is the one thing the ack is for.
+    if (Net::wsConnected()) Net::wsSend(buf);
 }
 
 static void sendOtaAck(const char* otaId, const char* stage, uint32_t seq, uint32_t offset, uint32_t written) {

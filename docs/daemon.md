@@ -167,6 +167,23 @@ Why it does not widen the boundary:
 - **A malformed submission spends nothing** (400, not 401): a typo of the wrong length is not a guess, and burning the operator's window on one would be its own denial of service.
 - **`--devices N`** pairs a fleet from one window (the three readers here), capped at 16.
 
+#### Re-arming an ESP32 without a cable — `agentdeck pair --adopt <ip>`
+
+A board cannot type a code, so the code cannot be what authorizes it. What does is the **operator naming its address**, read off the daemon's own refusal line:
+
+```
+Rejected 192.168.68.54 (esp32): no pairing token. Attach it over USB serial…
+$ agentdeck pair --adopt 192.168.68.54 192.168.68.76
+```
+
+During the window, a peer at a named address that tags itself `clientType=esp32` gets `auth_provision` pushed down the socket it just opened — the same message and the same firmware handler as the serial path, which persists to NVS (`Protocol::parseMessage` is shared between `ws_client.cpp` and `serial_client.cpp`). The socket stays unauthenticated throughout: it is never registered as a client, receives that one frame, and is closed `1000` so the board redials with its new credential.
+
+Deliberately **not** "any peer claiming `clientType=esp32` while a window is open" — that claim is unverifiable, and a window opened to pair a phone would then hand the token to anything on the segment that asked. The grant is per-address, one push per board (`noteEsp32Adopted` removes it from the set, so a reconnecting board is not re-provisioned on every dial), and it expires with the window.
+
+A window has **two halves** — the code, for devices with a keyboard, and the adopt list, for boards without one — and closes only when both are spent. Closing on the code alone abandons a board that dials on its own schedule and will always lose a race against a human typing six digits.
+
+**Firmware floor.** The board must apply a token *and re-dial with it*. The token rides the WebSocket URL, fixed at `wsConnect` time, and the WebSockets library auto-reconnects using that same path — which keeps `connected || connecting` true, and `wsConnect` early-returns on exactly that. So `handleAuthProvision` storing the token was not enough: nothing ever asked for a new URL. It now drops the stale socket on a real change and lets `networkTask` rebuild it. Boards flashed before that fix accept the push, save it, and keep dialing the old credential until they **reboot** (boot reads the token from NVS) — so a power-cycle is the cheapest way to bring an older board over.
+
 Rules SSOT is `shared/src/pairing-code.ts`; `pnpm generate-pairing-code-rules` emits the Swift evaluator and the Kotlin client mirror behind a vitest drift gate. The HTTP status per outcome is part of the contract — 401 means "ask the human for the code again", 410/429 mean "the window is gone, stop retrying" — which is why the evaluator is generated rather than hand-ported into the Swift daemon.
 
 ### Verifying the boundary by hand

@@ -1405,6 +1405,10 @@ program
   .option('-p, --port <port>', 'Daemon port (auto-detected)')
   .option('-t, --ttl <seconds>', 'How long the window stays open')
   .option('-n, --devices <count>', 'How many devices this window may pair', '1')
+  .option(
+    '--adopt <ip...>',
+    'Re-arm ESP32 board(s) at these IPs over WiFi — no cable. Read the address off the daemon\'s "Rejected <ip> (esp32)" line',
+  )
   .action(async (opts) => {
     const { readDaemonInfo, findDaemonPort } = await import('./session-registry.js');
     const { formatPairingCode, getLanIp, PAIRING_WINDOW_MS, PAIRING_MAX_FAILED_ATTEMPTS } =
@@ -1417,19 +1421,24 @@ program
     const ttlMs = opts.ttl != null ? Math.round(parseFloat(opts.ttl) * 1000) : PAIRING_WINDOW_MS;
     const redemptions = parseInt(opts.devices, 10) || 1;
 
+    const adoptEsp32Ips: string[] = Array.isArray(opts.adopt)
+      ? opts.adopt
+      : (typeof opts.adopt === 'string' ? [opts.adopt] : []);
+
     const daemon = `http://127.0.0.1:${port}`;
     type Redemption = { at: number; ip: string; name: string; kind: string };
     type Status = {
       open: boolean; secondsRemaining: number; attemptsRemaining: number;
       redemptionsRemaining: number; redemptions: Redemption[]; failures: Array<{ at: number; ip: string }>;
+      adoptEsp32Pending?: string[];
     };
 
-    let opened: { code: string; expiresAt: number; redemptions: number };
+    let opened: { code: string; expiresAt: number; redemptions: number; adoptEsp32Ips?: string[] };
     try {
       const res = await fetch(`${daemon}/pair/open`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ttlMs, redemptions }),
+        body: JSON.stringify({ ttlMs, redemptions, adoptEsp32Ips }),
         signal: AbortSignal.timeout(3000),
       });
       if (!res.ok) throw new Error(`daemon answered ${res.status}`);
@@ -1450,6 +1459,11 @@ program
     log('');
     log(`  Valid for ${Math.round((opened.expiresAt - Date.now()) / 1000)}s, `
       + `${opened.redemptions} device(s), ${PAIRING_MAX_FAILED_ATTEMPTS} wrong tries.`);
+    if (opened.adoptEsp32Ips?.length) {
+      log('');
+      log(`  Also re-arming ESP32 board(s) at ${opened.adoptEsp32Ips.join(', ')} —`);
+      log('  they need no code; the credential is pushed on their next connect.');
+    }
     log('');
 
     // Watch the window until it closes, so the operator sees who paired — and
