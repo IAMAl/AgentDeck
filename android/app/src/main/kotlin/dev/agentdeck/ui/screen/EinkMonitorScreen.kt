@@ -30,7 +30,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,7 +39,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -51,8 +49,8 @@ import dev.agentdeck.R
 import dev.agentdeck.data.DisplayPreferences
 import dev.agentdeck.net.AgentState
 import dev.agentdeck.net.BridgeConnection
+import dev.agentdeck.net.BridgeAutoConnect
 import dev.agentdeck.net.BridgeConstants
-import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.net.PairingCredential
@@ -78,25 +76,8 @@ import dev.agentdeck.ui.eink.EinkAnimatedRefreshZone
 import dev.agentdeck.ui.eink.EinkRefreshZone
 import dev.agentdeck.ui.eink.Zone
 import dev.agentdeck.data.DashboardOrientation
-import android.util.Log
 import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
-
-private const val TAG = "EinkMonitor"
-private const val VERBOSE_EINK_LOGS = false
-
-private inline fun einkDebug(message: () -> String) {
-    if (VERBOSE_EINK_LOGS || Log.isLoggable(TAG, Log.DEBUG)) {
-        Log.d(TAG, message())
-    }
-}
-
-private fun shouldPersistBridgeUrl(url: String?): Boolean {
-    return url != null && !url.contains("127.0.0.1") && !url.contains("localhost")
-}
 
 @Composable
 fun EinkMonitorScreen(
@@ -109,133 +90,37 @@ fun EinkMonitorScreen(
     val timelineEntries by TimelineStore.instance.entries.collectAsState()
     var showSettings by remember { mutableStateOf(false) }
 
-    val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val einkScale = rememberEinkLayoutScale()
     val currentUrl by connection.url.collectAsState()
 
-    // mDNS discovery — active while disconnected (url cleared)
-    val discovery = remember { BridgeDiscovery(context) }
+    // mDNS discovery list, for the manual-connect UI below. Filled by the
+    // shared ladder, which is also the only thing that dials.
     var discoveredBridges by remember { mutableStateOf<List<DiscoveredBridge>>(emptyList()) }
 
-    // Discovery + URL save — keyed on both status AND url
-    // Run mDNS discovery whenever not connected (including while reconnecting)
-    LaunchedEffect(connectionStatus, currentUrl) {
-        when {
-            connectionStatus == ConnectionStatus.CONNECTED -> {
-                discoveredBridges = emptyList()
-                // Keep the last network URL stable; localhost is always known implicitly.
-                // mayPersist, not shouldPersist — see MainActivity: a
-                // tokenless URL must never displace a stored credential.
-                if (PairingCredential.mayPersist(currentUrl, displayPrefs.lastBridgeUrlFlow.first())) {
-                    displayPrefs.setLastBridgeUrl(currentUrl)
-                    connection.pairedUrl = currentUrl
-                }
-            }
-            else -> {
-                // DISCONNECTED or CONNECTING — run mDNS to show alternatives
-                discovery.discover().collect { bridges ->
-                    discoveredBridges = bridges
-                    // Preempt the localhost (USB) phase: adb reverse only exists under
-                    // the Node CLI daemon, so against the Swift in-process daemon the
-                    // ws://127.0.0.1 attempt can never succeed and the bounded discovery
-                    // windows below can keep missing a slow NSD resolve. Re-resolving per
-                    // connection also heals a saved URL whose port went stale after a
-                    // daemon restart (e.g. 9121→9120).
-                    val daemon = bridges.firstOrNull { it.agentType == "daemon" }
-                    val cur = connection.url.value
-                    val curIsLocalOrNone = cur == null ||
-                        cur.contains("127.0.0.1") || cur.contains("localhost")
-                    if (daemon != null && curIsLocalOrNone &&
-                        connection.status.value != ConnectionStatus.CONNECTED) {
-                        einkDebug { "mDNS preempts USB attempt: ${daemon.name} at ${daemon.wsUrl()}" }
-                        connection.connect(daemon.wsUrl(), daemon.fallbackWsUrl())
-                    }
-                }
-            }
-        }
-    }
-
-    // Auto-connect: localhost (USB) → saved URL → mDNS (WiFi)
-    LaunchedEffect(Unit) {
-        val rawSavedUrl = displayPrefs.lastBridgeUrlFlow.first()
-        val savedUrl = rawSavedUrl?.takeUnless { !shouldPersistBridgeUrl(it) }
-        if (rawSavedUrl != null && savedUrl == null) {
-            displayPrefs.setLastBridgeUrl(null)
-        }
-        // Seed the credential the connection layer re-attaches to tokenless
-        // discovered endpoints (PairingCredential) — discovery stopped carrying
-        // tokens in #145, so this is the only copy the device has.
-        connection.pairedUrl = savedUrl
-        einkDebug { "Auto-connect: savedUrl=$savedUrl" }
-        // Try localhost (adb reverse USB connection) before mDNS
-        if (connection.status.value != ConnectionStatus.CONNECTED) {
-            einkDebug { "Trying localhost:${BridgeConstants.WS_PORT} (USB)..." }
-            connection.connect(BridgeConstants.LOCALHOST_WS_URL)
-            delay(3000)
-        }
-        if (savedUrl != null && connection.status.value != ConnectionStatus.CONNECTED) {
-            connection.autoConnect(savedUrl)
-            delay(5000)
-        }
-        // If still disconnected, try mDNS discovery with daemon grace period
-        if (connection.status.value != ConnectionStatus.CONNECTED) {
-            einkDebug { "Saved URL failed, trying mDNS discovery..." }
-            var bestBridges = emptyList<DiscoveredBridge>()
-            withTimeoutOrNull(6000) {
-                discovery.discover().collect { bridges ->
-                    bestBridges = bridges
-                    if (bridges.isNotEmpty() && connection.status.value != ConnectionStatus.CONNECTED) {
-                        val daemon = bridges.firstOrNull { it.agentType == "daemon" }
-                        if (daemon != null) {
-                            einkDebug { "mDNS daemon found: ${daemon.name} at ${daemon.wsUrl()}" }
-                            connection.connect(daemon.wsUrl(), daemon.fallbackWsUrl())
-                            return@collect
-                        }
-                    }
-                }
-            }
-            // No non-daemon fallback — session bridges don't serve external clients.
-            if (false && bestBridges.isNotEmpty() &&
-                connection.status.value != ConnectionStatus.CONNECTED) {
-                val bridge = bestBridges.first()
-                einkDebug { "mDNS daemon not found, fallback: ${bridge.name} (agent=${bridge.agentType}) at ${bridge.wsUrl()}" }
-                connection.connect(bridge.wsUrl(), bridge.fallbackWsUrl())
-            }
-        }
-    }
-
-    // Recovery after BridgeConnection gives up on localhost and clears URL.
-    // Keep cycling so devices reconnect when the daemon starts after the app.
-    LaunchedEffect(connectionStatus, currentUrl) {
-        if (connectionStatus == ConnectionStatus.DISCONNECTED && currentUrl == null) {
-            delay(500) // brief pause before re-discovery
-            einkDebug { "Disconnected with no URL — re-discovering via mDNS" }
-            withTimeoutOrNull(6000) {
-                discovery.discover().collect { bridges ->
-                    val daemon = bridges.firstOrNull { it.agentType == "daemon" }
-                    if (daemon != null && connection.status.value != ConnectionStatus.CONNECTED) {
-                        einkDebug { "mDNS re-discover (daemon): ${daemon.name} at ${daemon.wsUrl()}" }
-                        connection.connect(daemon.wsUrl(), daemon.fallbackWsUrl())
-                        return@collect
-                    }
-                }
-            }
-            if (connection.status.value != ConnectionStatus.CONNECTED && connection.url.value == null) {
-                delay(10_000)
-                if (connection.status.value != ConnectionStatus.CONNECTED && connection.url.value == null) {
-                    einkDebug { "mDNS recovery timed out — retrying localhost:${BridgeConstants.WS_PORT} (USB)" }
-                    connection.connect(BridgeConstants.LOCALHOST_WS_URL)
-                }
-            }
-        }
-    }
+    // The connection ladder — loopback (USB) → saved URL → mDNS — shared with
+    // MainActivity.TabletDashboard. This screen used to carry its own copy,
+    // which is how it kept the version that preempted the USB attempt the
+    // moment mDNS resolved anything and redialled a refused endpoint on every
+    // emission. E-ink readers are the devices that copy served, and the ones
+    // least able to recover: no camera for a pairing QR, and over `adb reverse`
+    // no pairing needed at all.
+    BridgeAutoConnect(
+        connection = connection,
+        displayPrefs = displayPrefs,
+        onDiscoveredBridges = { discoveredBridges = it },
+    )
 
     // mDNS-discovered bridges are also shown in the UI for manual selection
     // in the not-connected screen or use Settings for manual URL entry.
 
-    val lastError by connection.lastError.collectAsState()
+    val rawLastError by connection.lastError.collectAsState()
+    val unauthorizedEndpoints by connection.unauthorizedEndpoints.collectAsState()
+    // A refusal outranks the last attempt's error: the recovery ladder keeps
+    // probing the USB path, and "USB bridge not found" kept overwriting the one
+    // message this device's user can act on.
+    val lastError = PairingCredential.disconnectedDetail(rawLastError, unauthorizedEndpoints)
     val isReconnecting by connection.isReconnecting.collectAsState()
     val reconnectAttempt by connection.reconnectAttempt.collectAsState()
     val showSessionList by displayPrefs.showSessionListFlow.collectAsState(initial = true)

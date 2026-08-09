@@ -110,21 +110,23 @@ class PairingCredentialTest {
 
     private fun mayDial(
         current: String? = null,
-        settled: Boolean = true,
-        unauthorized: String? = null,
+        loopbackTried: Boolean = true,
+        unauthorized: Set<String> = emptySet(),
         saved: String? = null,
-    ) = PairingCredential.mayDialDiscovered(discovered, current, settled, unauthorized, saved)
+    ) = PairingCredential.mayDialDiscovered(discovered, current, loopbackTried, unauthorized, saved)
 
     @Test
-    fun `the LAN endpoint is dialled once the USB attempt has settled`() {
+    fun `the LAN endpoint is dialled once nothing else is in flight`() {
         assertTrue(mayDial())
-        assertTrue(mayDial(current = "ws://127.0.0.1:9120"))
     }
 
     @Test
     fun `the USB attempt is not preempted while it is still in flight`() {
-        assertFalse(mayDial(current = "ws://127.0.0.1:9120", settled = false))
-        assertFalse(mayDial(current = null, settled = false))
+        // The turn is held by the URL, not by a flag: the loopback probe owns
+        // the connection until the socket layer gives up and clears it.
+        assertFalse(mayDial(current = "ws://127.0.0.1:9120"))
+        assertFalse(mayDial(current = "ws://localhost:9120"))
+        assertFalse(mayDial(current = null, loopbackTried = false))
     }
 
     @Test
@@ -136,17 +138,56 @@ class PairingCredentialTest {
     fun `an endpoint that closed us 4001 is not redialled`() {
         // The socket layer clears the URL on 4001, so "rejected" and "never
         // tried" look identical from here unless the refusal is its own fact.
-        assertFalse(mayDial(unauthorized = "192.168.1.10:9120"))
-        assertFalse(mayDial(current = null, unauthorized = "192.168.1.10:9120"))
+        assertFalse(mayDial(unauthorized = setOf("192.168.1.10:9120")))
     }
 
     @Test
     fun `a refused endpoint is dialled again once we hold a credential for it`() {
-        assertTrue(mayDial(unauthorized = "192.168.1.10:9120", saved = paired))
+        assertTrue(mayDial(unauthorized = setOf("192.168.1.10:9120"), saved = paired))
     }
 
     @Test
     fun `a refusal is remembered per endpoint, not globally`() {
-        assertTrue(mayDial(unauthorized = "192.168.1.99:9120"))
+        assertTrue(mayDial(unauthorized = setOf("192.168.1.99:9120")))
+    }
+
+    // ── what the disconnected screen says ────────────────────────────────
+
+    @Test
+    fun `a refusal outranks whatever the last attempt reported`() {
+        // The recovery ladder keeps probing the USB path in the background, so
+        // its failure text kept overwriting the only message the user can act
+        // on. Being refused did not stop being true.
+        val detail = PairingCredential.disconnectedDetail(
+            "USB bridge not found — try WiFi",
+            setOf("192.168.1.10:9120"),
+        )
+        assertEquals(
+            "Not paired with 192.168.1.10:9120 — attach USB, or enter ws://192.168.1.10:9120?token=… in Settings",
+            detail,
+        )
+    }
+
+    @Test
+    fun `with nothing refused the last error stands`() {
+        assertEquals(
+            "USB bridge not found — try WiFi",
+            PairingCredential.disconnectedDetail("USB bridge not found — try WiFi", emptySet()),
+        )
+        assertNull(PairingCredential.disconnectedDetail(null, emptySet()))
+    }
+
+    @Test
+    fun `every refused spelling of one daemon stays refused`() {
+        // A dual-homed daemon is offered as both its TXT ip and its
+        // NSD-resolved host, and the reconnect ladder fails over between them.
+        // With a single remembered refusal the two took turns looking new.
+        val refused = setOf("192.168.1.10:9120", "macbook.local:9120")
+        assertFalse(mayDial(unauthorized = refused))
+        assertFalse(
+            PairingCredential.mayDialDiscovered(
+                "ws://macbook.local:9120", null, true, refused, null,
+            )
+        )
     }
 }
