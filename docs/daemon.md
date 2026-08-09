@@ -2,7 +2,7 @@
 id: arch.daemon
 title: Daemon Hub
 description: The singleton daemon on port 9120 — session-bridge push, mDNS recovery, usage relay, multi-surface monitoring.
-category: Engineering
+category: Specs
 locale: en
 canonical: true
 status: stable
@@ -136,6 +136,31 @@ The daemon deliberately binds `0.0.0.0` — companion apps, ESP32 boards, and pu
 - **Re-arming a device**: the daemon pushes `auth_provision` (credential only, no WiFi side effects) to every serial-attached board whose token differs from the one it serves — independent of WiFi auto-provisioning, and *including* boards whose radio is already up, which `wifi_provision` deliberately skips. A board holding a credential the daemon no longer accepts is online and unreachable at the same time, and USB serial is the only channel that still works when authentication is what is broken. Boards persist the token in NVS (`wifiSaveAuthToken`) and restore it at boot, on every board — not just the two that also persist an endpoint.
 - **Loopback-only opt-out**: `AGENTDECK_LOOPBACK_ONLY=1` binds `127.0.0.1` for users with no LAN devices. Startup logs state the bind mode either way.
 - Tests: `bridge/src/__tests__/http-auth-gate.test.ts`, `mdns-hostname.test.ts` (TXT token absence), `discovery-security.test.ts` (UDP and startup-log absence), `ws-server-auth.test.ts`, Swift `HttpAccessPolicyTests`.
+
+### Verifying the boundary by hand
+
+**You cannot test this from the daemon's own machine.** `isLocalConnection()` trusts loopback *and every address on this host's own interfaces*, so `curl http://<my-own-LAN-IP>:9120/health` from the Mac returns the full payload — pairing token included — and that is correct behaviour, not a leak. Reading it as one is a measurement error that has already been made once (2026-08-09, while closing #145).
+
+A real check needs a second host. The cheapest one in this repo is an attached ADB device on the same Wi-Fi:
+
+```bash
+adb -s <serial> shell "curl -s http://<daemon-LAN-IP>:9120/health"
+# {"status":"ok","mode":"daemon","port":9120,"sameSocketControl":true,"authRequired":true}
+```
+
+Expected results from a genuinely remote peer: `GET /health` → 200 with that minimal body; `/status`, `/sessions`, `/timeline`, `/devices` and a wrong `?token=` → 401.
+
+Two traps when reading the results:
+
+- **A WebSocket upgrade answering `101` is not a failure.** Both daemons complete the handshake and then close `4001 Unauthorized` before registering the socket or sending any state. Check for the close code, not the status line.
+- **Not every device image has `curl`** — several e-ink Android builds do not. Pick the device before concluding the daemon is unreachable.
+
+The other two discovery transports are checkable locally, since neither is request-scoped:
+
+```bash
+dns-sd -Z _agentdeck._tcp local     # TXT must carry project/agent/v/port/ip only
+# UDP beacon: bind 0.0.0.0:9121 with SO_REUSEADDR+SO_REUSEPORT alongside the daemon
+```
 
 ## Multi-surface monitoring
 
