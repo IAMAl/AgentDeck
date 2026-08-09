@@ -158,6 +158,44 @@ The same grant also powers `stay_on_while_plugged_in` from `MonitorService`. Not
 
 ---
 
+## Connection ladder (SSOT)
+
+`net/BridgeAutoConnect.kt` is the **only** auto-connect ladder, shared by
+`MainActivity.TabletDashboard` and `EinkMonitorScreen`. Do not inline a second
+one in a new screen — there were two copies, they drifted, and the fix for a
+hammering reconnect loop landed in the tablet copy while the e-ink readers it
+was written for kept the broken one (`430f61c3`).
+
+The order is **loopback → saved URL → mDNS**, and the reasoning behind it is the
+device tiering:
+
+| Path | Credential | Who it serves |
+|------|-----------|---------------|
+| `ws://127.0.0.1:9120` via `adb reverse` | none — same-machine | any adb-attached device, USB **or** tcpip:5555 |
+| saved URL with `?token=` | typed once in Settings | devices with no adb link |
+| mDNS-discovered LAN endpoint | inherits a stored token for the same endpoint | reconnect / daemon moved |
+
+Rules any new dial site must keep:
+
+- **The loopback probe gets the turn.** mDNS seeing a daemon says nothing about
+  whether the reverse tunnel works. The turn is held by `BridgeConnection.url`
+  (an attempt in flight blocks a preempt and releases itself when the socket
+  layer gives up), never by a re-armed boolean.
+- **An endpoint that closed us 4001 is not dialled again** without a credential
+  — `PairingCredential.mayDialDiscovered`, backed by the refusal set in
+  `BridgeConnection.unauthorizedEndpoints`. A camera-less reader cannot scan a
+  pairing QR, so hammering it is both useless and invisible to its user.
+- **Probes are paced**: loopback fails fast (2 retries — the kernel answers
+  immediately) and re-probes on a 10s→120s backoff, reset only when mDNS shows
+  a daemon that had disappeared.
+
+`adb reverse` rides whichever adb transport exists, so a device stays connected
+after the USB cable is pulled **as long as tcpip:5555 is up** (see WiFi adb
+deploy above). That link does not survive a device reboot; a device with a
+typed token URL needs no adb link at all.
+
+---
+
 ## Terrarium Creature Behavior
 
 The aquarium creatures respond to agent state in real-time:
