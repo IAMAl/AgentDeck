@@ -190,6 +190,21 @@ now an answer to rather than just an explanation. `disconnectedDetail` points at
 it too — it used to advise typing `ws://…?token=…` on an e-ink keyboard, which
 is possible and never actually done.
 
+**The offer must survive a live dashboard.** A device on `adb reverse` is
+working and unpaired at the same time, and that is the only moment its user can
+fix it — so `PairingCredential.shouldOfferPairing` gates on *connected over a LAN
+endpoint*, not on "disconnected". Two consequences, and both were needed before
+a single reader could actually pair:
+
+- The settings screen keeps the pairing input visible while the URL is loopback.
+- **Discovery must keep running there too.** A code is worthless without an
+  endpoint to spend it at, and all three screens stopped discovering the moment
+  they connected. `BridgeAutoConnect` publishes the list while on loopback, and
+  `TabletSettingsDialog`/`SettingsScreen` — which keep their own collectors,
+  since either can be opened before the ladder runs — use the same predicate.
+  Dialling stays blocked regardless: `mayDialDiscovered` refuses while
+  `connection.url` is non-null, which it is.
+
 Rules any new dial site must keep:
 
 - **The loopback probe gets the turn.** mDNS seeing a daemon says nothing about

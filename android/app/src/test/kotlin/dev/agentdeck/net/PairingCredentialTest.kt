@@ -170,6 +170,24 @@ class PairingCredentialTest {
     }
 
     @Test
+    fun `pairing is still offered to a device riding the USB tunnel`() {
+        // The case this exists for: a reader on `adb reverse` shows a live
+        // dashboard and has no credential at all. Gating the offer on
+        // "disconnected" hid it from every device it was written for.
+        assertTrue(PairingCredential.shouldOfferPairing(connected = true, currentUrl = "ws://127.0.0.1:9120"))
+        assertTrue(PairingCredential.shouldOfferPairing(connected = true, currentUrl = "ws://localhost:9120"))
+        assertTrue(PairingCredential.shouldOfferPairing(connected = false, currentUrl = null))
+        assertTrue(PairingCredential.shouldOfferPairing(connected = false, currentUrl = paired))
+    }
+
+    @Test
+    fun `pairing is not offered to a device already on the LAN`() {
+        // It got there with a credential; offering to replace it is noise.
+        assertFalse(PairingCredential.shouldOfferPairing(connected = true, currentUrl = paired))
+        assertFalse(PairingCredential.shouldOfferPairing(connected = true, currentUrl = discovered))
+    }
+
+    @Test
     fun `the advice a camera-less reader is given is one it can actually take`() {
         // This copy is the whole recovery path on a device with no camera and no
         // cable, so it must not send the user back to typing a token URL on an

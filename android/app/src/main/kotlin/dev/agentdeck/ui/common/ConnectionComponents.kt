@@ -40,6 +40,7 @@ import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
 import dev.agentdeck.net.PairingCodeClient
 import dev.agentdeck.net.PairingCodeRules
+import dev.agentdeck.net.PairingCredential
 import dev.agentdeck.ui.theme.AgentDeckColors
 import dev.agentdeck.ui.theme.LocalIsEink
 import kotlinx.coroutines.launch
@@ -525,14 +526,24 @@ fun ConnectionPanel(
                 onConnectToBridge = onConnectToBridge,
             )
 
-            if (onPaired != null) {
-                PairingCodeInput(
-                    bridges = discoveredBridges,
-                    onPaired = onPaired,
-                )
-            }
-
             ManualUrlInput(onConnect = onConnectManualUrl)
+        }
+
+        // Pairing is offered while disconnected AND while connected over
+        // loopback. A device on `adb reverse` is working and unpaired at the
+        // same time — the tunnel dies on reboot and leaves nothing behind — so
+        // hiding the pairing input whenever the dashboard is live withheld it
+        // from precisely the devices it was written for. A LAN connection is a
+        // real pairing and needs no offer.
+        if (onPaired != null && PairingCredential.shouldOfferPairing(
+                connected = connectionStatus == ConnectionStatus.CONNECTED,
+                currentUrl = currentUrl,
+            )
+        ) {
+            PairingCodeInput(
+                bridges = discoveredBridges,
+                onPaired = onPaired,
+            )
         }
 
         if (connectionStatus == ConnectionStatus.CONNECTING) {

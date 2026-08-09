@@ -137,7 +137,20 @@ fun BridgeAutoConnect(
     // effect that subscribed while the probe still held the turn would sit on a
     // daemon it had already decided not to dial.
     LaunchedEffect(status, url, loopbackTried) {
-        if (status == ConnectionStatus.CONNECTED) {
+        // Connected over the LAN — nothing left to discover or offer.
+        //
+        // Connected over LOOPBACK is different, and the difference is the whole
+        // point of the pairing flow: `adb reverse` is a developer tunnel that
+        // dies on reboot, so a device riding it is working and unpaired at the
+        // same time. Clearing the list there hid the daemon from the settings
+        // screen, and the pairing-code input has nothing to spend a code
+        // against without an endpoint — so the one moment a reader can be given
+        // a durable credential is the one moment we used to stop looking.
+        // Dialling stays blocked regardless: `mayDial` refuses while
+        // `connection.url` is non-null, which it is.
+        if (status == ConnectionStatus.CONNECTED &&
+            !PairingCredential.isLoopback(connection.url.value)
+        ) {
             onDiscoveredBridges(emptyList())
             return@LaunchedEffect
         }

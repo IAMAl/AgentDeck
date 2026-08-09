@@ -122,6 +122,21 @@ object PairingCredential {
     }
 
     /**
+     * Whether the settings screen should still offer a pairing code.
+     *
+     * A live dashboard is not the same as a paired device. Over `adb reverse`
+     * the device is same-machine and needs no credential *right now*, but the
+     * tunnel dies on reboot and leaves nothing behind — so a reader on loopback
+     * is working and unpaired at once, and that is the moment its user can
+     * actually fix it. Gating the offer on "disconnected" withheld it from
+     * exactly the devices it was written for.
+     *
+     * Only a LAN connection means paired: it got there with a credential.
+     */
+    fun shouldOfferPairing(connected: Boolean, currentUrl: String?): Boolean =
+        !connected || isLoopback(currentUrl)
+
+    /**
      * Whether a discovered LAN endpoint may be dialled right now.
      *
      * Two rules, one per way the old unconditional preempt failed.
