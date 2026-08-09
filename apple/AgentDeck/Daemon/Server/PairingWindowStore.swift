@@ -1,3 +1,7 @@
+#if os(macOS)
+// Daemon-only: the in-process daemon is a macOS feature, and this file reaches
+// for @DaemonActor and DaemonLogger, which the iOS target does not compile.
+// Every sibling in Daemon/Server carries the same guard.
 import Foundation
 
 /// The daemon's operator-opened pairing window — Swift parity with the Node
@@ -274,3 +278,4 @@ final class PairingWindowStore {
         receipt = nil
     }
 }
+#endif
