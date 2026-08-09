@@ -68,6 +68,7 @@ import dev.agentdeck.ui.eink.EinkAgentPanel
 import dev.agentdeck.ui.eink.EinkAttentionPanel
 import dev.agentdeck.ui.eink.EinkAquariumFrame
 import dev.agentdeck.ui.eink.EinkSettingsOverlay
+import dev.agentdeck.ui.eink.einkLimitRowText
 import dev.agentdeck.ui.eink.EinkTimelinePanel
 import dev.agentdeck.ui.eink.rememberEinkLayoutScale
 import dev.agentdeck.ui.eink.buildEinkAttentionFeatured
@@ -482,20 +483,18 @@ private fun EinkLimitsCornerCard(
     // One provider → its name; two → "a+b"; three+ → "mix". The per-row brand
     // marks already disambiguate, so this only needs to stay honest and short.
     val sourceTag = einkLimitsSourceTag(rows, state)
-    // Height grows with row count (Claude 5h/7d + Codex 5h/7d + subscription
-    // expiry lines + the Antigravity chip can stack up to ~6 rows). A fixed
-    // per-row step keeps the card from clipping when several providers are live,
-    // while a card with no rows never renders (gated by hasEinkLimitData).
-    // perRow must cover a gauge row (≈13.sp line / 11.dp icon) PLUS the 3.dp
-    // Column gap, and base must cover vertical padding (14.dp) + the header row
-    // (≈12.dp); under-provisioning clipped the bottom-most (7d) gauge.
-    val perRow = if (compact) 17.dp else 18.dp
-    val base = if (compact) 28.dp else 31.dp
-    val height = base + perRow * rows.size.coerceAtLeast(1)
+    // Height is MEASURED from the content, not predicted from the row count. It
+    // used to be `base + perRow * rows.size` with per-row steps in dp, which is
+    // a bet that a row never renders taller than the constant — and it loses
+    // whenever it is wrong in the direction that hides data. It lost twice: once
+    // on the bottom-most gauge (the comment that used to live here), and again
+    // once a per-model scoped cap added a row, which clipped the trailing
+    // subscription line. Row height depends on the device's font scale and the
+    // brand icon, neither of which this call site knows; wrapping the content
+    // cannot under-provision, and the width stays fixed so the card's footprint
+    // over the aquarium is still stable.
     Surface(
-        modifier = modifier
-            .width(width)
-            .height(height),
+        modifier = modifier.width(width),
         shape = RoundedCornerShape(3.dp),
         border = BorderStroke(1.dp, Color.Black),
         color = MaterialTheme.colorScheme.background,
@@ -659,12 +658,16 @@ private fun EinkLimitGaugeRow(label: String, percent: Double, agentType: String?
             BrandIcon(agentType = agentType, isEink = true, size = 11.dp)
         }
         Text(
-            text = "$label ${einkBlockGauge(pct)} $pct%${if (stale) "!" else ""}",
+            // Constant-width row — see einkLimitRowText. Ellipsis rather than the
+            // default Clip so that if the budget is ever exceeded the row says so
+            // instead of quietly serving a truncated number.
+            text = einkLimitRowText(label = label, percent = pct, stale = stale),
             fontSize = 11.sp,
             lineHeight = 13.sp,
             fontFamily = FontFamily.Monospace,
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }
