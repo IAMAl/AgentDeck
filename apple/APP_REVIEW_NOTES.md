@@ -7,15 +7,15 @@ locale: en
 canonical: true
 status: required
 owner: Apple release maintainers
-reviewed: 2026-08-06
-revision: 2026-08-06
+reviewed: 2026-08-10
+revision: 2026-08-10
 source_of_truth: apple/APP_REVIEW_NOTES.md
 validators: [bash apple/scripts/verify-appstore-archive.sh]
 ---
 
 # AgentDeck Dashboard — App Review Notes
 
-**Release status** (verified in App Store Connect, 2026-08-06): both platforms are approved and live at [AgentDeck Dashboard](https://apps.apple.com/app/id6784822497). macOS has been on the Mac App Store since 2026-07-21 and is at **1.0.3 (4101)**, approved 2026-08-05. The first iPhone/iPad submission, 1.0.2 (3901), was rejected on 2026-08-04 under Guideline 2.1(a) because the disconnected screen kept showing an activity indicator after discovery had completed; **1.0.2 (4002)** carried the fix plus an offline Device Preview entry point, was approved, and **released on 2026-08-06** as the companion's first public version.
+**Release status** (verified in App Store Connect, 2026-08-10): `1.0.4` (4501) remains live on both platforms at [AgentDeck Dashboard](https://apps.apple.com/app/id6784822497). The `1.0.5` update is **Waiting for Review** on macOS as build **4701** and on iPhone/iPad as build **4702**, submitted 2026-08-10 with automatic release enabled. The first iPhone/iPad submission, 1.0.2 (3901), was rejected on 2026-08-04 under Guideline 2.1(a); build 4002 carried the fix plus an offline Device Preview entry point and was released on 2026-08-06.
 
 _Paste the relevant sections into App Store Connect's "Notes" field when submitting `apple-v<version>`._
 
@@ -358,32 +358,25 @@ long-form sections above are for the Resolution Center reply, where length is no
 ```text
 NO ACCOUNT REQUIRED. A paired Mac is optional for review of this build.
 
-BUILD 3901 ISSUE AND FIX
-The previous build kept its Bonjour browser active so it could discover a Mac
-that appeared later, but incorrectly used that long-lived browser state to drive
-the foreground activity indicator. The 10-second connection attempt had ended,
-yet the spinner and “Searching” text remained. The replacement build separates
-passive Bonjour browsing from foreground progress.
-
 VERIFY ON A CLEAN IPAD
 1. Complete the four onboarding panes and allow Local Network access.
 2. With no AgentDeck Mac on the review Wi-Fi, wait approximately 10 seconds.
-3. The spinner stops and the stable text reads “No AgentDeck found on this
-   network.” Search Again and Enter URL Manually remain available.
+3. The spinner stops and the stable text reads “No AgentDeck found on this network.” Search Again and Enter URL Manually remain available.
 4. Tap “Explore without a Mac.” A local synthetic Device Preview opens without
-   an account, server, agent session, or hardware. The Device, Agent, State, and
-   Sessions controls all update the rendered preview. Tap Done to return.
+   an account, server, agent session, or hardware. The Device, Agent, State, and Sessions controls update the rendered preview. Tap Done to return.
 5. Tap “Search Again.” The bounded search runs once more and returns to the same
    screen on its own.
 
 LIVE COMPANION PATH (OPTIONAL)
 When AgentDeck is running on a Mac on the same Wi-Fi, the iOS app discovers it
-through Bonjour (_agentdeck._tcp) and opens a read-only WebSocket dashboard —
-including a Mac powered on after the initial search has finished. The Mac can
-also show a QR pairing URL. The iOS app is a client only and requests Local
-Network access for this pairing path.
+through Bonjour (_agentdeck._tcp). Tap “Pair iPad” on the Mac to show the QR code,
+then scan it from iOS Settings. The app opens a read-only WebSocket dashboard.
+Pairing credentials are never included in Bonjour or unauthenticated health
+responses. Build 4702 now preserves a successful pairing across dashboard-service
+restarts and reports an authorization failure explicitly instead of showing a
+generic connection error.
 
-The app contains no analytics or advertising SDK and requires no sign-in.
+The iOS app is a pure client, contains no analytics or advertising SDK, and requires no sign-in.
 Contact: admin@foundby.kr
 ```
 

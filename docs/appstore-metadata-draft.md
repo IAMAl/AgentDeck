@@ -33,7 +33,7 @@ AgentDeck
 **macOS App**
 
 ```
-모든 AI 코딩 에이전트를 잔잔한 한 화면에 — Claude Code, Codex, OpenClaw. Stream Deck부터 e-ink까지 다양한 서피스에 상태를 실시간 프리뷰로. 하드웨어 없이 Mac 한 대로.
+모든 AI 코딩 에이전트를 잔잔한 한 화면에 — Claude Code, Codex, OpenClaw. Stream Deck부터 e-ink까지 상태를 실시간 프리뷰로. 하드웨어 없이 Mac 한 대로.
 ```
 
 **iOS App**
@@ -153,6 +153,33 @@ AgentDeck은 독립적인 프로젝트이며 Anthropic, OpenAI, Google, SST, Cor
 
 ```
 claude code,ai,agent,dashboard,stream deck,monitoring,apme,openclaw,codex,ipad,companion,developer
+```
+
+### What's New (v1.0.5, macOS — 제출 문구)
+
+```
+페어링과 대시보드 안정성을 개선했습니다.
+
+• 대시보드 서비스가 재시작되거나 전환되어도 한 Mac에서 일관된 페어링 ID 유지
+• 페어링된 iPhone·iPad·하드웨어 대시보드가 인증을 잃지 않고 재연결
+• 로컬 네트워크 탐색에서 페어링 자격증명을 노출하지 않는 보안 설계 유지
+• 페어링되지 않은 기기의 인증 오류 안내 개선
+• 안정성 개선
+
+피드백은 언제든 환영합니다: admin@foundby.kr
+```
+
+### What's New (v1.0.5, iOS — 제출 문구)
+
+```
+연결과 페어링 안정성을 개선했습니다.
+
+• Mac에 페어링이 필요하면 일반 연결 오류 대신 “Unauthorized”와 해결 방법을 명확히 표시
+• 페어링된 Mac은 대시보드 서비스가 재시작되거나 전환되어도 페어링을 유지
+• 로컬 네트워크 탐색에서 페어링 자격증명을 노출하지 않는 보안 설계 유지
+• 안정성 개선
+
+피드백은 언제든 환영합니다: admin@foundby.kr
 ```
 
 ### What's New (v1.0.4, macOS — 보안 강화, #145)
@@ -290,13 +317,13 @@ AgentDeck
 **macOS App**
 
 ```
-すべてのAIコーディングエージェントを静かな1画面に — Claude Code、Codex、OpenClaw。Stream Deckからe-inkまで多彩なサーフェスに状態をライブプレビュー。ハードウェア不要。
+すべてのAIコーディングエージェントを穏やかな一画面に — Claude Code、Codex、OpenClaw。Stream Deckからe-inkまで状態をライブプレビュー。Macだけで始められます。
 ```
 
 **iOS App**
 
 ```
-Macで動くエージェントセッションをiPad・iPhoneでそのまま。状態・ツール呼び出し・使用量をリアルタイムに — 呼ばれた瞬間を見逃しません。同一Wi-Fi上のMacでAgentDeckの実行が必要です。
+Macで動作中のエージェントセッションをiPad・iPhoneへそのまま。状態・ツール呼び出し・使用量をリアルタイムに — ベッドサイドでも必要な瞬間を逃しません。同一Wi-FiのMacでAgentDeckの起動が必要です。
 ```
 
 ### Description (4000字)
@@ -410,6 +437,33 @@ AgentDeckは独立したプロジェクトであり、Anthropic、OpenAI、Googl
 
 ```
 claude code,ai,エージェント,ダッシュボード,stream deck,monitoring,apme,openclaw,codex,ipad,developer
+```
+
+### What's New (v1.0.5, macOS — 提出文言)
+
+```
+ペアリングとダッシュボードの信頼性を改善しました。
+
+• ダッシュボードサービスが再起動・切り替えされても、1台のMacで一貫したペアリングIDを維持
+• ペアリング済みのiPhone・iPad・ハードウェアダッシュボードが認証を失わず再接続
+• ローカルネットワーク検出でペアリング認証情報を公開しない設計を維持
+• 未ペアリング機器の認証エラー表示を改善
+• 安定性の改善
+
+フィードバックはいつでも歓迎します: admin@foundby.kr
+```
+
+### What's New (v1.0.5, iOS — 提出文言)
+
+```
+接続とペアリングの信頼性を改善しました。
+
+• Macでペアリングが必要な場合、一般的な接続エラーではなく「Unauthorized」と対処方法を明確に表示
+• ペアリング済みのMacはダッシュボードサービスの再起動・切り替え後もペアリングを維持
+• ローカルネットワーク検出でペアリング認証情報を公開しない設計を維持
+• 安定性の改善
+
+フィードバックはいつでも歓迎します: admin@foundby.kr
 ```
 
 ### What's New (v1.0.4, macOS — セキュリティ強化, #145)
@@ -545,7 +599,7 @@ Every agent, one calm surface
 **macOS App**
 
 ```
-Every AI coding agent on one calm screen — Claude Code, Codex, OpenClaw — with live status previewed across every surface, Stream Deck to e-ink. No hardware required.
+All your AI coding agents on one calm screen — Claude Code, Codex, OpenClaw. Preview live state from Stream Deck to e-ink. No hardware needed — just your Mac.
 ```
 
 **iOS App**
@@ -665,6 +719,33 @@ AgentDeck is independent and is not affiliated with or endorsed by Anthropic, Op
 
 ```
 claude code,ai,agent,dashboard,monitoring,apme,openclaw,codex,ipad,stream deck,developer
+```
+
+### What's New (v1.0.5, macOS — submitted copy)
+
+```
+Pairing and dashboard reliability update.
+
+• One Mac now keeps a consistent pairing identity when its dashboard service restarts or hands over
+• Paired iPhone, iPad, and hardware dashboards reconnect without losing authorization
+• Local-network discovery never exposes pairing credentials
+• Unpaired clients receive clearer authorization diagnostics
+• Stability improvements
+
+Thanks for the feedback — keep it coming: admin@foundby.kr
+```
+
+### What's New (v1.0.5, iOS — submitted copy)
+
+```
+Connection and pairing reliability update.
+
+• Clear “Unauthorized” guidance replaces generic connection errors when a Mac requires pairing
+• A paired Mac now stays paired when its dashboard service restarts or hands over
+• Local-network discovery never exposes pairing credentials
+• Stability improvements
+
+Thanks for the feedback — keep it coming: admin@foundby.kr
 ```
 
 ### What's New (v1.0.4, macOS — security hardening, #145)

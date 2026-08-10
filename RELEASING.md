@@ -7,8 +7,8 @@ locale: en
 canonical: true
 status: required
 owner: Release maintainers
-reviewed: 2026-08-07
-revision: 2026-08-07
+reviewed: 2026-08-10
+revision: 2026-08-10
 source_of_truth: RELEASING.md
 validators: [node scripts/build-design-system-viewer.mjs --check, pnpm verify-version]
 ---
@@ -17,7 +17,7 @@ validators: [node scripts/build-design-system-viewer.mjs --check, pnpm verify-ve
 
 AgentDeck uses one `major.minor` compatibility line across every maintained surface. Two numeric `X.Y.Z` product versions are mutually compatible if and only if their first two components match. Patch values are ignored in both directions: for example, `1.0.1` and `1.0.9` are compatible regardless of which side is newer.
 
-Root [`VERSION`](VERSION) is the repository baseline and compatibility-line anchor, not a patch ceiling and not a runtime negotiation value. It currently reads **1.0.2**, so every maintained target must remain on compatibility line **1.0**. npm/CLI is at `1.0.15`; Stream Deck is at `1.0.4`; Android is at `1.0.6`; Apple is at `1.0.4`; ESP32 is at `1.0.3`; Ulanzi is at `1.0.3`. A target may also advance beyond root's patch without forcing unrelated targets or root to ship. **This sentence is a mirror, not a source** — it drifted two npm patches and one Ulanzi patch behind by 2026-08-09; take the live values from `pnpm verify-version`, which reads each target's own manifest, and note that a *declared* version is not a *delivered* one (Ulanzi `1.0.3` has no `ulanzi-v1.0.3` tag and has not been uploaded). Both Apple platforms are live at `1.0.4` (build 4501): iPhone/iPad released 2026-08-07, macOS distributing by 2026-08-09.
+Root [`VERSION`](VERSION) is the repository baseline and compatibility-line anchor, not a patch ceiling and not a runtime negotiation value. It currently reads **1.0.2**, so every maintained target must remain on compatibility line **1.0**. npm/CLI is at `1.0.17`; Stream Deck is at `1.0.5`; Android is at `1.0.8`; Apple is at `1.0.5`; ESP32 is at `1.0.4`; Ulanzi is at `1.0.3`. A target may also advance beyond root's patch without forcing unrelated targets or root to ship. **This sentence is a mirror, not a source** — take the declared values from `pnpm verify-version`, which reads each target's own manifest, and distinguish them from delivered state. As verified in the stores on 2026-08-10: Apple `1.0.5` is waiting for review on both platforms, Stream Deck `1.0.5` and Ulanzi `1.0.3` are pending review, Android Play `1.0.6` (versionCode 8) remains in review while Android `1.0.8` is available through GitHub Releases, and npm `1.0.17` is published.
 
 Run `pnpm verify-version` before every build or release. CI rejects a `major.minor` compatibility split or a target-internal mismatch. Release CI additionally requires a channel tag's full `X.Y.Z` to equal that target's own declared version; it does not compare the tag's patch with root `VERSION`.
 
@@ -82,12 +82,12 @@ Tag prefixes remain because channels ship independently and may point to differe
 
 macOS has been publicly available since 2026-07-21 at [AgentDeck Dashboard on the Mac App Store](https://apps.apple.com/app/id6784822497), first as `1.0.0` and — since the 2026-07-24 approval of build 3901 — as `1.0.2`. The iPhone/iPad companion's first release (also `1.0.2`, build 3901) was **rejected on 2026-08-04 under Guideline 2.1(a)**.
 
-**The two platforms diverged for four days, then reconverged.** Both now sit at `1.0.4` / build 4501:
+**The two platforms diverged for four days, then reconverged.** `1.0.4` / build 4501 remains live on both platforms, and `1.0.5` was submitted on 2026-08-10 with platform-specific CI build numbers:
 
 | Platform | Version record | Build | State |
 |---|---|---|---|
-| macOS | `1.0.4` | 4501 | Submitted 2026-08-07 (In Review as of 2026-08-08), **live by 2026-08-09**. Builds 4301 and 4401 were withdrawn rather than shipped — each predated a fix that landed the same day, so `1.0.3` (4101) was the live Mac version for the two days in between |
-| iPhone/iPad | `1.0.4` | 4501 | Submitted 2026-08-07 alongside macOS, same build; **approved and live since 2026-08-07T22:57Z** (auto-release, one minute after the approval mail) |
+| macOS | `1.0.5` | 4701 | **Waiting for Review since 2026-08-10 09:35 KST**; `1.0.4` (4501) remains live. Builds 4301 and 4401 were withdrawn rather than shipped — each predated a fix that landed the same day |
+| iPhone/iPad | `1.0.5` | 4702 | **Waiting for Review since 2026-08-10 09:37 KST**; `1.0.4` (4501) remains live since 2026-08-07T22:57Z |
 
 Approval mail alone cannot tell the platforms apart: three "eligible for distribution" messages arrived between 2026-08-05 and 2026-08-07 (iOS, macOS, iOS again) with a 2.1(a) rejection in between, and only the `(iOS)` / `(macOS)` in the subject distinguishes them. Read the state from App Store Connect.
 
@@ -148,7 +148,7 @@ Assets are named by the board's **canonical id** (`agentdeck-<board>.bin`) — t
 
 ### Stream Deck plugin
 
-`1.0.2` was approved and published on 2026-07-28, `1.0.3` — the Windows compatibility correction — on 2026-07-31, and **`1.0.4` has been published since 2026-08-05**: [AgentDeck on the Elgato Marketplace](https://marketplace.elgato.com/product/agentdeck-dce3806b-176e-40f2-be7d-e029bec0f464). Now that builds are published, the Marketplace's **monotonic-version rule applies** — every subsequent submission needs a version above `1.0.4`, and same-version resubmission (which pre-publication review revisions allowed) is no longer available.
+`1.0.2` was approved and published on 2026-07-28, `1.0.3` — the Windows compatibility correction — on 2026-07-31, and `1.0.4` has been published since 2026-08-05: [AgentDeck on the Elgato Marketplace](https://marketplace.elgato.com/product/agentdeck-dce3806b-176e-40f2-be7d-e029bec0f464). **`1.0.5` was submitted on 2026-08-10 and is Pending review with automatic publishing enabled.** The uploaded CI artifact was the `streamdeck-v1.0.5` GitHub Release asset (`SHA-256 5cde49b7f79a2551c04113d1662b59720de3caa7929e2e8072dbcb3e458f6528`), not a locally rebuilt package. The Marketplace's **monotonic-version rule applies** — every subsequent submission needs a version above the latest published version, and same-version resubmission (which pre-publication review revisions allowed) is unavailable once that version is published.
 
 The live version is verifiable without signing in to the Maker Console: the product page is a client-rendered SPA, but its Next.js payload carries the version array verbatim, so `curl -s <product-url> | grep -oE '\\"versions\\":\[.{0,1200}'` reports `version_number`, `status`, and `publish_date` for every submission. Check it there before writing a release-status claim into this file — a portal upload that succeeds leaves no trace in the repository, which is exactly how these paragraphs fell a version behind between 2026-07-31 and 2026-08-06.
 
@@ -159,6 +159,8 @@ The live version is verifiable without signing in to the Maker Console: the prod
 `streamdeck-release.yml` runs on the tag: it validates, packs, attaches the `.streamDeckPlugin` to a GitHub Release, and uploads it as a build artifact. The Maker-portal upload itself stays manual — Elgato has no submission API.
 
 ### Ulanzi plugin
+
+`1.0.3` was uploaded to the Ulanzi portal and was verified as **under review** on 2026-08-10. Do not replace it while that review is active.
 
 1. Confirm both Ulanzi package and marketplace manifests match each other.
 2. Run `pnpm --filter @agentdeck/plugin-ulanzi package`, upload the artifact, and tag `ulanzi-v<ULANZI_VERSION>` when actually submitted/released.
