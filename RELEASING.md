@@ -21,6 +21,34 @@ Root [`VERSION`](VERSION) is the repository baseline and compatibility-line anch
 
 Run `pnpm verify-version` before every build or release. CI rejects a `major.minor` compatibility split or a target-internal mismatch. Release CI additionally requires a channel tag's full `X.Y.Z` to equal that target's own declared version; it does not compare the tag's patch with root `VERSION`.
 
+## A release has five states, and only one of them is "released"
+
+CI going green is the first of five, not the last. Keep them apart in your head and in anything you write down:
+
+1. **CI succeeded** — the workflow exited 0. It may have *skipped* the step that matters (npm publishing is gated on `NPM_PUBLISH_ENABLED`; two tags produced green runs and published nothing).
+2. **Artifact exists** — a GitHub Release carries the APK / `.streamDeckPlugin` / firmware.
+3. **Uploaded to the store** — the binary reached ASC / Play / a marketplace portal. Nobody outside can install it yet.
+4. **Submitted for review** — a human pressed a button in a portal. No tag, no workflow, and no repository artifact records this.
+5. **Live** — the store distributes it.
+
+**Never report a state you did not measure.** Each has its own instrument: the workflow log for 1, `gh release list` for 2, the portal or `npm view <pkg> version` for 3, and the portal for 4 and 5. Deriving one from another is how "released" gets claimed for a build sitting in a portal — it happened on 2026-08-09, when CI upload was reported as a completed Stream Deck and Ulanzi release while neither had been submitted.
+
+### "Manual" means an interactive portal, not "only a human"
+
+Several steps here are marked *manual* or *a separate App Store Connect action*. That describes the **absence of an API**, not the absence of an agent. Portals accept a signed-in browser, and browser automation is available to agents working in this repo.
+
+So an agent must not answer "I have no API access, so you'll have to do it." Before claiming a release step is impossible:
+
+- load the browser tools (they are frequently *deferred* — `ToolSearch` for `mcp__claude-in-chrome__*` rather than assuming they are absent), then `list_connected_browsers`;
+- **read state freely** — Play Console review status, ASC build list and submission readiness, Maker Console and Ulanzi submission status. Reading changes nothing and is never worth blocking on;
+- **ask before pressing a button that changes external state** — submitting for review, releasing to the public, replacing a build under review.
+
+On 2026-08-09 an agent with those tools loaded from the first turn never invoked one, concluded from the word "manual" that portal work was user-only, and reported CI uploads as finished releases. The tools were not missing; they were not looked for.
+
+### Apple build numbers are per-platform — read them, do not compute them
+
+`CURRENT_PROJECT_VERSION` comes from `run_number * 100 + run_attempt`, so it is tempting to derive. Do not: **`build-macos` and `build-ios` are separate jobs, and a rerun of one advances only that one.** `apple-v1.0.5` shipped macOS as **4701** (attempt 1) and iOS as **4702** (attempt 2, after the iOS archive was rerun past a certificate cap). One number reported for both is wrong for one of them. Read each platform's build from App Store Connect.
+
 ## Compatible line, independent patch and delivery
 
 | Surface | Target version | Independent monotonic value | Tag / delivery |
