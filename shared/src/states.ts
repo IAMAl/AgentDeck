@@ -76,6 +76,11 @@ export interface StateSnapshot {
   toolProgress: string | null;
   options: PromptOption[];
   question: string | null;
+  /** The open question accepts several answers (AskUserQuestion `multiSelect`).
+   *  Sourced from the PreToolUse tool input, not inferred from the TUI: a `✔`
+   *  also marks the CURRENT choice in single-select lists like `/model`, so
+   *  `options[].selected` cannot stand in for this. */
+  multiSelect: boolean;
   navigable: boolean;
   cursorIndex: number;
   projectName: string | null;

@@ -28,7 +28,7 @@ import { homedir } from 'os';
 import { dirname, join } from 'path';
 import type { BridgeEvent } from './types.js';
 import { SERIAL_FORWARDED_EVENTS } from '@agentdeck/shared/protocol';
-import type { AuthProvisionMessage, ESP32ToHostMessage, WifiProvisionMessage } from '@agentdeck/shared/protocol';
+import type { ESP32ToHostMessage, WifiProvisionMessage } from '@agentdeck/shared/protocol';
 import { formatResetTime, truncateUtf8Bytes } from '@agentdeck/shared';
 import { debug, logTagged } from './logger.js';
 
@@ -189,9 +189,6 @@ export interface SerialConnection {
    * until the next reboot-while-attached. */
   deviceInfoFresh: boolean;
   provisionSent: boolean;
-  /** Pairing token most recently pushed over this connection, so a re-arm costs
-   *  one write per board per token rather than one per device_info frame. */
-  authTokenSent?: string;
   connectedAt: number;
   lastReadAt: number;  // Timestamp of last successful read from ESP32
   lastWriteAt: number; // Timestamp of last successful write to ESP32
@@ -1200,15 +1197,7 @@ function sendHeartbeat(): void {
   if (usageProvider) {
     const event = usageProvider();
     const u = event as any;
-    // "Has usage" means a real NUMBER exists somewhere, not that the Codex block
-    // is present: the daemon also emits a windowless `codexRateLimits` carrying
-    // only the account tier (a free ChatGPT plan has no rolling windows, and the
-    // block still has to ride the wire so clients can RETRACT a retired plan's
-    // gauge). Treating that as usage would let the first frame reach the board
-    // before any provider populated, wiping its cached values to the -1 sentinel.
-    const cx = u?.codexRateLimits;
-    const hasCodexWindow = cx != null && (cx.primary != null || cx.secondary != null);
-    const hasUsage = u && (u.fiveHourPercent != null || hasCodexWindow || u.antigravityStatus != null);
+    const hasUsage = u && (u.fiveHourPercent != null || u.codexRateLimits != null || u.antigravityStatus != null);
     if (hasUsage && event) {
       for (const conn of connections) {
         if (!hasLiveDeviceInfo(conn)) continue;
@@ -1576,48 +1565,6 @@ export function sendWifiProvisionToAll(msg: WifiProvisionMessage): number {
     debug('ESP32', `→ ${conn.port}: wifi_provision (SSID: ${msg.ssid})`);
   }
   return count;
-}
-
-/**
- * Push the current pairing token to every serial-attached board that is not
- * already holding it.
- *
- * Deliberately separate from `sendWifiProvisionToAll`, on both axes:
- *  - It is NOT gated on the WiFi auto-provision setting. A board needs a valid
- *    credential whether or not this machine hands out WiFi credentials.
- *  - It does not care whether the board's radio is up. `shouldSendWifiProvision`
- *    skips every `wifiConnected` board on purpose (re-injecting credentials
- *    fights the firmware's radio policy), and that exemption is what left a
- *    fleet of online boards holding a token the daemon had stopped accepting,
- *    with no way to hand them a new one.
- *
- * USB serial is the authoritative credential channel precisely because it is
- * the one that still works when authentication is what is broken.
- */
-export function sendAuthProvisionToAll(msg: AuthProvisionMessage): string[] {
-  const armed: string[] = [];
-  for (const conn of connections) {
-    if (!shouldSendAuthProvision(conn, msg.authToken)) continue;
-    sendToConnection(conn, JSON.stringify(msg), true);
-    conn.authTokenSent = msg.authToken;
-    armed.push(conn.port);
-    debug('ESP32', `→ ${conn.port}: auth_provision`);
-  }
-  return armed;
-}
-
-/** @internal Exported for testing only */
-export function shouldSendAuthProvision(
-  conn: Pick<SerialConnection, 'connected' | 'deviceInfo' | 'authTokenSent'>,
-  token: string,
-): boolean {
-  if (!conn.connected) return false;
-  // No device_info yet means we have not confirmed an AgentDeck board on this
-  // tty; writing a credential to an unknown serial peer is not something to do
-  // speculatively.
-  if (!conn.deviceInfo?.board) return false;
-  if (!token) return false;
-  return conn.authTokenSent !== token;
 }
 
 /** @internal Exported for testing only */

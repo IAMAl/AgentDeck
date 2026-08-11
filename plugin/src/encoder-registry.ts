@@ -14,6 +14,10 @@ export const encoderRegistry = {
   optionIds: [] as string[],    // Claude usage dial (E2)
   usageIds: [] as string[],     // Codex usage dial (E3)
   launcherIds: [] as string[],  // Launcher dial (E4)
+  // Option/permission selection dial — no fixed slot. Unlike the four above it
+  // is opt-in: the user assigns it to whichever encoder they want, so it never
+  // displaces a usage gauge the way the retired takeover did.
+  optionSelectIds: [] as string[],
 };
 
 // ─── Daemon connection state (shared with all four encoder dials) ────────

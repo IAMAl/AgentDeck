@@ -25,6 +25,15 @@ private val klaxon = Klaxon()
     .convert(Value::class,     { Value.fromJson(it) },               { it.toJson() }, true)
 
 /**
+ * Answer a multi-select question in one shot (`StateUpdateEvent.multiSelect`).
+ *
+ * Carries the FULL desired set, not a delta: the bridge diffs `indices` against the options
+ * currently marked `selected` and toggles only what differs, so a device whose view drifted
+ * mid-prompt still converges on what its user saw rather than inverting an unrelated row.
+ *
+ * The ask-gate rung deliberately does not accept this — it resolves a single label — so a
+ * device must fall back to `select_option` when there is no PTY.
+ *
  * Request a session's recent timeline. The daemon replies (to the requester only) with a
  * `timeline_history` carrying that session's entries. Lets a device that connects
  * mid-session fill its per-session Detail view.
@@ -65,6 +74,8 @@ data class PluginCommand (
      * one. The daemon drops a press whose echo no longer matches the active question and
      * re-broadcasts so the device re-syncs. Optional: omitted ⇒ no guard (older clients, ESP32
      * firmware) — never make this required.
+     *
+     * Echo of the question being answered — same guard as `select_option`.
      */
     val question: String? = null,
 
@@ -75,6 +86,11 @@ data class PluginCommand (
      */
     @Json(name = "sessionId")
     val sessionID: String? = null,
+
+    /**
+     * 0-based wire indices to end up checked. Empty = uncheck everything.
+     */
+    val indices: List<Double>? = null,
 
     val direction: Direction? = null,
     val text: String? = null,
@@ -259,6 +275,7 @@ enum class Type(val value: String) {
     Respond("respond"),
     ReviewRun("review_run"),
     SelectOption("select_option"),
+    SelectOptions("select_options"),
     SendPrompt("send_prompt"),
     SessionCommand("session_command"),
     SwitchAgent("switch_agent"),
@@ -285,6 +302,7 @@ enum class Type(val value: String) {
             "respond"                -> Respond
             "review_run"             -> ReviewRun
             "select_option"          -> SelectOption
+            "select_options"         -> SelectOptions
             "send_prompt"            -> SendPrompt
             "session_command"        -> SessionCommand
             "switch_agent"           -> SwitchAgent

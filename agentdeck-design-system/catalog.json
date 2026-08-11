@@ -16,7 +16,6 @@
     "arch.daemon": { "en": "Daemon", "ko": "데몬", "ja": "デーモン" },
     "arch.protocol": { "en": "Bridge protocol", "ko": "브리지 규약", "ja": "ブリッジ規約" },
     "arch.gateway-protocol": { "en": "Gateway protocol", "ko": "Gateway 규약", "ja": "Gateway 規約" },
-    "spec.wire-compatibility": { "en": "Wire compatibility", "ko": "와이어 호환성", "ja": "ワイヤ互換性" },
     "arch.apme": { "en": "APME", "ko": "APME", "ja": "APME" },
     "hardware.compatibility": { "en": "Compatibility", "ko": "호환성", "ja": "互換性" },
     "spec.devices": { "en": "Devices", "ko": "디바이스", "ja": "デバイス" },
@@ -28,7 +27,6 @@
     "spec.streamdeck-layout": { "en": "Stream Deck", "ko": "Stream Deck", "ja": "Stream Deck" },
     "spec.tui-dashboard": { "en": "TUI", "ko": "TUI", "ja": "TUI" },
     "policy.product-tiers": { "en": "Product tiers", "ko": "제품 티어", "ja": "製品ティア" },
-    "policy.ai-assisted-maintenance": { "en": "AI maintenance", "ko": "AI 유지보수", "ja": "AI メンテナンス" },
     "policy.app-review": { "en": "App review", "ko": "앱 심사", "ja": "App Review" },
     "policy.releasing": { "en": "Releases", "ko": "출시", "ja": "リリース" },
     "validation.testing": { "en": "Testing", "ko": "테스트", "ja": "テスト" },
@@ -119,12 +117,6 @@
       }
     },
     {
-      "id": "spec.wire-compatibility",
-      "sources": {
-        "en": "docs/wire-compatibility.md"
-      }
-    },
-    {
       "id": "arch.apme",
       "sources": {
         "en": "docs/apme.md"
@@ -190,12 +182,6 @@
       "id": "policy.product-tiers",
       "sources": {
         "en": "docs/appstore-feature-matrix.md"
-      }
-    },
-    {
-      "id": "policy.ai-assisted-maintenance",
-      "sources": {
-        "en": "docs/ai-assisted-maintenance.md"
       }
     },
     {

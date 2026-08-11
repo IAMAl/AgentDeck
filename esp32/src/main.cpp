@@ -108,24 +108,6 @@ static void networkTask(void* param) {
     uint32_t lastDeferredJoinMs = 0;
 #endif
 
-    // Restore the pairing token on EVERY board, before any connect attempt.
-    // The daemon closes an unauthenticated peer 4001 (#145) and discovery stopped
-    // carrying a credential (#149), so a board that boots without its token has
-    // no way back onto the daemon at all — it dials, gets closed, and retries
-    // forever, which is exactly what a WiFi-only 86 Box did once its RAM-only
-    // copy was gone. The saved endpoint below stays board-specific; the
-    // credential is not.
-    {
-        char savedToken[sizeof(g_state.authToken)] = {0};
-        if (Net::wifiLoadAuthToken(savedToken, sizeof(savedToken))) {
-            lockState();
-            strncpy(g_state.authToken, savedToken, sizeof(g_state.authToken) - 1);
-            g_state.authToken[sizeof(g_state.authToken) - 1] = '\0';
-            unlockState();
-            Serial.println("[Net] Restored provisioned pairing token from NVS");
-        }
-    }
-
 #if defined(BOARD_IPS10)
     if (Net::wifiConnected()) {
         char savedBridgeIp[16] = {0};

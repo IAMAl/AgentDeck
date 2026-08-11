@@ -18,7 +18,6 @@ import { ConnectionManager } from './connection-manager.js';
 import { updateUsageModeData, setUsageRefreshCallback } from './utility-modes/usage.js';
 import { setEncoderDaemonConnected } from './encoder-registry.js';
 import { dlog, dinfo } from './log.js';
-import { deviceTypeFromUnknown, familyForDeviceType } from './device-profile.js';
 
 // Encoder actions
 import {
@@ -27,6 +26,11 @@ import {
   updateClaudeUsageDial,
   refreshClaudeUsageDial,
 } from './actions/option-dial.js';
+import {
+  OptionSelectDialAction,
+  initOptionSelectDial,
+  updateOptionSelectDial,
+} from './actions/option-select-dial.js';
 import {
   UsageLimitButtonAction,
   updateUsageLimitButtons,
@@ -77,6 +81,12 @@ let currentOptions: import('@agentdeck/shared').PromptOption[] = [];
  *  the same question text from a different one is still a different prompt. */
 let currentQuestion: string | undefined;
 let currentOptionsSessionId: string | undefined;
+/** Cursor + permission-gate id for the option-select dial. Tracked here rather
+ *  than in the action so the dial always redraws from the same snapshot the
+ *  keypad detail view sees. */
+let currentCursorIndex = 0;
+let currentRequestId: string | undefined;
+let currentMultiSelect = false;
 let proxiedAgentType: AgentType | null = null;
 
 const focusedDetailState = new FocusedDetailState();
@@ -126,6 +136,9 @@ const connMgr = new ConnectionManager();
 
 // ---- Initialize action modules ----
 initOptionDial(connMgr);
+// Inject the sender rather than importing it there — the action would otherwise
+// close an import cycle back into this module.
+initOptionSelectDial(sendFocusedSessionCommand);
 initLauncherDial();
 initUtilityDial();
 initUsageDial(connMgr);
@@ -272,6 +285,13 @@ connMgr.on('state_update', (ev: StateUpdateEvent) => {
   }
   currentQuestion = ev.question ?? currentQuestion;
   currentOptionsSessionId = ev.focusedSessionId || ev.sessionId || currentOptionsSessionId;
+  // The bridge owns the cursor (it mirrors the terminal's own highlight), so a
+  // reported index always wins over the dial's optimistic move.
+  currentCursorIndex = ev.cursorIndex ?? 0;
+  currentRequestId = ev.requestId;
+  // Sent in both polarities by the bridge, so `?? false` only covers a legacy
+  // producer that omits it entirely — never a retraction.
+  currentMultiSelect = ev.multiSelect ?? false;
 
   // Keypad detail state is session-owned. Never render it from the plugin's
   // global caches: those intentionally follow the latest daemon/agent event.
@@ -436,11 +456,25 @@ connMgr.on('display_state', (ev: {
 // a "Stream Deck" row with the physical devices this plugin sees. Called
 // from `connected` (initial registration) and from device hot-plug events
 // (so the row updates without waiting for the daemon's 120 s TTL eviction).
+// DeviceType (Elgato @elgato/schemas DeviceType enum): 0 = Stream Deck,
+// 1 = Stream Deck Mini, 2 = Stream Deck XL, 5 = Stream Deck Pedal,
+// 7 = Stream Deck+, 13 = Stream Deck + XL.
 function sendClientRegister(reason: string): void {
+  const familyFor = (type: number | undefined): string => {
+    switch (type) {
+      case 0: return 'streamdeck';
+      case 1: return 'streamdeckmini';
+      case 2: return 'streamdeckxl';
+      case 5: return 'streamdeckpedal';
+      case 7: return 'streamdeckplus';
+      case 13: return 'streamdeckplusxl';
+      default: return 'streamdeck-unknown';
+    }
+  };
   const devices = Array.from(streamDeck.devices).map((d: any) => ({
     id: String(d.id ?? ''),
     name: String(d.name ?? ''),
-    family: familyForDeviceType(deviceTypeFromUnknown(d.type)),
+    family: familyFor(d.type as number | undefined),
     columns: d.size?.columns as number | undefined,
     rows: d.size?.rows as number | undefined,
   }));
@@ -505,6 +539,8 @@ function broadcastStateUpdate(): void {
   // SVG redraw and self-gates on daemon-down.)
   updateLauncherDialState();
   updateUtilityDialState(currentState);
+  // Opt-in encoder: no-ops unless the user has placed it on a dial.
+  updateOptionSelectDial(currentState, currentOptions, currentCursorIndex, currentQuestion, currentRequestId, currentMultiSelect);
   refreshClaudeUsageDial();
   updateUsageDialState();
   refreshUsageLimitButtons();
@@ -515,6 +551,7 @@ function broadcastStateUpdate(): void {
 
 // ---- Register actions ----
 streamDeck.actions.registerAction(new ResponseDialAction());
+streamDeck.actions.registerAction(new OptionSelectDialAction());
 streamDeck.actions.registerAction(new LauncherDialAction());
 streamDeck.actions.registerAction(new UtilityDialAction());
 streamDeck.actions.registerAction(new UsageDialAction());

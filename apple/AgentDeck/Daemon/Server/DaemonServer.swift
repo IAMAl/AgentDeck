@@ -1710,86 +1710,38 @@ final class DaemonServer {
         }
         DaemonLogger.shared.info("startDeviceModules: wsServer.onBroadcast done")
 
-        // Wire the ESP32 serial message handler. ONE handler: `setOnMessage`
-        // replaces rather than adds, so everything the serial channel drives
-        // shares it. It used to live inside the `autoProvision` branch below,
-        // which also silently took the device→daemon command channel and the
-        // credential re-arm with it whenever this machine had no WiFi config.
-        let lanIp = AuthManager.getLanIP() ?? "127.0.0.1"
-        let wifiConfig = WifiConfigManager.load()
-        let provisionMsg: SendableDict? = wifiConfig.map { config in
-            SendableDict([
+        // Wire ESP32 WiFi auto-provisioning
+        if let wifiConfig = WifiConfigManager.load(), wifiConfig.autoProvision {
+            let lanIp = AuthManager.getLanIP() ?? "127.0.0.1"
+            let provisionMsg = SendableDict([
                 "type": "wifi_provision",
-                "ssid": config.ssid,
-                "password": config.password,
+                "ssid": wifiConfig.ssid,
+                "password": wifiConfig.password,
                 "bridgeIp": lanIp,
                 "bridgePort": Int(port),
                 "authToken": auth.token,
             ])
-        }
-        let autoProvision = wifiConfig?.autoProvision == true
-        let daemonPort = Int(port)
-        await serial.serial.setOnMessage { [weak self] portPath, msg in
-            guard let self else { return }
-            guard let type = msg["type"] as? String else { return }
-            // Device→daemon command channel over serial. A board whose WiFi is
-            // parked (serial-primary) still steers; without this its taps were
-            // dropped by the device_info-only parser.
-            // Node parity: setSerialCommandSink in bridge/src/esp32-serial.ts.
-            if Self.serialForwardableCommands.contains(type) {
-                let box = SendableDict(msg)
-                Task { @DaemonActor [weak self] in
-                    self?.handleCommand(box.value)
-                }
-                return
-            }
-            if type == "auth_provision_ack" {
-                Task { await self.serialModule?.serial.noteAuthProvisionAck(port: portPath) }
-                return
-            }
-            guard type == "device_info" else { return }
-
-            // Keep every serial-attached board armed with the token this daemon
-            // serves — regardless of the auto-provision setting, and regardless
-            // of whether the board's radio is up. A board that is online but
-            // holding a credential we no longer accept is closed 4001 on every
-            // dial, and serial is the only channel left to fix it over.
-            Task {
-                let armed = await self.serialModule?.serial.sendAuthProvisionToAll(
-                    token: AuthManager.shared.token, bridgeIP: lanIp, bridgePort: daemonPort) ?? []
-                if !armed.isEmpty {
-                    DaemonLogger.shared.info("Pairing token armed on \(armed.count) ESP32 connection(s); trigger port \(portPath)")
-                }
-                // Firmware that predates `auth_provision` drops it silently, and
-                // silence is the only signal we get. Give it a moment, then fall
-                // back to the one message it does understand. It costs a WiFi
-                // re-associate, hence: once per board per token, only after the
-                // silence, and only with auto-provisioning on (it carries the
-                // user's WiFi credentials).
-                guard !armed.isEmpty, autoProvision, let config = wifiConfig else { return }
-                try? await Task.sleep(for: .milliseconds(Self.legacyRearmGraceMilliseconds))
-                let legacy = SendableDict([
-                    "type": "wifi_provision",
-                    "ssid": config.ssid,
-                    "password": config.password,
-                    "bridgeIp": lanIp,
-                    "bridgePort": daemonPort,
-                    "authToken": AuthManager.shared.token,
-                ])
-                for armedPort in armed {
-                    let sent = await self.serialModule?.serial
-                        .sendLegacyProvisionIfUnacked(port: armedPort, legacy.value) ?? false
-                    if sent {
-                        DaemonLogger.shared.info("\(armedPort): firmware predates auth_provision — re-armed over the legacy WiFi provision path")
+            await serial.serial.setOnMessage { [weak self] portPath, msg in
+                guard let self else { return }
+                if let type = msg["type"] as? String {
+                    // Device→daemon command channel over serial. A board whose
+                    // WiFi is parked (serial-primary) still steers; without this
+                    // its taps were dropped by the device_info-only parser.
+                    // Node parity: setSerialCommandSink in bridge/src/esp32-serial.ts.
+                    if Self.serialForwardableCommands.contains(type) {
+                        let box = SendableDict(msg)
+                        Task { @DaemonActor [weak self] in
+                            self?.handleCommand(box.value)
+                        }
+                        return
                     }
-                }
-            }
-
-            if autoProvision, let provisionMsg, msg["wifiConnected"] as? Bool != true {
-                Task {
-                    let sent = await self.serialModule?.serial.sendWifiProvisionToAll(provisionMsg.value) ?? 0
-                    if sent > 0 {
-                        DaemonLogger.shared.info("WiFi provision sent to \(sent) ESP32 connection(s); trigger port \(portPath)")
+                    if type == "device_info", msg["wifiConnected"] as? Bool != true {
+                        Task {
+                            let sent = await self.serialModule?.serial.sendWifiProvisionToAll(provisionMsg.value) ?? 0
+                            if sent > 0 {
+                                DaemonLogger.shared.info("WiFi provision sent to \(sent) ESP32 connection(s); trigger port \(portPath)")
+                            }
+                        }
                     }
                 }
             }
@@ -1804,14 +1756,8 @@ final class DaemonServer {
     /// with no pairingToken, no module inventory, no session state.
     /// Static + input-only so XCTest can cover the deny matrix without a
     /// listener (HttpAccessPolicyTests).
-    /// - Parameter pairingWindowOpen: whether the operator is holding a pairing
-    ///   window open right now. `false` must be indistinguishable from "no such
-    ///   route" — a closed daemon answering `/pair` differently from `/nonsense`
-    ///   would tell a LAN peer that somebody is pairing, which is precisely the
-    ///   moment worth attacking.
     nonisolated static func httpAccessResponse(
-        method: String, path: String, isLocal: Bool, tokenValid: Bool, daemonPort: UInt16,
-        pairingWindowOpen: Bool = false
+        method: String, path: String, isLocal: Bool, tokenValid: Bool, daemonPort: UInt16
     ) -> HTTPServer.HTTPResponse? {
         if isLocal || tokenValid { return nil }
         if method == "GET", path == "/health" {
@@ -1820,23 +1766,7 @@ final class DaemonServer {
                 "authRequired": true, "isSwift": true,
             ])
         }
-        // The one path by which an unauthenticated LAN peer can obtain the
-        // pairing token, and only while a window is open. `nil` hands it to the
-        // registered POST /pair route below.
-        if method == "POST", path == "/pair", pairingWindowOpen { return nil }
         return .json(["error": "Unauthorized — pairing token required for LAN access"], status: 401)
-    }
-
-    /// A request body as a JSON object, or empty when there is nothing usable.
-    ///
-    /// Empty rather than nil on purpose for the pairing routes: an unparseable
-    /// body is a malformed submission, not a guess, and must not spend one of the
-    /// operator's five attempts. `jsonObject` throws (it does not raise), so
-    /// `try?` is the correct tool here — unlike `data(withJSONObject:)`, which
-    /// raises an ObjC exception `try?` cannot catch.
-    nonisolated static func jsonBody(_ body: Data?) -> [String: Any] {
-        guard let body, !body.isEmpty else { return [:] }
-        return ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any]) ?? [:]
     }
 
     private func setupHTTPRoutes() async {
@@ -1853,59 +1783,9 @@ final class DaemonServer {
             if let t = request.queryParams["token"], AuthManager.shared.validateToken(t) { tokenValid = true }
             if !tokenValid, let auth = request.headers["authorization"], auth.hasPrefix("Bearer "),
                AuthManager.shared.validateToken(String(auth.dropFirst("Bearer ".count))) { tokenValid = true }
-            let pairingOpen = await PairingWindowStore.shared.isOpen()
             return Self.httpAccessResponse(
                 method: request.method, path: request.path,
-                isLocal: isLocal, tokenValid: tokenValid, daemonPort: daemonPort,
-                pairingWindowOpen: pairingOpen)
-        }
-
-        // ── Pairing code ──────────────────────────────────────────────────
-        // POST /pair is reachable unauthenticated ONLY while the operator holds
-        // a window open (see the access policy above); the three operator routes
-        // sit behind the normal gate, so they are same-machine or token-bearing.
-        // A remote peer able to open its own window would be granting itself a
-        // credential.
-        await httpServer.post("/pair") { request in
-            let body = Self.jsonBody(request.body)
-            let result = await PairingWindowStore.shared.redeem(
-                submitted: body["code"] as? String,
-                ip: request.remoteIP,
-                name: body["name"] as? String,
-                kind: body["kind"] as? String,
-                // Live read so a token handover reaches a device pairing now.
-                mintToken: { AuthManager.shared.token }
-            )
-            if result.outcome == .accepted, let token = result.token {
-                return .json(["token": token, "port": Int(daemonPort)], status: 200)
-            }
-            return .json([
-                "error": result.outcome.rawValue,
-                "attemptsRemaining": result.attemptsRemaining,
-            ], status: result.status)
-        }
-
-        await httpServer.post("/pair/open") { request in
-            let body = Self.jsonBody(request.body)
-            let ttlMs = body["ttlMs"] as? Double
-            let opened = await PairingWindowStore.shared.open(
-                ttl: ttlMs.map { $0 / 1000 },
-                redemptions: (body["redemptions"] as? NSNumber)?.intValue
-            )
-            return .json([
-                "code": opened.code,
-                "expiresAt": Int(opened.expiresAt.timeIntervalSince1970 * 1000),
-                "redemptions": opened.redemptions,
-            ])
-        }
-
-        await httpServer.get("/pair/status") { _ in
-            .json(await PairingWindowStore.shared.status().value)
-        }
-
-        await httpServer.post("/pair/close") { _ in
-            await PairingWindowStore.shared.close()
-            return .json(["open": false])
+                isLocal: isLocal, tokenValid: tokenValid, daemonPort: daemonPort)
         }
 
         await httpServer.get("/health") { [weak self] _ in
@@ -5069,11 +4949,6 @@ final class DaemonServer {
     /// Commands a board may originate over USB serial (Node parity with the
     /// `setSerialCommandSink` passlist). Everything else on that wire is
     /// device telemetry, not a command.
-    /// How long a board gets to answer `auth_provision` before the daemon
-    /// assumes its firmware predates the message and falls back to the legacy
-    /// WiFi provision path. Node parity: `LEGACY_REARM_GRACE_MS`.
-    nonisolated static let legacyRearmGraceMilliseconds = 3_000
-
     nonisolated static let serialForwardableCommands: Set<String> = [
         "select_option", "session_command", "permission_decision",
         "peripheral_event", "query_session_timeline", "focus_session", "review_run",
@@ -7684,14 +7559,11 @@ final class DaemonServer {
         mergeEngineSnapshot(into: &e)
         let ts = usageAPI.tokenStatus
         if ts != .unknown { e["tokenStatus"] = ts.rawValue }
-        let codexAuth = codexAuthStatusSnapshot()
-        if let codex = codexAuth {
+        if let codex = codexAuthStatusSnapshot() {
             Self.writeCodexAuthStatus(codex, into: &e)
         }
-        if let payload = Self.codexRateLimitsPayload(
-            usageAPI.codexRateLimits, accountPlan: codexAuth?.planType
-        ) {
-            e["codexRateLimits"] = payload
+        if let rateLimits = usageAPI.codexRateLimits {
+            e["codexRateLimits"] = Self.codexRateLimitsPayload(rateLimits)
         }
         if let antigravity = cachedAntigravityStatus {
             e["antigravityStatus"] = antigravityPayload(antigravity)
@@ -7760,31 +7632,7 @@ final class DaemonServer {
         return -date.timeIntervalSinceNow > graceSeconds
     }
 
-    /// Wire payload for the rollout snapshot, reconciled against the LIVE account
-    /// tier from `auth.json`.
-    ///
-    /// Returns nil only when there is nothing at all to say about Codex. Once the
-    /// account tier is known the result is always a dictionary — possibly one
-    /// with no windows — because every client merges usage fields
-    /// RETAIN-ON-ABSENT: omitting the key means "no information" and would pin a
-    /// retired plan's gauge on the dashboard forever (the `usageStale` latch
-    /// shape, CLAUDE.md). Voiding has to ride the wire explicitly. Mirrors
-    /// `normalizeCodexRateLimits` in bridge/src/usage-event.ts.
-    private static func codexRateLimitsPayload(
-        _ limits: CodexRateLimitsLocal?,
-        accountPlan: String?
-    ) -> [String: Any]? {
-        // A snapshot minted under a plan the account no longer holds is void, not
-        // old (`CodexPlanRules.snapshotMatchesAccountPlan`). Everything measured
-        // under the old plan goes with it — windows, credits, limitId, capturedAt
-        // — and only the live tier survives, so surfaces can still say
-        // "ChatGPT Free" instead of nothing.
-        guard let limits, CodexPlanRules.snapshotMatchesAccountPlan(
-            snapshot: limits.planType, account: accountPlan
-        ) else {
-            guard let accountPlan, !accountPlan.isEmpty else { return nil }
-            return ["planType": accountPlan]
-        }
+    private static func codexRateLimitsPayload(_ limits: CodexRateLimitsLocal) -> [String: Any] {
         func window(_ w: CodexRateLimitWindowLocal?) -> [String: Any]? {
             guard let w else { return nil }
             var d: [String: Any] = ["usedPercent": w.usedPercent, "windowMinutes": w.windowMinutes]

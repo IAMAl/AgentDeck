@@ -71,6 +71,97 @@ describe('OutputParser', () => {
       expect(events[0].options[1].selected).toBe(true);
     });
 
+    it('reads [x]/[ ] checkboxes as selected state, not as label text', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('  1. [✔] Backend\n❯ 2. [ ] Frontend\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      const opts = events[0].options;
+      // The box is state; it must not leak into the name every surface renders.
+      expect(opts[0].label).toBe('Backend');
+      expect(opts[1].label).toBe('Frontend');
+      expect(opts[0].selected).toBe(true);
+      expect(opts[1].selected).toBeUndefined();
+    });
+
+    it('flags a checkbox list as multiSelect', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('❯ 1. [ ] Backend\n  2. [ ] Frontend\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events[0].multiSelect).toBe(true);
+    });
+
+    it('accepts [x] as well as [✔] for the checked box', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('❯ 1. [x] Backend\n  2. [] Frontend\n');
+      vi.advanceTimersByTime(200);
+
+      const opts = events[0].options;
+      expect(events[0].multiSelect).toBe(true);
+      expect(opts[0].label).toBe('Backend');
+      expect(opts[0].selected).toBe(true);
+      expect(opts[1].label).toBe('Frontend');
+      expect(opts[1].selected).toBeUndefined();
+    });
+
+    it('keeps a checked non-Latin label intact', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('❯ 1. [✔] 寿司\n  2. [ ] 天ぷら\n');
+      vi.advanceTimersByTime(200);
+
+      const opts = events[0].options;
+      expect(opts[0].label).toBe('寿司');
+      expect(opts[0].selected).toBe(true);
+      expect(opts[1].label).toBe('天ぷら');
+    });
+
+    it('never publishes the unnumbered Submit row as an option', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      // Real shape of a multi-select AskUserQuestion. `Submit` carries no
+      // number — it is not something the user picks from the list — and it sits
+      // BETWEEN the freeform row and the trailing numbered row, so a scan that
+      // published unnumbered lines would offer it as a seventh choice.
+      p.feed(
+        '❯ 1. [ ] A\n' +
+        '  2. [ ] B\n' +
+        '  3. [ ] C\n' +
+        '  4. [ ] D\n' +
+        '  5. Type something\n' +
+        '     Submit\n' +
+        '  6. Chat about this\n',
+      );
+      vi.advanceTimersByTime(200);
+
+      const ev = events[0];
+      expect(ev.multiSelect).toBe(true);
+      expect(ev.options.map((o: { label: string }) => o.label)).not.toContain('Submit');
+      expect(ev.options[4].kind).toBe('freeform_input');
+    });
+
+    it('does not flag a plain numbered list as multiSelect', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      // `✔` marks the CURRENT choice in single-select lists (the /model
+      // selector) — it must never be mistaken for a checkbox.
+      p.feed('  1. Default\n❯ 2. Sonnet ✔\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events[0].multiSelect).toBe(false);
+    });
+
     it('handles both recommended and selected on different options', () => {
       const p = armParser();
       const events = collectEvents(p, 'option_prompt');
@@ -2871,6 +2962,286 @@ describe('OutputParser', () => {
       // The ❯ cursor row (option a) must be in view so the deck can drive the UI.
       expect(events[0].navigable).toBe(true);
       expect(events[0].cursorIndex).toBe(0);
+    });
+  });
+
+  // === Partial repaint must not replace a live option list ===
+  //
+  // Captured live off a bridged session (`/diag?tail=200`, 2026-08-08). Claude
+  // Code repaints only the rows that changed — a mouse hover over the prompt is
+  // enough — so the PTY carries `ESC[H ESC[50C ESC[31B` followed by the rule and
+  // the single row under it. The buffer tail then holds nothing but that row,
+  // every earlier option sits outside the scan window, and the deck's six-option
+  // multi-select was replaced by a lone unreachable "Chat about this" with
+  // navigable=false, which also pinned the dial to it.
+  describe('partial repaint frames', () => {
+    it('emits the full multi-select list when the whole prompt is in view', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed([
+        '❯ 1. [ ] AAA',
+        '  1行目',
+        '  2. [ ] BBB',
+        '  2行目',
+        '  3. [ ] CCC',
+        '  3行目',
+        '  4. [ ] DDD',
+        '  4行目',
+        '  5. [ ] Type something',
+        '     Submit',
+        '──',
+        '  6. Chat about this',
+      ].join('\n') + '\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].options).toHaveLength(6);
+      expect(events[0].multiSelect).toBe(true);
+      expect(events[0].navigable).toBe(true);
+    });
+
+    it('discards a lone trailing option that carries no cursor', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      // The repaint as it reaches the parser once the earlier rows have scrolled
+      // out of the scan window: a hard prose boundary, the rule, and the trailing
+      // row alone. Emitting this is what blanked the deck's real option list.
+      p.feed('Some assistant text that is not an option row\n──\n  6. Chat about this\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(0);
+    });
+
+    it('still emits a lone option when it starts at index 0', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('Prose boundary\n──\n  1. Only choice\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].options).toHaveLength(1);
+      expect(events[0].options[0].label).toBe('Only choice');
+    });
+
+    // The cursor does not rescue the frame — it is the reason it exists. Moving
+    // the cursor is what makes the TUI repaint, so the repainted row is the one
+    // wearing ❯. Journal capture 2026-08-08T04:54:23Z, 21s after the full list
+    // above went out: `[{index:5,"Chat about this"}] navigable=true
+    // cursorIndex=5` — the deck's six-option multi-select collapsed to one row.
+    it('discards a lone trailing option even when the ❯ cursor is on it', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('Prose boundary\n──\n❯ 6. Chat about this\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(0);
+    });
+
+    // Regression for the live sequence end to end: a complete list must survive
+    // the cursor-move repaint that follows it, because the repaint is dropped
+    // rather than published as a replacement snapshot.
+    it('keeps the full list intact across a following cursor-move repaint', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed([
+        '❯ 1. [ ] AAA',
+        '  2. [ ] BBB',
+        '  3. [ ] CCC',
+        '  4. [ ] DDD',
+        '  5. [ ] Type something',
+        '──',
+        '  6. Chat about this',
+      ].join('\n') + '\n');
+      vi.advanceTimersByTime(200);
+      p.feed('Prose boundary\n──\n❯ 6. Chat about this\n');
+      vi.advanceTimersByTime(200);
+
+      // The repaint may re-emit (the earlier rows are still in the scan window),
+      // but no emission may ever narrow the list to the repainted row.
+      expect(events.length).toBeGreaterThanOrEqual(1);
+      for (const e of events) {
+        expect(e.options).toHaveLength(6);
+        expect(e.multiSelect).toBe(true);
+      }
+    });
+
+    // Dropping the partial frame is only half the contract. The cursor-only
+    // redraw handler re-parses the tail to ask "are the options still there?",
+    // and a discarded partial answered that with `navigable: false` — i.e. the
+    // uncertainty signal was read as the hard one. Live capture below:
+    // ~/.agentdeck/journal 2026-08-08T05:00Z, a Stream Deck+ dial rotated seven
+    // ticks down an AskUserQuestion list and back up; on the eighth frame the
+    // parser emitted `idle` and the prompt vanished from the encoder LCDs while
+    // the TUI still had it on screen. Frames are verbatim (the journal writer
+    // strips control chars; ESC is restored here).
+    it('holds the option list across real dial-rotation repaints', () => {
+      const E = '\x1b';
+      const restore = (f: string): string => f.replace(/\[/g, `${E}[`);
+      const frames = [
+        '[?2026h[H[19B [6G選択肢が4つ全部見える[2B[38;2;177;185;249m❯[6G一部だけ見える[39m[44;1H[22;1H[?2026l',
+        '[?2026h[H[21B [6G一部だけ見える[2B[38;2;177;185;249m❯[6G質問文だけ出ている[39m[44;1H[24;1H[?2026l',
+        '[?2026h[H[23B [6G質問文だけ出ている[2B[38;2;177;185;249m❯[6G何も出ていない[39m[44;1H[26;1H[?2026l',
+        '[?2026h[H[25B [6G何も出ていない[2B[38;2;177;185;249m❯[6G[39m[2mType something.[47C[4B[22m[38;2;153;153;153mctrl+g[55Gto edit in VS Code · Esc to cancel[39m[44;1H[28;6H[?25h[?2026l',
+        '[?2026h[?25l[H[27B [6G[38;2;153;153;153mType something.[2B[38;2;177;185;249m❯[3G6. Chat about this[39m[44;1H[?2026l',
+        '[?2026h[H[27B[38;2;177;185;249m❯[6G[39m[2mType something.[2B[22m [3G6. Chat about this[44;1H[28;6H[?25h[?2026l',
+        '[?2026h[?25l[H[25B[38;2;177;185;249m❯[6G何も出ていない[2B[39m [6G[38;2;153;153;153mType something.[47C[4BEsc to[55Gcancel[39m[K[44;1H[26;1H[?2026l',
+      ];
+
+      const p = armParser();
+      const options = collectEvents(p, 'option_prompt');
+      const idles = collectEvents(p, 'idle');
+
+      p.feed([
+        'デバッグ表示テストです。StreamDeck+ の画面にどれが表示されていますか？',
+        `${E}[38;2;177;185;249m❯ 1. 選択肢が4つ全部見える${E}[39m`,
+        '  2. 一部だけ見える',
+        '  3. 質問文だけ出ている',
+        '  4. 何も出ていない',
+        '  5. Type something.',
+        '  6. Chat about this',
+      ].join('\n') + '\n');
+      vi.advanceTimersByTime(300);
+      expect(options).toHaveLength(1);
+      const idlesAfterPaint = idles.length;
+
+      for (const f of frames) {
+        p.feed(restore(f));
+        vi.advanceTimersByTime(300);
+      }
+
+      expect(idles.length - idlesAfterPaint).toBe(0);
+    });
+
+    // The same frames carry the cursor, and the parser used to miss every move:
+    // Claude Code repaints a moved cursor by rewriting the LABEL column only, so
+    // the row has no `N.` for parseOptions to key on and the stale `❯ 1.` from
+    // the original paint kept winning. The bridge's `select_option` sends
+    // `cmd.index - snapshot.cursorIndex` arrow presses, so a cursor frozen at 0
+    // while the TUI sits on row 3 commits the wrong answer — and a terminal-side
+    // arrow key (no dial involved) has no optimistic update to paper over it.
+    it('tracks the cursor through real dial-rotation repaints', () => {
+      const E = '\x1b';
+      const restore = (f: string): string => f.replace(/\[/g, `${E}[`);
+      const frames = [
+        '[?2026h[H[19B [6G選択肢が4つ全部見える[2B[38;2;177;185;249m❯[6G一部だけ見える[39m[44;1H[22;1H[?2026l',
+        '[?2026h[H[21B [6G一部だけ見える[2B[38;2;177;185;249m❯[6G質問文だけ出ている[39m[44;1H[24;1H[?2026l',
+        '[?2026h[H[23B [6G質問文だけ出ている[2B[38;2;177;185;249m❯[6G何も出ていない[39m[44;1H[26;1H[?2026l',
+        '[?2026h[H[25B [6G何も出ていない[2B[38;2;177;185;249m❯[6G[39m[2mType something.[47C[4B[22m[38;2;153;153;153mctrl+g[55Gto edit in VS Code · Esc to cancel[39m[44;1H[28;6H[?25h[?2026l',
+        '[?2026h[?25l[H[27B [6G[38;2;153;153;153mType something.[2B[38;2;177;185;249m❯[3G6. Chat about this[39m[44;1H[?2026l',
+        '[?2026h[H[27B[38;2;177;185;249m❯[6G[39m[2mType something.[2B[22m [3G6. Chat about this[44;1H[28;6H[?25h[?2026l',
+        '[?2026h[?25l[H[25B[38;2;177;185;249m❯[6G何も出ていない[2B[39m [6G[38;2;153;153;153mType something.[47C[4BEsc to[55Gcancel[39m[K[44;1H[26;1H[?2026l',
+      ];
+
+      const p = armParser();
+      const cursors = collectEvents(p, 'cursor_update');
+
+      p.feed([
+        'デバッグ表示テストです。StreamDeck+ の画面にどれが表示されていますか？',
+        `${E}[38;2;177;185;249m❯ 1. 選択肢が4つ全部見える${E}[39m`,
+        '  2. 一部だけ見える',
+        '  3. 質問文だけ出ている',
+        '  4. 何も出ていない',
+        '  5. Type something.',
+        '  6. Chat about this',
+      ].join('\n') + '\n');
+      vi.advanceTimersByTime(300);
+
+      for (const f of frames) {
+        p.feed(restore(f));
+        vi.advanceTimersByTime(300);
+      }
+
+      // Five ticks down onto "Chat about this", then two back up.
+      expect(cursors.map((c) => c.cursorIndex)).toEqual([1, 2, 3, 4, 5, 4, 3]);
+    });
+
+    // `●` is Claude Code's assistant-message glyph, not an option marker. Reading
+    // it as one made every reply a one-choice prompt on the deck, and since such
+    // a list is non-navigable, `select_option` fell back to typing the option
+    // NUMBER — so a press wrote "1\r" into the terminal and the phantom answer
+    // came back as a genuine user prompt. Both labels below are verbatim from
+    // ~/.agentdeck/journal, 2026-08-08T05:22Z, where that happened twice.
+    it('never turns an assistant response bullet into an option prompt', () => {
+      for (const line of [
+        '● DEVELOPMENT_LOG.md の先頭に記録しました（既存エントリに合わせて韓国語）。',
+        '● Running 1 shell command…',
+        '○ ',
+      ]) {
+        const p = armParser();
+        const events = collectEvents(p, 'option_prompt');
+        p.feed(`\n${line}\n`);
+        vi.advanceTimersByTime(300);
+        expect(events, line).toHaveLength(0);
+      }
+    });
+
+    // Never guess. An unmatched repaint leaves the cursor where it is, because a
+    // press commits whatever row the parser last reported.
+    it('leaves the cursor alone when the repaint matches no known option', () => {
+      const p = armParser();
+      const cursors = collectEvents(p, 'cursor_update');
+
+      p.feed('❯ 1. AAA\n  2. BBB\n  3. CCC\n');
+      vi.advanceTimersByTime(300);
+      p.feed('\n❯ something that is not one of the options\n');
+      vi.advanceTimersByTime(300);
+
+      expect(cursors).toHaveLength(0);
+    });
+
+    // The guard must not swallow a genuine exit: an empty parse of a READABLE
+    // tail still means the prompt ended, and the deck has to be told.
+    it('still emits idle when the options genuinely go away', () => {
+      const p = armParser();
+      const idles = collectEvents(p, 'idle');
+
+      p.feed('❯ 1. AAA\n  2. BBB\n  3. CCC\n');
+      vi.advanceTimersByTime(300);
+      const before = idles.length;
+
+      // Push the option rows out of the scan window, then repaint. The tail is
+      // readable and holds no option rows at all — a real exit, not a partial.
+      p.feed('assistant prose line without any option row\n'.repeat(120));
+      vi.advanceTimersByTime(300);
+      p.feed('❯ still prose, no option rows\n');
+      vi.advanceTimersByTime(300);
+
+      expect(idles.length).toBeGreaterThan(before);
+    });
+  });
+
+  // === Absolute column moves must not glue words together ===
+  //
+  // Same capture: the TUI positions text with CHA (`ESC[nG`) and CUF (`ESC[nC`)
+  // instead of literal spaces. CHA was stripped outright, so `"for " ESC[48G
+  // "gents"` reached the deck as "for gents", and option labels arrived with
+  // their words run together ("Chat about this" → "Chataboutthis").
+  describe('cursor column moves in option labels', () => {
+    it('keeps the word boundary across an absolute column move', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('  1. Chat\x1b[30Gabout\x1b[40Gthis\n  2. Second\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].options[0].label).toBe('Chat about this');
+    });
+
+    it('keeps the word boundary across a multi-column cursor-forward', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('  1. Type\x1b[5Csomething\n  2. Second\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(1);
+      expect(events[0].options[0].label).toBe('Type something');
     });
   });
 

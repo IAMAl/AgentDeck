@@ -13,7 +13,15 @@ const PERMISSION_YN = /\(Y\)es.*\/\(N\)o|\(y\/n\)/i;
 const DIFF_PROMPT = /\(V\)iew diff.*\(A\)pply.*\(D\)eny|\(a\)pply.*\(d\)eny.*\(v\)iew/i;
 // ANSI stripping can remove spaces (e.g. "❯3.Haiku" instead of "❯ 3. Haiku")
 const OPTION_NUMBERED = /^\s*❯?\s*\d{1,2}[.)]\s*.+/m;
-const OPTION_BULLET = /^\s*[►▸●○]\s+.+/m;
+// `●` and `○` are NOT option markers — `●` is the glyph Claude Code puts in front
+// of every assistant message (and its dimmed status dot), so treating it as one
+// turned ordinary prose into a one-choice prompt: the deck showed the first line
+// of a reply as a selectable row, and because such a list is non-navigable,
+// pressing it ran `select_option`'s fallback and TYPED "1\r" into the user's
+// terminal — the phantom answer then arrived as a real user prompt (journal
+// 2026-08-08T05:22Z, twice in one turn). Only the caret markers stay; this parser
+// is Claude-Code-only, and no Claude Code prompt has ever been drawn with them.
+const OPTION_BULLET = /^\s*[►▸]\s+.+/m;
 
 // Bounded window (chars) the option-block parser scans back over. Must fit a tall
 // AskUserQuestion prompt (question + per-option descriptions + trailing
@@ -164,6 +172,10 @@ export class OutputParser extends EventEmitter {
   // Cursor-only redraw detection for navigable option lists
   private lastNavigableEmit = false;
   private lastCursorIndex = 0;
+  /** Labels of the list currently on screen — the key the repaint is matched by. */
+  private lastOptions: PromptOption[] = [];
+  /** Cursor read off a repaint frame, consumed by the debounced re-parse. */
+  private repaintCursorHint: number | null = null;
   private pendingAnsi = '';
   // Cooldown after emitting permission/diff prompt — suppresses false idle
   // from user prompt echo (❯ text) in the same PTY batch
@@ -202,7 +214,16 @@ export class OutputParser extends EventEmitter {
     // Replace cursor movement sequences before stripping ANSI,
     // so word spacing is preserved (Claude Code TUI uses cursor movement instead of spaces/newlines)
     const spaced = rawData
-      .replace(/\x1b\[\d*C/g, ' ')              // cursor forward → space (existing)
+      // CUF → the columns it actually skips. Collapsing every `ESC[nC` to ONE
+      // space eats the other n-1, which is how a label reaches the deck with its
+      // words run together. Capped so a stray huge count can't blow the buffer.
+      .replace(/\x1b\[(\d*)C/g, (_m, n: string) =>
+        ' '.repeat(Math.min(Math.max(parseInt(n || '1', 10), 1), 200)))
+      // CHA moves to an absolute column, so stripping it GLUES the two sides
+      // together and swallows the gap: the TUI paints `"for " ESC[48G "gents"`
+      // and the deck rendered "for gents". There is no screen model here to
+      // resolve the real column against, so keep the word boundary instead.
+      .replace(/\x1b\[\d*G/g, ' ')
       .replace(/\x1b\[\d*(?:;\d*)?[Hf]/g, '\n') // CUP/HVP → newline
       .replace(/\x1b\[\d*[ABEF]/g, '\n');        // CUU/CUD/CNL/CPL → newline
     const clean = stripAnsi(spaced);
@@ -489,6 +510,8 @@ export class OutputParser extends EventEmitter {
     if (DIFF_PROMPT.test(chunk)) {
       debug('Parser', 'EMIT diff_prompt');
       this.lastNavigableEmit = false;
+      this.lastOptions = [];
+      this.repaintCursorHint = null;
       this.resetIdleTimer();
       this.resetOptionTimer();
       const parsed = this.parseDiffOptions(chunk);
@@ -505,6 +528,8 @@ export class OutputParser extends EventEmitter {
     // --- Permission: "Yes, allow once" / "No, deny" / "Always allow" ---
     if (YES_NO_ALWAYS.test(chunk)) {
       this.lastNavigableEmit = false;
+      this.lastOptions = [];
+      this.repaintCursorHint = null;
       this.resetIdleTimer();
       this.resetOptionTimer();
       // Prefer the rich block parser so Claude's REAL options survive — modern
@@ -522,6 +547,8 @@ export class OutputParser extends EventEmitter {
         }));
         this.lastNavigableEmit = rich.navigable;
         this.lastCursorIndex = rich.cursorIndex;
+        this.lastOptions = rich.options;
+        this.repaintCursorHint = null;
         debug('Parser', `EMIT permission_prompt (yes_no_always, ${options.length} rich options, navigable=${rich.navigable}, cursor=${rich.cursorIndex})`);
         this.emit('permission_prompt', { options, promptType: 'yes_no_always', navigable: rich.navigable, cursorIndex: rich.cursorIndex, question: this.parsePromptQuestion() });
         this.startInteractiveCooldown();
@@ -543,6 +570,8 @@ export class OutputParser extends EventEmitter {
     if (PERMISSION_YN.test(chunk)) {
       debug('Parser', 'EMIT permission_prompt (yes_no)');
       this.lastNavigableEmit = false;
+      this.lastOptions = [];
+      this.repaintCursorHint = null;
       this.resetIdleTimer();
       this.resetOptionTimer();
       this.emit('permission_prompt', {
@@ -567,6 +596,14 @@ export class OutputParser extends EventEmitter {
     const hasNavigableCursor = /^\s*❯\s*\d{1,2}[.)]/m.test(chunk);
     if ((OPTION_NUMBERED.test(chunk) || OPTION_BULLET.test(chunk)) && (hasNavigableCursor || chunkNonWs < 200)) {
       debug('Parser', 'option pattern detected — starting/resetting debounce');
+      // A cursor-move repaint lands here too whenever the row it redraws happens
+      // to carry its number (`❯ ESC[3G 6. Chat about this`), so the same label
+      // recovery has to run on this path — otherwise the cursor tracks every row
+      // except the numbered ones, which is worse than not tracking at all.
+      if (this.lastNavigableEmit) {
+        const hint = this.resolveCursorFromRepaint(chunk);
+        if (hint !== null) this.repaintCursorHint = hint;
+      }
       this.resetIdleTimer();
       this.resetOptionTimer();
       this.optionTimer = setTimeout(() => {
@@ -582,17 +619,35 @@ export class OutputParser extends EventEmitter {
             debug('Parser', `EMIT permission_prompt (${options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, reclassified from numbered, debounced)`);
             this.lastNavigableEmit = parsed.navigable;
             this.lastCursorIndex = parsed.cursorIndex;
+            this.lastOptions = parsed.options;
+            this.repaintCursorHint = null;
             this.emit('permission_prompt', { options, promptType: 'yes_no_always', navigable: parsed.navigable, cursorIndex: parsed.cursorIndex, question: this.parsePromptQuestion() });
           } else {
             this.lastNavigableEmit = parsed.navigable;
             this.lastCursorIndex = parsed.cursorIndex;
+            this.lastOptions = parsed.options;
+            this.repaintCursorHint = null;
             debug('Parser', `EMIT option_prompt (${parsed.options.length} options, navigable=${parsed.navigable}, cursor=${parsed.cursorIndex}, debounced)`);
             this.emit('option_prompt', {
               options: parsed.options,
               navigable: parsed.navigable,
               cursorIndex: parsed.cursorIndex,
+              // Checkbox rows are the on-screen proof that this list takes
+              // several answers — more reliable than the AskUserQuestion hook,
+              // which has to be matched back to the question by text.
+              multiSelect: parsed.checkboxList,
               question: this.parsePromptQuestion(),
             });
+          }
+        } else if (this.repaintCursorHint !== null) {
+          // Nothing publishable — the frame was a partial repaint. It still says
+          // where the cursor went, and that is the whole content of the frame.
+          const hinted = this.repaintCursorHint;
+          this.repaintCursorHint = null;
+          if (hinted !== this.lastCursorIndex) {
+            this.lastCursorIndex = hinted;
+            debug('Parser', `EMIT cursor_update (repaint label, numbered frame): cursorIndex=${hinted}`);
+            this.emit('cursor_update', { cursorIndex: hinted });
           }
         }
       }, OPTION_DEBOUNCE_MS);
@@ -618,21 +673,51 @@ export class OutputParser extends EventEmitter {
       const hasBareIdlePrompt = /^[❯>][ \t\u00A0]+$/m.test(chunk);
       if (!isGenuineIdle && !hasBareIdlePrompt) {
         debug('Parser', 'cursor-only redraw detected — debouncing buffer re-parse');
+        // Read the cursor off THIS frame before it is buried. The buffer re-parse
+        // below cannot see the move at all: Claude Code repaints a moved cursor by
+        // rewriting only the label column, so the repainted row carries no `N.`
+        // and the stale `❯ 1.` from the original full paint keeps winning the
+        // scan. Matching the repainted label against the emitted list is the only
+        // signal that survives, and it is also the only one that exists when the
+        // user arrows in the terminal instead of turning the dial.
+        const hint = this.resolveCursorFromRepaint(chunk);
+        if (hint !== null) this.repaintCursorHint = hint;
         this.resetIdleTimer();
         this.resetOptionTimer();
         this.optionTimer = setTimeout(() => {
           this.optionTimer = null;
+          const hinted = this.repaintCursorHint;
+          this.repaintCursorHint = null;
           const parsed = this.parseOptions(this.buffer.slice(-OPTION_SCAN_WINDOW));
-          if (parsed.navigable) {
+          if (hinted !== null) {
+            // The list is on screen by construction — the cursor is sitting on
+            // one of its rows — so this frame can never mean "options gone".
+            if (hinted !== this.lastCursorIndex) {
+              this.lastCursorIndex = hinted;
+              debug('Parser', `EMIT cursor_update (repaint label): cursorIndex=${hinted}`);
+              this.emit('cursor_update', { cursorIndex: hinted });
+            }
+          } else if (parsed.navigable) {
             // Options still present — emit cursor_update if index changed
             if (parsed.cursorIndex !== this.lastCursorIndex) {
               this.lastCursorIndex = parsed.cursorIndex;
               debug('Parser', `EMIT cursor_update: cursorIndex=${parsed.cursorIndex}`);
               this.emit('cursor_update', { cursorIndex: parsed.cursorIndex });
             }
+          } else if (parsed.partial) {
+            // The frame was dropped as an unreadable partial repaint, which is
+            // exactly what a cursor move produces once the earlier rows fall out
+            // of the scan window. That is "no information", never "the prompt
+            // ended" — treating it as the latter blanked a live prompt off the
+            // deck mid-rotation (journal 2026-08-08T05:00Z: seven dial ticks,
+            // then `idle` on the eighth). Hold the navigable state; a real exit
+            // still arrives as a genuine idle prompt or an empty readable parse.
+            debug('Parser', 'partial repaint during navigable state — holding options');
           } else {
             // Options disappeared (Esc, selection made, etc.) — exit navigable state
             this.lastNavigableEmit = false;
+            this.lastOptions = [];
+            this.repaintCursorHint = null;
             this.lastCursorIndex = 0;
             debug('Parser', 'navigable options disappeared — emitting idle');
             this.emit('idle');
@@ -642,6 +727,8 @@ export class OutputParser extends EventEmitter {
       }
       // Genuine idle prompt or bare idle line — clear navigable state, fall through
       this.lastNavigableEmit = false;
+      this.lastOptions = [];
+      this.repaintCursorHint = null;
       this.lastCursorIndex = 0;
       this.clearInteractivePrompt();
       this.resetOptionTimer(); // cancel stale timer from ANSI reposition handler
@@ -1035,7 +1122,13 @@ export class OutputParser extends EventEmitter {
     return hasYes && hasNo;
   }
 
-  private parseOptions(text: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number } {
+  /**
+   * `partial` is the "this frame is unreadable" signal, and it is NOT a peer of
+   * `navigable: false`. A caller asking "are the options gone?" must read it —
+   * a dropped partial repaint says nothing about whether the prompt still
+   * exists, while an empty parse of a readable tail says it does not.
+   */
+  private parseOptions(text: string): { options: PromptOption[]; navigable: boolean; cursorIndex: number; checkboxList: boolean; partial: boolean } {
     // ANSI cursor movement removal can leave numbered options concatenated without newlines.
     // Insert a newline before number patterns that aren't preceded by one.
     // (?![a-z\d]) prevents matching version numbers like "4.6" and file extensions like "_01.png"
@@ -1044,7 +1137,9 @@ export class OutputParser extends EventEmitter {
     // Backward scan: restrict to the last contiguous block of option lines.
     // This prevents stale numbered list items (e.g. "5. Deploy") from earlier in the
     // buffer being included as ghost options when a real option prompt follows.
-    const optLineRe = /^\s*❯?\s*\d{1,2}[.)]\s*.+|^\s*[►▸●○]\s+.+/;
+    // Same marker set as OPTION_BULLET — a `●` line is assistant prose, so it is
+    // a hard boundary for the backward block scan rather than an option row.
+    const optLineRe = /^\s*❯?\s*\d{1,2}[.)]\s*.+|^\s*[►▸]\s+.+/;
     const allLines = normalized.split('\n');
     let blockEnd = allLines.length;
     // Skip trailing non-option lines (footer like "ctrl-g to edit in VS Code")
@@ -1088,6 +1183,8 @@ export class OutputParser extends EventEmitter {
 
     let navigable = false;
     let cursorIndex = 0;
+    /** Any option carried a `[ ]`/`[x]` box — the list accepts several answers. */
+    let checkboxList = false;
 
     // Use a Map keyed by index so later (newer) lines overwrite earlier (stale) ones
     const byIndex = new Map<number, PromptOption>();
@@ -1114,7 +1211,20 @@ export class OutputParser extends EventEmitter {
         // Skip file extension artifacts from tool call paths: "png)", "json)", "ts)" etc.
         if (/^[a-z]{1,10}\)$/.test(raw)) continue;
         const recommended = /\(recommended\)/i.test(raw);
-        const selected = /✔/.test(raw);
+        // Two different markers mean "chosen", and they are not interchangeable.
+        // `✔` marks the CURRENT value in single-select lists (the /model
+        // selector); a leading `[ ]`/`[x]` is Claude Code's multi-select
+        // checkbox, and its presence is what identifies the whole list as
+        // multi-select. Consumers cannot tell them apart after the fact, so the
+        // checkbox is recognised here and reported separately.
+        // Claude Code draws the multi-select box as `[✔]` / `[ ]`; `[x]` and
+        // `[]` are accepted too so a TUI tweak doesn't silently turn the list
+        // back into a single-select one. Read it from `raw` — cleanOptionLabel
+        // collapses `✔` to a space, which would erase the checked state.
+        const checkbox = raw.match(/^\[\s*([xX✔✓])?\s*\]/);
+        if (checkbox) checkboxList = true;
+        // Outside a box, `✔` means "current value" in single-select lists.
+        const selected = checkbox ? checkbox[1] !== undefined : /✔/.test(raw);
         const label = this.cleanOptionLabel(raw);
         debug('Parser', `option[${idx}]: "${label}"${recommended ? ' ★' : ''}${selected ? ' ✓' : ''}${hasCursor ? ' ❯' : ''}`);
         const opt: PromptOption = { index: idx, label };
@@ -1124,10 +1234,18 @@ export class OutputParser extends EventEmitter {
         byIndex.set(idx, opt);
         continue;
       }
-      const bm = line.match(/^\s*([►▸●○])\s+(.+)/);
+      // The unnumbered `Submit` row of a multi-select list is not a choice — it
+      // has no number precisely because the user is not meant to pick it from
+      // the list — so it falls through the numbered scan and is never published.
+      const bm = line.match(/^\s*([►▸])\s+(.+)/);
       if (bm) {
+        const label = bm[2].trim();
+        // An empty row is never a choice, and publishing one is worse than
+        // dropping it: a blank option still puts the session in AWAITING_OPTION
+        // and a press on it commits an answer nobody could read.
+        if (label.length === 0) continue;
         const idx = byIndex.size;
-        byIndex.set(idx, { index: idx, label: bm[2].trim() });
+        byIndex.set(idx, { index: idx, label });
       }
     }
 
@@ -1183,7 +1301,29 @@ export class OutputParser extends EventEmitter {
       ? bestRun.map((opt, i) => ({ ...opt, index: i }))
       : bestRun.map((opt) => ({ ...opt }));
     const finalOptions = contiguous.length >= 2 ? contiguous : sorted;
-    return { options: finalOptions, navigable, cursorIndex };
+    // Drop a partial-repaint frame rather than publishing it as the whole list.
+    // Claude Code repaints only the rows that changed (`ESC[H ESC[50C ESC[31B …`)
+    // and a mouse hover over the prompt is enough to trigger one. The buffer tail
+    // then holds nothing but the last option — the row sitting below the
+    // full-width rule — while every earlier row falls outside the scan window.
+    // Emitting that replaced a live six-option prompt on the deck with a single
+    // unreachable row.
+    // The cursor is NOT the tell. Moving the cursor is the single most common
+    // reason the TUI repaints at all, so the repainted row is precisely the one
+    // carrying ❯ — keying the guard on `!navigable` let exactly the frame that
+    // matters through (captured live: `[{index:5,"Chat about this"}]`,
+    // navigable=true, cursorIndex=5, which blanked a six-option multi-select
+    // mid-prompt). The reliable invariant is positional: a real list always
+    // contains option 0. Runs of 2+ that start higher are genuine top-truncation
+    // and were already re-indexed above; a LONE option numbered past the first
+    // has no such reading — Claude Code never draws a one-option prompt — so it
+    // can only be the tail of a repaint whose earlier rows fell out of the scan
+    // window.
+    if (finalOptions.length === 1 && finalOptions[0].index > 0) {
+      debug('Parser', `discarding partial repaint (lone option[${finalOptions[0].index}] "${finalOptions[0].label}")`);
+      return { options: [], navigable: false, cursorIndex: 0, checkboxList: false, partial: true };
+    }
+    return { options: finalOptions, navigable, cursorIndex, checkboxList, partial: false };
   }
 
   private isFreeformInputOption(label: string): boolean {
@@ -1197,10 +1337,73 @@ export class OutputParser extends EventEmitter {
    * Clean an option label from TUI text that may have spaces stripped by ANSI cursor positioning.
    * Uses · (U+00B7 middle dot) as a reliable delimiter — it survives ANSI stripping.
    */
+  /**
+   * Which row is the ❯ sitting on, read from a cursor-move repaint frame.
+   *
+   * The frame redraws the label column only (`❯ ESC[6G 一部だけ見える`), so the
+   * option number is absent and `parseOptions` — which keys entirely off `N.` —
+   * reports the stale cursor from the original full paint forever. Matching the
+   * repainted text against the labels already emitted recovers the real index.
+   *
+   * Returns null rather than a guess: an unmatched or ambiguous frame must leave
+   * the cursor where it is, never move it to an arbitrary row that a press would
+   * then commit.
+   */
+  private resolveCursorFromRepaint(chunk: string): number | null {
+    if (this.lastOptions.length === 0) return null;
+    // Compare stripped of everything the TUI adds per-frame: the number, the
+    // multi-select box, and all whitespace (column moves become runs of spaces).
+    const norm = (s: string): string => s
+      .replace(/^\s*\d{1,2}[.)]\s*/, '')
+      .replace(/^\[\s*[xX✔✓]?\s*\]\s*/, '')
+      .replace(/✔/g, '')
+      .replace(/\s+/g, '')
+      .toLowerCase();
+    const keys = this.lastOptions.map((o) => norm(o.label));
+
+    let resolved: number | null = null;
+    // A single frame may redraw both the row the cursor left and the row it
+    // arrived on; only the latter wears ❯, and later lines win.
+    for (const line of chunk.split('\n')) {
+      const m = line.match(/^\s*❯\s*(\S.*)$/);
+      if (!m) continue;
+      const text = m[1].replace(/\s{2,}(?:Esc|Enter|ctrl\+\w)\s+to\s+.*/i, '').trim();
+      const key = norm(text);
+      // Two chars is the shortest label worth matching ("No"); below that a
+      // prefix hit means nothing.
+      if (key.length < 2) continue;
+
+      const exact = keys.indexOf(key);
+      if (exact !== -1) {
+        resolved = exact;
+        continue;
+      }
+      // The TUI truncates to its width, so the frame may carry a prefix of the
+      // stored label. The reverse — frame text running PAST the label — happens
+      // only because `cleanOptionLabel` shortened it (the `·` identity split),
+      // and it is the direction that misfires: with a `Yes`/`No` list, any
+      // ❯-line starting "No…" would match. Allow it only for a label long enough
+      // to be distinctive, and only when the hit is unambiguous.
+      const partial = keys
+        .map((k, i) => ({ i, k }))
+        .filter((c) => (c.k.length >= 2 && c.k.startsWith(key)) || (c.k.length >= 6 && key.startsWith(c.k)));
+      if (partial.length === 1) resolved = partial[0].i;
+    }
+    return resolved;
+  }
+
   private cleanOptionLabel(raw: string): string {
     let text = stripAnsi(raw)
       .replace(/\s*\(recommended\)/i, '')
+      // Strip the multi-select box BEFORE the `✔` sweep below: that sweep turns
+      // `[✔]` into `[ ]`, and a box-shaped remnant would then survive into the
+      // label every surface renders. The box is state — it rides `selected`.
+      .replace(/^\[\s*[xX✔✓]?\s*\]\s*/, '')
       .replace(/✔/g, ' ')
+      // Column moves are resolved into real spaces upstream, so a label can now
+      // carry the padding the TUI used to reach its column. That padding is
+      // layout, never part of the text a device renders.
+      .replace(/[ \t]{2,}/g, ' ')
       .trim();
 
     // · (middle dot) separates identity from description in Claude Code TUI
@@ -1332,6 +1535,8 @@ export class OutputParser extends EventEmitter {
     this.effortLevel = null;
     this.lastSuggestedPrompt = null;
     this.lastNavigableEmit = false;
+    this.lastOptions = [];
+    this.repaintCursorHint = null;
     this.lastCursorIndex = 0;
     this.clearInteractivePrompt();
     this.resetSpinnerTimer();

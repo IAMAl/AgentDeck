@@ -79,14 +79,6 @@ const OBSERVED_APPROVAL_ENABLED = process.env.AGENTDECK_OBSERVED_APPROVAL !== '0
 /** How long a held gate waits for a device decision before releasing the tool
  *  call to Claude's own permission flow. Must stay well under the hook curl's
  *  --max-time 60 so the release reaches Claude before curl gives up. */
-/**
- * How long a board gets to answer `auth_provision` before the daemon assumes
- * its firmware predates the message and falls back to the legacy WiFi provision
- * path. Generous relative to a serial round-trip (a board acks in ms) but short
- * enough that a locked-out fleet heals within one connect.
- */
-const LEGACY_REARM_GRACE_MS = 3_000;
-
 const OBSERVED_APPROVAL_HOLD_MS = Math.min(
   50_000,
   Math.max(5_000, Number(process.env.AGENTDECK_APPROVAL_HOLD_MS) || 25_000),
@@ -135,15 +127,8 @@ import {
   getOwnTimelineFile,
 } from './session-registry.js';
 import { fetchUsageFromApi, hasOAuthToken, resetConsecutiveFailures, type ApiUsageData } from './usage-api.js';
-import { getOrCreateToken, isLocalConnection, validateToken } from './auth.js';
+import { isLocalConnection, validateToken } from './auth.js';
 import { buildPublicHealth, gateHttpRequest, isAuthorizedHttpRequest } from './http-auth-gate.js';
-import {
-  closePairingWindow,
-  getPairingWindowStatus,
-  openPairingWindow,
-  pairingWindowOpen,
-  redeemPairingCode,
-} from './pairing-window.js';
 import { getLastFrame, renderPreviewFrame, onFrameRendered, offFrameRendered } from './pixoo/pixoo-bridge.js';
 import { loadIDotMatrixDevices } from './idotmatrix/idotmatrix-settings.js';
 import { handlePixooWake } from './pixoo/pixoo-client.js';
@@ -173,7 +158,7 @@ import {
   type DeviceModule,
 } from './modules/index.js';
 import { SerialModule } from './modules/serial-module.js';
-import { esp32ConnectionCount, getESP32DeviceInfo, onESP32Message, sendAuthProvisionToAll, sendWifiProvision, sendWifiProvisionToAll, handleESP32Wake, getESP32Ports, getSerialConnectionStatus, getSerialLastError, getSerialReachableBoards } from './esp32-serial.js';
+import { esp32ConnectionCount, getESP32DeviceInfo, onESP32Message, sendWifiProvisionToAll, handleESP32Wake, getESP32Ports, getSerialConnectionStatus, getSerialLastError, getSerialReachableBoards } from './esp32-serial.js';
 import { loadWifiConfig } from './wifi-config.js';
 import { getConnectedAdbDevices, hasAdb, getAdbDeviceCount } from './adb-reverse.js';
 import { getPixooDeviceDetails, pixooDeviceCount } from './pixoo/pixoo-bridge.js';
@@ -1334,53 +1319,10 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       const gatePathname = (() => {
         try { return new URL(req.url ?? '/', 'http://localhost').pathname; } catch { return '/'; }
       })();
-      const decision = gateHttpRequest(
-        req.method ?? 'GET',
-        gatePathname,
-        isAuthorizedHttpRequest(req),
-        pairingWindowOpen(),
-      );
+      const decision = gateHttpRequest(req.method ?? 'GET', gatePathname, isAuthorizedHttpRequest(req));
       if (decision === 'public-health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(buildPublicHealth(port)));
-        return;
-      }
-      if (decision === 'pair-redeem') {
-        // The one path by which an unauthenticated LAN peer can obtain the
-        // pairing token, and only while the operator is holding a window open.
-        // Body: { code: "482913", name?: string, kind?: string }
-        void (async () => {
-          const peerIp = req.socket.remoteAddress ?? '';
-          let body: Record<string, unknown> = {};
-          try {
-            body = await readJsonBody(req, 4096);
-          } catch {
-            // A body we cannot parse is a malformed submission, not a guess —
-            // fall through with an empty object so it burns no attempt.
-          }
-          const result = redeemPairingCode(
-            body.code,
-            { ip: peerIp, name: body.name, kind: body.kind },
-            // Live read, not core.authToken: a token handover (adoptPeerToken)
-            // must reach a device pairing right now, exactly as it reaches the
-            // serial fleet.
-            getOrCreateToken,
-          );
-          res.writeHead(result.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-          if (result.outcome === 'accepted' && result.token) {
-            res.end(JSON.stringify({ token: result.token, port }));
-          } else {
-            res.end(JSON.stringify({
-              error: result.outcome,
-              attemptsRemaining: result.attemptsRemaining,
-            }));
-          }
-        })().catch(() => {
-          try {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'pairing failed' }));
-          } catch { /* client gone */ }
-        });
         return;
       }
       if (decision === 'deny') {
@@ -1460,49 +1402,6 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
       res.end(JSON.stringify({
         status: 'ok', mode: 'daemon', port, state: snap.state, isSwift: false,
       }));
-      return;
-    }
-    // ── Pairing window, operator side ─────────────────────────────────────
-    // Past the LAN gate, so these three are same-machine or token-bearing only:
-    // the CLI runs beside the daemon, and the macOS app is either this process's
-    // host or a local peer. A remote peer opening its own window would be a peer
-    // granting itself a credential.
-    //
-    // POST /pair/open  { ttlMs?, redemptions? } → { code, expiresAt, redemptions }
-    // GET  /pair/status                        → who redeemed, who guessed wrong
-    // POST /pair/close                         → cancel early
-    if (req.method === 'POST' && pathname === '/pair/open') {
-      void (async () => {
-        let body: Record<string, unknown> = {};
-        try { body = await readJsonBody(req, 4096); } catch { /* defaults */ }
-        const ttlMs = typeof body.ttlMs === 'number' ? body.ttlMs : undefined;
-        const redemptions = typeof body.redemptions === 'number' ? body.redemptions : undefined;
-        // Operator-named ESP32 peers for a cable-free re-arm. A board cannot type
-        // a code, so the address the operator read off the refusal log is what
-        // authorizes it — see pairing-window.ts `mayAdoptEsp32`.
-        const adoptEsp32Ips = Array.isArray(body.adoptEsp32Ips)
-          ? body.adoptEsp32Ips.filter((x): x is string => typeof x === 'string')
-          : undefined;
-        const opened = openPairingWindow({ ttlMs, redemptions, adoptEsp32Ips });
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-        res.end(JSON.stringify(opened));
-      })().catch(() => {
-        try {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'could not open pairing window' }));
-        } catch { /* client gone */ }
-      });
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/pair/status') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(JSON.stringify(getPairingWindowStatus()));
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/pair/close') {
-      closePairingWindow();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ open: false }));
       return;
     }
     if (req.method === 'GET' && pathname === '/status') {
@@ -3267,15 +3166,6 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     core.setExternalClientCountProvider(() => esp32ConnectionCount());
   }
 
-  // Cable-free ESP32 re-arm (daemon only — a session bridge shares WsServer and
-  // has no business provisioning boards). Reads the token live, like every other
-  // provisioning path, so a handover reaches a board re-arming right now.
-  core.wsServer.setEsp32AdoptionProvider(() => ({
-    authToken: getOrCreateToken(),
-    bridgeIp: getLanIp(),
-    bridgePort: port,
-  }));
-
   // WS-path display_state re-sync: the 5s serial heartbeat above only covers
   // USB-attached boards. WiFi boards (InkDeck) receive display_state edge-
   // triggered over the plugin WS — a missed wake edge would leave an e-ink
@@ -3299,87 +3189,30 @@ export async function startDaemon(opts: DaemonOptions): Promise<void> {
     }, 30_000);
     wifiDeviceInfoPoll.unref?.();
 
-    // ONE serial message handler. `onESP32Message` REPLACES rather than adds,
-    // so a second registration silently unhooks the first — which is why the
-    // credential re-arm below shares this callback with WiFi auto-provisioning
-    // instead of registering beside it.
+    // WiFi auto-provisioning for ESP32 (enables independent WiFi operation)
     const wifiConfig = loadWifiConfig();
-    const lanIp = getLanIp();
-    // Boards flashed before `auth_provision` existed cannot be re-armed by it —
-    // they drop the unknown type silently, and the daemon has no way to tell
-    // "understood" from "ignored" except by the ack not arriving. So a board
-    // that stays quiet falls back to the one message its firmware does
-    // understand. It is a FALLBACK because it costs a WiFi re-associate: it
-    // fires once per board per token, only after the silence, and only when the
-    // user has auto-provisioning on (it carries their WiFi credentials).
-    const legacyRearmTimers = new Map<string, NodeJS.Timeout>();
-    const cancelLegacyRearm = (portPath: string): void => {
-      const timer = legacyRearmTimers.get(portPath);
-      if (!timer) return;
-      clearTimeout(timer);
-      legacyRearmTimers.delete(portPath);
-    };
-    onESP32Message((portPath, msg) => {
-      // Keep every serial-attached board armed with the token this daemon is
-      // actually serving. Deliberately not gated on auto-provision: a board
-      // needs a valid credential whether or not this machine hands out WiFi
-      // credentials, and it needs one most when its radio is already up — the
-      // case `shouldSendWifiProvision` skips on purpose. Reads the token live
-      // rather than through `core.authToken` so a handover adoption reaches
-      // the fleet.
-      if (msg.type === 'device_info') {
-        const armed = sendAuthProvisionToAll({
-          type: 'auth_provision',
-          authToken: getOrCreateToken(),
-          bridgeIp: lanIp,
-          bridgePort: port,
-        });
-        if (armed.length > 0) log(`[agentdeck] Pairing token armed on ${armed.length} ESP32 device(s) after ${portPath}`);
-        if (wifiConfig?.autoProvision) {
-          for (const armedPort of armed) {
-            if (legacyRearmTimers.has(armedPort)) continue;
-            const timer = setTimeout(() => {
-              legacyRearmTimers.delete(armedPort);
-              const sent = sendWifiProvision(armedPort, {
-                type: 'wifi_provision' as const,
-                ssid: wifiConfig.ssid,
-                password: wifiConfig.password,
-                bridgeIp: lanIp,
-                bridgePort: port,
-                authToken: getOrCreateToken(),
-              });
-              if (sent) {
-                log(`[agentdeck] ${armedPort}: firmware predates auth_provision — re-armed over the legacy WiFi provision path`);
-              }
-            }, LEGACY_REARM_GRACE_MS);
-            timer.unref?.();
-            legacyRearmTimers.set(armedPort, timer);
-          }
+    if (wifiConfig?.autoProvision) {
+      const lanIp = getLanIp();
+      onESP32Message((portPath, msg) => {
+        const shouldRefreshIps10Endpoint = msg.type === 'device_info' &&
+          msg.board === 'ips_10' &&
+          msg.wifiConnected &&
+          !msg.wifiRadioParked;
+        if (msg.type === 'device_info' && (!msg.wifiConnected || shouldRefreshIps10Endpoint)) {
+          const sent = sendWifiProvisionToAll({
+            type: 'wifi_provision' as const,
+            ssid: wifiConfig.ssid,
+            password: wifiConfig.password,
+            bridgeIp: lanIp,
+            bridgePort: port,
+            authToken: core.authToken,
+          });
+          if (sent > 0) log(`[agentdeck] WiFi provision sent to ${sent} ESP32 device(s) after ${portPath}`);
+        } else if (msg.type === 'wifi_provision_ack') {
+          log(msg.success ? `[agentdeck] ESP32 WiFi connected: ${msg.ip} ✓` : `[agentdeck] ESP32 WiFi failed: ${msg.error || 'unknown'}`);
         }
-      } else if (msg.type === 'auth_provision_ack') {
-        cancelLegacyRearm(portPath);
-        if (msg.changed) log(`[agentdeck] ESP32 pairing token re-armed on ${portPath}`);
-      }
-
-      if (!wifiConfig?.autoProvision) return;
-      const shouldRefreshIps10Endpoint = msg.type === 'device_info' &&
-        msg.board === 'ips_10' &&
-        msg.wifiConnected &&
-        !msg.wifiRadioParked;
-      if (msg.type === 'device_info' && (!msg.wifiConnected || shouldRefreshIps10Endpoint)) {
-        const sent = sendWifiProvisionToAll({
-          type: 'wifi_provision' as const,
-          ssid: wifiConfig.ssid,
-          password: wifiConfig.password,
-          bridgeIp: lanIp,
-          bridgePort: port,
-          authToken: getOrCreateToken(),
-        });
-        if (sent > 0) log(`[agentdeck] WiFi provision sent to ${sent} ESP32 device(s) after ${portPath}`);
-      } else if (msg.type === 'wifi_provision_ack') {
-        log(msg.success ? `[agentdeck] ESP32 WiFi connected: ${msg.ip} ✓` : `[agentdeck] ESP32 WiFi failed: ${msg.error || 'unknown'}`);
-      }
-    });
+      });
+    }
   }
 
   log(`[agentdeck] WebSocket server ready on port ${port}`);

@@ -11,6 +11,15 @@
 
 import Foundation
 
+/// Answer a multi-select question in one shot (`StateUpdateEvent.multiSelect`).
+///
+/// Carries the FULL desired set, not a delta: the bridge diffs `indices` against the options
+/// currently marked `selected` and toggles only what differs, so a device whose view drifted
+/// mid-prompt still converges on what its user saw rather than inverting an unrelated row.
+///
+/// The ask-gate rung deliberately does not accept this — it resolves a single label — so a
+/// device must fall back to `select_option` when there is no PTY.
+///
 /// Request a session's recent timeline. The daemon replies (to the requester only) with a
 /// `timeline_history` carrying that session's entries. Lets a device that connects
 /// mid-session fill its per-session Detail view.
@@ -49,11 +58,15 @@ struct ADPluginCommand: Codable, Equatable {
     /// one. The daemon drops a press whose echo no longer matches the active question and
     /// re-broadcasts so the device re-syncs. Optional: omitted ⇒ no guard (older clients, ESP32
     /// firmware) — never make this required.
+    ///
+    /// Echo of the question being answered — same guard as `select_option`.
     var question: String?
     /// Target session for daemon-side host push-to-talk (deck surfaces have no session of their
     /// own). Absent ⇒ the focused session, then the legacy session-bridge behavior when a bridge
     /// handles it directly.
     var sessionId: String?
+    /// 0-based wire indices to end up checked. Empty = uncheck everything.
+    var indices: [Double]?
     var direction: ADDirection?
     var text: String?
     var mode: ADMode?
@@ -90,6 +103,7 @@ struct ADPluginCommand: Codable, Equatable {
         case index = "index"
         case question = "question"
         case sessionId = "sessionId"
+        case indices = "indices"
         case direction = "direction"
         case text = "text"
         case mode = "mode"
@@ -142,6 +156,7 @@ extension ADPluginCommand {
         index: Double?? = nil,
         question: String?? = nil,
         sessionId: String?? = nil,
+        indices: [Double]?? = nil,
         direction: ADDirection?? = nil,
         text: String?? = nil,
         mode: ADMode?? = nil,
@@ -174,6 +189,7 @@ extension ADPluginCommand {
             index: index ?? self.index,
             question: question ?? self.question,
             sessionId: sessionId ?? self.sessionId,
+            indices: indices ?? self.indices,
             direction: direction ?? self.direction,
             text: text ?? self.text,
             mode: mode ?? self.mode,
@@ -381,6 +397,7 @@ enum ADType: String, Codable, Equatable {
     case respond = "respond"
     case reviewRun = "review_run"
     case selectOption = "select_option"
+    case selectOptions = "select_options"
     case sendPrompt = "send_prompt"
     case sessionCommand = "session_command"
     case switchAgent = "switch_agent"

@@ -741,35 +741,25 @@ final class PixooRenderer {
             }
         }
 
-        // One-pixel telemetry rails — Claude 5h/7d then Codex primary/secondary —
-        // PRESENT ONES ONLY. On a 32-row panel each rail is 3% of the whole
-        // display, so reserving a row for a provider that reports nothing (a
-        // Claude-only user, a free-tier Codex account, this daemon with no Claude
-        // quota path) spent that height on a dead black stripe. Building the list
-        // first and anchoring it to the BOTTOM edge keeps the rails where the eye
-        // expects them while every unclaimed row falls back to the tank. The
-        // two-pixel source key stays lit while the 29-pixel track encodes used
-        // percentage. Timebox intentionally omits these rails; at 11px they would
-        // destroy the identity badge. Mirrors renderCompact32Frame in
-        // bridge/src/pixoo/pixoo-renderer.ts.
+        // Four one-pixel telemetry rails: Claude 5h/7d, then Codex primary/
+        // secondary token windows. The two-pixel source key stays lit while
+        // the 29-pixel track encodes used percentage. Timebox intentionally
+        // omits these rails; at 11px they would destroy the identity badge.
         let codexPrimary = dashboardState.codexRateLimits?.primary?.stale == true
             ? nil : dashboardState.codexRateLimits?.primary?.usedPercent
         let codexSecondary = dashboardState.codexRateLimits?.secondary?.stale == true
             ? nil : dashboardState.codexRateLimits?.secondary?.usedPercent
-        var telemetry: [(Double, RGB)] = []
-        for candidate: (Double?, RGB) in [
+        let telemetry: [(Double?, RGB)] = [
             (dashboardState.fiveHourPercent, (42, 220, 154)),
             (dashboardState.sevenDayPercent, (54, 154, 255)),
             (codexPrimary, (185, 86, 255)),
             (codexSecondary, (104, 116, 255)),
-        ] {
-            if let raw = candidate.0 { telemetry.append((raw, candidate.1)) }
-        }
-        let firstRailY = 32 - telemetry.count
+        ]
         for (row, item) in telemetry.enumerated() {
-            let y = firstRailY + row
+            let y = 28 + row
             for x in 0..<n { set(x, y, (5, 8, 14)) }
-            let pct = max(0, min(100, item.0))
+            guard let raw = item.0 else { continue }
+            let pct = max(0, min(100, raw))
             let color: RGB = pct >= 90 ? (255, 58, 72) : pct >= 70 ? (255, 183, 38) : item.1
             set(0, y, item.1); set(1, y, item.1)
             let width = Int(round(pct / 100 * 29))

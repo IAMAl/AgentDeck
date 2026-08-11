@@ -9,13 +9,6 @@
 	<key>uploadSymbols</key>
 	<true/>
 	<key>signingStyle</key>
-	<string>manual</string>
-	<key>signingCertificate</key>
-	<string>Apple Distribution</string>
-	<key>provisioningProfiles</key>
-	<dict>
-		<key>bound.serendipity.agent.deck</key>
-		<string>AgentDeck Dashboard AppStore</string>
-	</dict>
+	<string>automatic</string>
 </dict>
 </plist>

@@ -738,10 +738,6 @@ static void handleWifiProvision(JsonObject& obj) {
         g_state.authToken[sizeof(g_state.authToken) - 1] = '\0';
     }
     unlockState();
-    // Durable on every board, not just the two that persist an endpoint below:
-    // a credential the board forgets at reboot is a credential it can never be
-    // handed again over the air.
-    Net::wifiSaveAuthToken(authToken);
 
     bool ok = false;
 #if defined(BOARD_T_DISPLAY_PRO) || \
@@ -792,93 +788,6 @@ static void handleWifiProvision(JsonObject& obj) {
     char buf[256];
     serializeJson(resp, buf, sizeof(buf));
     Net::serialWriteJsonLine(buf);
-}
-
-/**
- * Re-arm the pairing token without touching WiFi.
- *
- * `wifi_provision` is the first-setup message: it demands SSID + password and,
- * on most boards, joins the AP. That makes it the wrong tool for the common
- * case of a board that is already online but holding a credential the daemon no
- * longer accepts — re-injecting credentials there fights the firmware's own
- * radio policy (parking, deferred join, brownout deferral). This message
- * carries the credential alone.
- *
- * It does not CONNECT anything — `networkTask` owns that, under policy guards
- * (radio parking, serial primacy, brownout deferral) that must not be duplicated
- * here. But it must DISCONNECT a socket carrying the superseded token, and that
- * distinction is what this handler originally got wrong.
- *
- * The token rides the WebSocket URL, so it is fixed at `wsConnect` time. The
- * WebSockets library then auto-reconnects on its own using the path string built
- * back then, which keeps `connected || connecting` true — and `wsConnect`
- * early-returns on exactly that. So `networkTask` never rebuilt anything: it saw
- * a live socket and left it alone, forever, dialing the old credential. Measured
- * on two boards (2026-08-09): both accepted `auth_provision` over WiFi, saved it
- * to NVS, and went on being closed 4001 for as long as anyone watched, because
- * nothing ever asked for a new URL. Dropping the stale socket lets the
- * supervisor's next tick rebuild it with the credential we just stored.
- */
-static void handleAuthProvision(JsonObject& obj) {
-    const char* authToken = obj["authToken"] | "";
-    const char* bridgeIp = obj["bridgeIp"] | "";
-    uint16_t bridgePort = obj["bridgePort"] | 0;
-
-    JsonDocument resp;
-    resp["type"] = "auth_provision_ack";
-
-    if (authToken[0] == '\0') {
-        // An absent token means "no information", never "clear it".
-        resp["success"] = false;
-        resp["error"] = "missing token";
-    } else {
-        lockState();
-        const bool changed = strncmp(g_state.authToken, authToken, sizeof(g_state.authToken) - 1) != 0;
-        strncpy(g_state.authToken, authToken, sizeof(g_state.authToken) - 1);
-        g_state.authToken[sizeof(g_state.authToken) - 1] = '\0';
-        if (bridgeIp[0] != '\0') {
-            strncpy(g_state.bridgeIp, bridgeIp, sizeof(g_state.bridgeIp) - 1);
-            g_state.bridgeIp[sizeof(g_state.bridgeIp) - 1] = '\0';
-        }
-        if (bridgePort != 0) g_state.bridgePort = bridgePort;
-        unlockState();
-
-        Net::wifiSaveAuthToken(authToken);
-        if (bridgeIp[0] != '\0' && bridgePort != 0) {
-            Net::wifiSaveProvisionedBridge(bridgeIp, bridgePort, authToken);
-        }
-
-        if (changed) Serial.println("[Provision] Pairing token re-armed");
-        resp["success"] = true;
-        resp["changed"] = changed;
-
-        // Drop a socket that is still presenting the superseded token, so the
-        // supervisor rebuilds the URL with the new one. Only on a real change:
-        // the daemon re-arms idempotently on every device_info, and tearing down
-        // a healthy socket each time would be a self-inflicted flap.
-        //
-        // Ack first, below — this disconnect can take the very socket the ack
-        // would leave on, so it happens after the reply is on the wire.
-        if (changed) {
-            char ackBuf[128];
-            serializeJson(resp, ackBuf, sizeof(ackBuf));
-            Net::serialWriteJsonLine(ackBuf);
-            if (Net::wsConnected()) Net::wsSend(ackBuf);
-            if (Net::wsConnected() || Net::wsConnecting()) {
-                Serial.println("[Provision] Dropping WS so it redials with the new token");
-                Net::wsDisconnect();
-            }
-            return;
-        }
-    }
-
-    char buf[128];
-    serializeJson(resp, buf, sizeof(buf));
-    Net::serialWriteJsonLine(buf);
-    // Also answer on the WebSocket: this message now arrives over WiFi too (a
-    // cable-free re-arm), and a serial-only ack left the daemon unable to tell
-    // "understood" from "ignored" — which is the one thing the ack is for.
-    if (Net::wsConnected()) Net::wsSend(buf);
 }
 
 static void sendOtaAck(const char* otaId, const char* stage, uint32_t seq, uint32_t offset, uint32_t written) {
@@ -1047,10 +956,27 @@ static void sendDeviceInfo() {
     JsonDocument resp;
     resp["type"] = "device_info";
 
-    // One definition, in board_config.h — the WebSocket URL now carries the same
-    // string (so a REFUSED board can still identify itself), and two #ifdef
-    // ladders for one wire name is how they would come to disagree.
-    resp["board"] = agentdeckBoardName();
+    #if defined(BOARD_LED8X32)
+    resp["board"] = "ulanzi_tc001";
+    #elif defined(BOARD_INKDECK)
+    resp["board"] = "inkdeck";
+    #elif defined(BOARD_TTGO)
+    resp["board"] = "ttgo_t_display";
+    #elif defined(BOARD_T_EMBED)
+    resp["board"] = "t_embed";
+    #elif defined(BOARD_T_DISPLAY_PRO)
+    resp["board"] = "t_display_pro";
+    #elif defined(BOARD_ESP32_C6_147)
+    resp["board"] = "esp32_c6_147";
+    #elif IS_ROUND
+    resp["board"] = "round_amoled";
+    #elif defined(BOARD_BOX_86) || defined(BOARD_86_BOX)
+    resp["board"] = "86box";
+    #elif defined(BOARD_IPS10)
+    resp["board"] = "ips_10";
+    #else
+    resp["board"] = "ips_35";
+    #endif
 
     resp["version"] = FIRMWARE_VERSION;
     resp["buildHash"] = GIT_SHA;
@@ -1284,8 +1210,6 @@ void parseMessage(const char* json, size_t length) {
         handleTimelineHistory(obj);
     } else if (strcmp(type, "wifi_provision") == 0) {
         handleWifiProvision(obj);
-    } else if (strcmp(type, "auth_provision") == 0) {
-        handleAuthProvision(obj);
     } else if (strcmp(type, "device_info_request") == 0) {
         sendDeviceInfo();
     } else if (strcmp(type, "esp32_ota_begin") == 0) {

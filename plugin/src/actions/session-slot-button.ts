@@ -14,7 +14,7 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State, PASSIVE_OFFLINE_LABEL, OPEN_AGENTDECK_LABEL } from '@agentdeck/shared';
-import type { SessionInfo, PromptOption, CodexRateLimits, ScopedUsageLimit } from '@agentdeck/shared';
+import type { SessionInfo, PromptOption, CodexRateLimits } from '@agentdeck/shared';
 import { SessionSlotManager, type DeckLayout, type SessionSlotConfig } from '../session-slot-manager.js';
 import {
   renderSessionSlot,
@@ -35,7 +35,6 @@ import { dlog } from '../log.js';
 import { isDisplayDimmed, dimActionIfNeeded } from '../display-dim.js';
 import { openAgentDeckAppOrGitHub } from '../system/index.js';
 import { VoicePttHold } from '@agentdeck/shared';
-import { deviceTypeFromUnknown, familyForDeviceType, usesLowResolutionKeyProfile } from '../device-profile.js';
 
 // ---- Module state ----
 
@@ -90,9 +89,7 @@ export function updateSessionSlotSessions(sessions: SessionInfo[]): void {
 }
 
 
-/** Feed latest Claude 5H/7D + Codex quota (and the scoped caps that stand in for
- *  Codex when it reports nothing); re-render only the list view (where usage
- *  tiles live). */
+/** Feed latest Claude 5H/7D + Codex quota; re-render only the list view (where usage tiles live). */
 export function updateSlotUsage(usage: {
   fiveHourPercent?: number;
   fiveHourResetsAt?: string;
@@ -100,7 +97,6 @@ export function updateSlotUsage(usage: {
   sevenDayResetsAt?: string;
   usageStale?: boolean;
   codexRateLimits?: CodexRateLimits;
-  scopedLimits?: ScopedUsageLimit[];
 }): void {
   manager.updateUsage(usage);
   if (manager.view === 'list') refreshAll();
@@ -215,6 +211,17 @@ function needsAnimation(): boolean {
 
 // ---- Rendering ----
 
+function familyForDeviceType(type: number | undefined): string {
+  switch (type) {
+    case 0: return 'streamdeck';
+    case 1: return 'streamdeckmini';
+    case 2: return 'streamdeckxl';
+    case 7: return 'streamdeckplus';
+    case 13: return 'streamdeckplusxl';
+    default: return 'streamdeck';
+  }
+}
+
 function layoutForEvent(ev: WillAppearEvent | KeyDownEvent): DeckLayout {
   const device = (ev.action as any)?.device;
   const columns = Number(device?.size?.columns ?? 4);
@@ -223,7 +230,7 @@ function layoutForEvent(ev: WillAppearEvent | KeyDownEvent): DeckLayout {
     columns: Number.isFinite(columns) && columns > 0 ? columns : 4,
     rows: Number.isFinite(rows) && rows > 0 ? rows : 2,
     keyCount: Math.max(1, (Number.isFinite(columns) && columns > 0 ? columns : 4) * (Number.isFinite(rows) && rows > 0 ? rows : 2)),
-    family: familyForDeviceType(deviceTypeFromUnknown(device?.type)),
+    family: familyForDeviceType(Number(device?.type)),
   };
 }
 
@@ -276,7 +283,7 @@ function refreshAll(): void {
 
     const config = manager.getSlotConfig(entry.slot, entry.layout);
     if (config.type === 'session' && config.session) liveSessionIds.add(config.session.id);
-    const svg = renderSlotSvg(config, entry.slot, entry.layout);
+    const svg = renderSlotSvg(config, entry.slot);
     void act.setImage(svgToDataUrl(svg)).catch(() => {});
   }
   // Drop phase entries for sessions that are no longer visible.
@@ -294,7 +301,7 @@ function stableSessionPhaseFrames(session: SessionInfo): number {
   return Math.abs(hash) % 36;
 }
 
-function renderSlotSvg(config: SessionSlotConfig, _slot: number, layout?: DeckLayout): string {
+function renderSlotSvg(config: SessionSlotConfig, _slot: number): string {
   switch (config.type) {
     case 'session': {
       const sess = config.session!;
@@ -314,8 +321,6 @@ function renderSlotSvg(config: SessionSlotConfig, _slot: number, layout?: DeckLa
       return renderSessionSlot(sess, false, animFrame, undefined, {
         processingStartFrame: processingStartFrame.get(sess.id)?.frame,
         isStale: daemonStale,
-        lowResolutionKey: layout != null
-          && usesLowResolutionKeyProfile(layout.family, layout.columns, layout.rows),
       });
     }
 
@@ -378,7 +383,6 @@ function renderSlotSvg(config: SessionSlotConfig, _slot: number, layout?: DeckLa
         resetsAt: config.usageResetsAt,
         known: config.usageKnown !== false,
         footnote: config.usageFootnote,
-        inactive: config.usageInactive === true,
       });
 
     case 'usage-page':
@@ -415,7 +419,7 @@ export class SessionSlotButtonAction extends SingletonAction {
       await ev.action.setImage(svgToDataUrl(renderDisconnectedSlot(getDisconnectedSlotConfig(slot, layout))));
     } else {
       const config = manager.getSlotConfig(slot, layout);
-      await ev.action.setImage(svgToDataUrl(renderSlotSvg(config, slot, layout)));
+      await ev.action.setImage(svgToDataUrl(renderSlotSvg(config, slot)));
     }
   }
 

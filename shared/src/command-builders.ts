@@ -8,6 +8,7 @@
 import type {
   ResponseCommand,
   SelectOptionCommand,
+  SelectOptionsCommand,
   NavigateOptionCommand,
   SendPromptCommand,
   SwitchModeCommand,
@@ -37,6 +38,9 @@ export const agentCommand = {
   },
   selectOption(index: number, sessionId?: string): SelectOptionCommand {
     return { type: "select_option", index, sessionId };
+  },
+  selectOptions(indices: number[], sessionId?: string, question?: string): SelectOptionsCommand {
+    return { type: "select_options", indices, sessionId, question };
   },
   navigateOption(direction: 'up' | 'down'): NavigateOptionCommand {
     return { type: "navigate_option", direction };

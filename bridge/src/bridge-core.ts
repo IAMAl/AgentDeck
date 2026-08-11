@@ -359,6 +359,10 @@ export class BridgeCore {
       billingType: snapshot.billingType,
       options: snapshot.options.length > 0 ? snapshot.options : undefined,
       promptType,
+      // Both polarities, always: clients merge retain-on-absent, so a flag only
+      // sent when true would latch and leave checkboxes on a single-choice
+      // prompt for the rest of the session.
+      multiSelect: snapshot.multiSelect,
       question: snapshot.question ?? undefined,
       navigable: snapshot.navigable || undefined,
       cursorIndex: (snapshot.state === State.AWAITING_OPTION ||

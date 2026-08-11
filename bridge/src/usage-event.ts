@@ -2,7 +2,7 @@ import type { StateSnapshot, UsageEvent } from './types.js';
 import type { ApiUsageData } from './usage-api.js';
 import { getTokenStatus } from './usage-api.js';
 import type { OllamaStatus } from './ollama-probe.js';
-import { adjustUsagePercent, codexSnapshotMatchesAccountPlan, isCodexWindowStale } from '@agentdeck/shared';
+import { adjustUsagePercent, isCodexWindowStale } from '@agentdeck/shared';
 import type { CodexAuthStatus } from './codex-auth.js';
 import type { AntigravityStatusInfo, BillingType, CodexRateLimits, CodexRateLimitWindow, ModelCatalogEntry, SubscriptionInfo } from './types.js';
 
@@ -75,30 +75,8 @@ function normalizeCodexWindow(w?: CodexRateLimitWindow): CodexRateLimitWindow | 
   return w;
 }
 
-/**
- * Normalize the rollout snapshot for the wire, reconciled against the LIVE
- * account tier from `auth.json`.
- *
- * Returns `undefined` only when there is nothing at all to say about Codex. When
- * the account tier is known the result is always an object — possibly one with
- * no windows — because every client merges usage fields RETAIN-ON-ABSENT: an
- * omitted `codexRateLimits` means "no information" and would pin a retired
- * plan's gauge on the dashboard forever (CLAUDE.md wire-boolean rule, same shape
- * as the `usageStale` latch). Voiding has to ride the wire as an explicit
- * windowless snapshot.
- */
-function normalizeCodexRateLimits(
-  rl?: CodexRateLimits | null,
-  accountPlan?: string,
-): CodexRateLimits | undefined {
-  // A snapshot minted under a plan the account no longer holds is void, not old
-  // — see `codexSnapshotMatchesAccountPlan`. Everything measured under the old
-  // plan goes with it (windows, credits, limitId, capturedAt); only the live
-  // tier survives, so surfaces can still say "ChatGPT Free" instead of nothing.
-  if (rl && !codexSnapshotMatchesAccountPlan(rl.planType, accountPlan)) {
-    return { planType: accountPlan };
-  }
-  if (!rl) return accountPlan ? { planType: accountPlan } : undefined;
+function normalizeCodexRateLimits(rl?: CodexRateLimits | null): CodexRateLimits | undefined {
+  if (!rl) return undefined;
   // Assign windows to semantic wire slots BY LENGTH, not by the slot Codex used:
   // short (< 1 day → the 5h window) → primary, long (≥ 1 day → weekly) →
   // secondary. Codex now reports the weekly (10080-min) window in its own
@@ -272,7 +250,7 @@ export function buildUsageEvent(
     codexAccountId: codexAuth?.accountId,
     codexSubscriptionActiveUntil: codexAuth?.subscriptionActiveUntil,
     codexLastRefreshAt: codexAuth?.lastRefreshAt,
-    codexRateLimits: normalizeCodexRateLimits(codexRateLimits, codexAuth?.planType),
+    codexRateLimits: normalizeCodexRateLimits(codexRateLimits),
     modelCatalog: modelCatalog && modelCatalog.length > 0 ? modelCatalog : undefined,
     mlxModels: mlxModels && mlxModels.length > 0 ? mlxModels : undefined,
     subscriptions: buildSubscriptions(codexAuth, apiUsage, billingType, antigravityStatus),

@@ -121,6 +121,29 @@
       },
       "PropertyInspectorPath": "ui/launcher-pi.html",
       "UUID": "bound.serendipity.agentdeck.launcher"
+    },
+    {
+      "Icon": "static/imgs/option",
+      "Name": "Answer Prompt",
+      "States": [
+        {
+          "Image": "static/imgs/keys/option",
+          "Name": "Answer Prompt",
+          "ShowTitle": false
+        }
+      ],
+      "Controllers": [
+        "Encoder"
+      ],
+      "Encoder": {
+        "layout": "layouts/encoder-layout.json",
+        "TriggerDescription": {
+          "Rotate": "Move between options",
+          "Push": "Select / tick the option",
+          "Touch": "Submit multi-select answer"
+        }
+      },
+      "UUID": "bound.serendipity.agentdeck.option-select-dial"
     }
   ],
   "Author": "AgentDeck",
@@ -187,5 +210,5 @@
       "Readonly": false
     }
   ],
-  "Version": "1.0.5.0"
+  "Version": "1.0.4.0"
 }

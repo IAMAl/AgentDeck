@@ -53,6 +53,14 @@ struct ADBridgeEvent: Codable, Equatable {
     var modelName: String?
     /// Daemon-owned hardware/module health, intentionally loose for cross-version clients
     var moduleHealth: [String: JSONAny]?
+    /// True when the open question accepts SEVERAL answers — the AskUserQuestion input's own
+    /// `multiSelect`, captured from the PreToolUse hook. Distinct from `promptType:
+    /// 'multi_select'`, which is merely the fallback shape label for "a list of options" and is
+    /// set for ordinary single-choice lists too. Devices answer these with `select_options`
+    /// (plural), never `select_option`.
+    /// **Emitted in BOTH polarities** — a flag only ever sent when true latches one-way under
+    /// retain-on-absent merging.
+    var multiSelect: Bool?
     var navigable: Bool?
     /// Ollama process status + running models
     var ollamaStatus: ADOllamaStatus?
@@ -178,6 +186,7 @@ struct ADBridgeEvent: Codable, Equatable {
         case modelCatalog = "modelCatalog"
         case modelName = "modelName"
         case moduleHealth = "moduleHealth"
+        case multiSelect = "multiSelect"
         case navigable = "navigable"
         case ollamaStatus = "ollamaStatus"
         case options = "options"
@@ -299,6 +308,7 @@ extension ADBridgeEvent {
         modelCatalog: [ADModelCatalogEntry]?? = nil,
         modelName: String?? = nil,
         moduleHealth: [String: JSONAny]?? = nil,
+        multiSelect: Bool?? = nil,
         navigable: Bool?? = nil,
         ollamaStatus: ADOllamaStatus?? = nil,
         options: [ADPromptOption]?? = nil,
@@ -400,6 +410,7 @@ extension ADBridgeEvent {
             modelCatalog: modelCatalog ?? self.modelCatalog,
             modelName: modelName ?? self.modelName,
             moduleHealth: moduleHealth ?? self.moduleHealth,
+            multiSelect: multiSelect ?? self.multiSelect,
             navigable: navigable ?? self.navigable,
             ollamaStatus: ollamaStatus ?? self.ollamaStatus,
             options: options ?? self.options,

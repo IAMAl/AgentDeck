@@ -191,6 +191,14 @@ export interface StateUpdateEvent {
   billingType?: BillingType;
   options?: PromptOption[];
   promptType?: 'yes_no' | 'yes_no_always' | 'multi_select' | 'diff_review';
+  /** True when the open question accepts SEVERAL answers — the AskUserQuestion
+   *  input's own `multiSelect`, captured from the PreToolUse hook. Distinct from
+   *  `promptType: 'multi_select'`, which is merely the fallback shape label for
+   *  "a list of options" and is set for ordinary single-choice lists too.
+   *  Devices answer these with `select_options` (plural), never `select_option`.
+   *  **Emitted in BOTH polarities** — a flag only ever sent when true latches
+   *  one-way under retain-on-absent merging. */
+  multiSelect?: boolean;
   question?: string;
   navigable?: boolean;
   cursorIndex?: number;
@@ -574,27 +582,6 @@ export interface WifiProvisionMessage {
   authToken: string;
 }
 
-/**
- * Re-arm a board's pairing token over USB serial without touching its WiFi.
- *
- * `wifi_provision` is the first-setup message — it demands SSID + password and
- * on most boards joins the AP — which makes it the wrong tool for a board that
- * is already online but holding a credential the daemon no longer accepts.
- * That case stopped being hypothetical when discovery stopped carrying the
- * token (#145/#149): a board can be perfectly connected to WiFi and still be
- * closed 4001 on every dial, with serial as the only channel left to fix it.
- *
- * An absent `authToken` means "no information" and must never blank a working
- * credential — the board rejects the message instead.
- */
-export interface AuthProvisionMessage {
-  type: 'auth_provision';
-  authToken: string;
-  /** Optional endpoint refresh, applied only when both fields are present. */
-  bridgeIp?: string;
-  bridgePort?: number;
-}
-
 // ===== ESP32 Serial → Bridge =====
 
 export interface DeviceInfoMessage {
@@ -765,14 +752,6 @@ export interface WifiProvisionAckMessage {
   success: boolean;
   ip?: string;           // assigned IP on success
   error?: string;        // reason on failure
-}
-
-export interface AuthProvisionAckMessage {
-  type: 'auth_provision_ack';
-  success: boolean;
-  /** True when the board was holding a different token before this message. */
-  changed?: boolean;
-  error?: string;
 }
 
 export interface WifiStatusMessage {
@@ -1149,7 +1128,6 @@ export const CARD_FEED_ACTIVE_PULL_SEC = 900;
 export type ESP32ToHostMessage =
   | DeviceInfoMessage
   | WifiProvisionAckMessage
-  | AuthProvisionAckMessage
   | WifiStatusMessage
   | Esp32OtaAckCommand
   | Esp32OtaErrorCommand
@@ -1230,6 +1208,26 @@ export interface SelectOptionCommand {
    *  whose echo no longer matches the active question and re-broadcasts so the
    *  device re-syncs. Optional: omitted ⇒ no guard (older clients, ESP32
    *  firmware) — never make this required. */
+  question?: string;
+}
+
+/**
+ * Answer a multi-select question in one shot (`StateUpdateEvent.multiSelect`).
+ *
+ * Carries the FULL desired set, not a delta: the bridge diffs `indices` against
+ * the options currently marked `selected` and toggles only what differs, so a
+ * device whose view drifted mid-prompt still converges on what its user saw
+ * rather than inverting an unrelated row.
+ *
+ * The ask-gate rung deliberately does not accept this — it resolves a single
+ * label — so a device must fall back to `select_option` when there is no PTY.
+ */
+export interface SelectOptionsCommand {
+  type: 'select_options';
+  /** 0-based wire indices to end up checked. Empty = uncheck everything. */
+  indices: number[];
+  sessionId?: string;
+  /** Echo of the question being answered — same guard as `select_option`. */
   question?: string;
 }
 
@@ -1386,6 +1384,7 @@ export interface PermissionDecisionCommand {
 export type PluginCommand =
   | ResponseCommand
   | SelectOptionCommand
+  | SelectOptionsCommand
   | NavigateOptionCommand
   | SendPromptCommand
   | SwitchModeCommand

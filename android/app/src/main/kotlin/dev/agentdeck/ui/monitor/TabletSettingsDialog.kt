@@ -43,8 +43,6 @@ import dev.agentdeck.net.BridgeConstants
 import dev.agentdeck.net.BridgeDiscovery
 import dev.agentdeck.net.ConnectionStatus
 import dev.agentdeck.net.DiscoveredBridge
-import dev.agentdeck.net.PairingCredential
-import dev.agentdeck.net.adoptPairedUrl
 import dev.agentdeck.state.DashboardState
 import dev.agentdeck.state.AgentStateHolder
 import dev.agentdeck.ui.common.ConnectionPanel
@@ -83,18 +81,8 @@ fun TabletSettingsDialog(
 
     val context = LocalContext.current
     val discovery = remember { BridgeDiscovery(context) }
-    // Keep looking while connected over LOOPBACK, not just while disconnected.
-    // A device on `adb reverse` is working and unpaired at the same time, and
-    // the pairing-code input has no endpoint to spend a code against without a
-    // discovered daemon — so stopping here withheld pairing from exactly the
-    // devices it exists for. Same rule as `BridgeAutoConnect`; this screen
-    // keeps its own collector because it can be opened before that one runs.
-    LaunchedEffect(connectionStatus, currentUrl) {
-        if (PairingCredential.shouldOfferPairing(
-                connected = connectionStatus == ConnectionStatus.CONNECTED,
-                currentUrl = currentUrl,
-            )
-        ) {
+    LaunchedEffect(connectionStatus) {
+        if (connectionStatus == ConnectionStatus.DISCONNECTED) {
             discovery.discover().collect { bridges ->
                 discoveredBridges = bridges
             }
@@ -152,9 +140,6 @@ fun TabletSettingsDialog(
                             onConnectLocalhost = { connection.connect(BridgeConstants.LOCALHOST_WS_URL) },
                             onConnectManualUrl = { url -> connection.connect(url) },
                             onDisconnect = { connection.disconnect() },
-                            onPaired = { url ->
-                                coroutineScope.launch { adoptPairedUrl(connection, displayPrefs, url) }
-                            },
                         )
                     }
                 }

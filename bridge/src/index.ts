@@ -882,6 +882,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
         case 'interrupt': core.stateMachine.handleUserAction('interrupt'); break;
         case 'escape': core.stateMachine.handleUserAction('interrupt'); break;
         case 'select_option': core.stateMachine.handleUserAction('select_option'); break;
+        case 'select_options': core.stateMachine.handleUserAction('select_option'); break;
         case 'send_prompt': core.stateMachine.handleUserAction('send_prompt'); break;
       }
       return;
@@ -901,6 +902,95 @@ export async function startSession(opts: SessionOptions): Promise<void> {
         } else {
           adapter.writeInput(String(cmd.index + 1) + '\r');
         }
+        core.stateMachine.handleUserAction('select_option');
+        break;
+      }
+
+      case 'select_options': {
+        // An EMPTY answer is never submittable. The Enter below is
+        // unconditional, so an empty `indices` used to reach the picker as a
+        // bare Enter with nothing ticked — which Claude Code records as
+        // "User declined to answer questions". A device that submits nothing
+        // has not declined; it has mis-sent, and silently converting that into
+        // a refusal commits an answer the user did not give. Declining is
+        // `escape`, and it has to stay the only way to do it.
+        if (cmd.indices.length === 0) {
+          debug('agentdeck', 'select_options ignored: empty indices (an empty submit would read as a decline)');
+          break;
+        }
+
+        // Multi-select: Space toggles the option under the cursor, Enter
+        // submits. Only the DIFF is toggled — the list may already carry
+        // checks (the user's own, or a previous partial answer), and blindly
+        // spacing every requested index would invert those.
+        const snapshot = core.stateMachine.getSnapshot();
+        const want = new Set(cmd.indices);
+        const targets = snapshot.options
+          .map((opt, i) => ({ i, differs: want.has(i) !== (opt.selected === true) }))
+          .filter((t) => t.differs)
+          .map((t) => t.i);
+        debug('agentdeck', `select_options want=[${cmd.indices.join(',')}] cursor=${snapshot.cursorIndex} `
+          + `options=${snapshot.options.map((o, i) => `${i}:${o.index}${o.selected === true ? '✔' : ''}${o.kind === 'freeform_input' ? '~' : ''}`).join(' ')} `
+          + `targets=[${targets.join(',')}]`);
+
+        // Every write goes through here so the debug log records what actually
+        // reached the PTY, in order, with its scheduled offset. Reconstructing
+        // this from repaint frames alone is guesswork — a keystroke the TUI
+        // ignores leaves no frame at all.
+        const write = (keys: string, at: number, what: string) => {
+          setTimeout(() => {
+            debug('agentdeck', `select_options write t+${at} ${what}`);
+            adapter.writeInput(keys);
+          }, at);
+        };
+
+        /** One arrow per write, 20ms apart, and never `arrow.repeat(n)`.
+         *  Measured live: a single 15-byte write of five `ESC[B` moved the
+         *  cursor ZERO rows — the TUI's input parser matches a chunk against
+         *  one key sequence and drops what it cannot read, so a batched jump
+         *  lands the following Enter on the row the cursor never left. Dial
+         *  rotation has always worked precisely because it writes one arrow per
+         *  command. Returns the delay after the last keystroke. */
+        const walk = (steps: number, from: number, label: string): number => {
+          const arrow = steps > 0 ? '\x1b[B' : '\x1b[A';
+          let at = from;
+          for (let i = 0; i < Math.abs(steps); i++) {
+            write(arrow, at, `${steps > 0 ? 'down' : 'up'} ${i + 1}/${Math.abs(steps)} → ${label}`);
+            at += 20;
+          }
+          return at;
+        };
+
+        // Walk in list order so the cursor only ever moves one way — cheaper
+        // than revisiting rows, and it keeps the arrow count predictable.
+        let cursor = snapshot.cursorIndex;
+        let delay = 0;
+        for (const target of targets) {
+          delay = walk(target - cursor, delay, `option ${target}`);
+          write(' ', delay, `space (toggle ${target})`);
+          delay += 40;
+          cursor = target;
+        }
+        // Reach the trailing `Submit` TAB with `→`, then Enter on the review
+        // screen (its cursor already sits on "Submit answers"). Counting rows to
+        // a `Submit` row cannot be made reliable — the snapshot the count comes
+        // from is a repaint and is routinely short — whereas the tab distance
+        // comes from the tool input's group list and cannot be partial.
+        const tabs = core.stateMachine.getSubmitTabDistance();
+        if (tabs !== null && tabs > 0) {
+          for (let i = 0; i < tabs; i++) {
+            write('\x1b[C', delay, `right ${i + 1}/${tabs} → Submit tab`);
+            delay += 20;
+          }
+          write('\r', delay + 80, 'enter (Submit answers)');
+        } else {
+          // Nowhere safe to put the Enter: on an option row it toggles, which
+          // un-ticks the last answer and commits nothing — the transcript then
+          // reads "User declined to answer questions", an answer the user never
+          // gave. Stop after the ticks; they stay on screen for the terminal.
+          debug('agentdeck', `select_options submit SKIPPED — no Submit tab (tabs=${tabs}); ticks left for the terminal`);
+        }
+        core.stateMachine.updateCursorIndex(cursor, 'optimistic');
         core.stateMachine.handleUserAction('select_option');
         break;
       }

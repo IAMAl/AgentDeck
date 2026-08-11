@@ -409,14 +409,6 @@ final class DaemonService: ObservableObject {
             return
         }
 
-        // One machine, one fleet credential. The CLI daemon keeps its pairing
-        // token in ~/.agentdeck, which this sandboxed app cannot read, so this
-        // loopback /health answer is the only place we can learn what every
-        // paired board is currently holding. Adopt it now, while we are the
-        // client — if the CLI daemon later quits and we are promoted to owner,
-        // the fleet must not have to be re-provisioned to keep talking to us.
-        AuthManager.shared.adoptPeerToken(health["pairingToken"] as? String)
-
         let wsUrl = "ws://127.0.0.1:\(resolvedPort)"
         self.server = nil
         self.port = UInt16(resolvedPort)
@@ -642,11 +634,6 @@ final class DaemonService: ObservableObject {
             let daemonAlive = (health?["mode"] as? String) == "daemon"
             if daemonAlive {
                 externalFailureCount = 0
-                // Keep the credential converged for as long as we are a client,
-                // not just at the moment we became one: the incumbent can
-                // rotate its token, and a promotion afterwards would otherwise
-                // serve a credential no device on the LAN holds any more.
-                AuthManager.shared.adoptPeerToken(health?["pairingToken"] as? String)
                 return
             }
 

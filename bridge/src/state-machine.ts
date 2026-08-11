@@ -57,6 +57,17 @@ export class StateMachine extends EventEmitter {
   private toolProgress: string | null = null;
   private options: PromptOption[] = [];
   private question: string | null = null;
+  /** Per-question `multiSelect` from the last AskUserQuestion PreToolUse input.
+   *  One call carries up to four groups presented one at a time, so the flag is
+   *  looked up by the question currently displayed rather than stored flat.
+   *  Never inferred from the TUI — `✔` also marks the current choice in
+   *  single-select lists like `/model`. Resolved on read (`resolveMultiSelect`)
+   *  so it cannot go stale behind the eleven sites that clear `question`. */
+  private askMultiSelect: Array<{ question: string; multiSelect: boolean }> = [];
+  /** The parser saw `[ ]`/`[x]` boxes on the list currently rendered. This is
+   *  direct evidence from the screen, so it outranks the hook lookup, which can
+   *  miss when the TUI's question text differs from the tool input's. */
+  private parsedMultiSelect = false;
   private navigable = false;
   private cursorIndex = 0;
   private cursorAuthority: 'pty' | 'optimistic' = 'pty';
@@ -96,6 +107,11 @@ export class StateMachine extends EventEmitter {
         this.currentTool = toolName;
         this.toolInput = formatToolInput(toolName, toolInputData);
         this.toolProgress = `Using ${toolName}`;
+        if (toolName === 'AskUserQuestion') {
+          // The tool input is the only trustworthy source for multiSelect; the
+          // TUI renders the same `✔` for a single-select current choice.
+          this.askMultiSelect = collectAskMultiSelect(toolInputData);
+        }
         this.emitSnapshot();
         break;
       }
@@ -213,6 +229,7 @@ export class StateMachine extends EventEmitter {
       case 'option_prompt': {
         this.options = (data?.options as PromptOption[]) || [];
         this.question = (data?.question as string) || null;
+        this.parsedMultiSelect = (data?.multiSelect as boolean) === true;
         this.navigable = (data?.navigable as boolean) ?? false;
         this.cursorIndex = (data?.cursorIndex as number) ?? 0;
         if (this.state === State.AWAITING_OPTION) {
@@ -566,6 +583,83 @@ export class StateMachine extends EventEmitter {
     }
   }
 
+  /**
+   * Does the question currently on screen accept several answers?
+   *
+   * Resolved on read rather than stored: `question` is cleared from eleven
+   * places, and a cached flag would survive whichever one forgot to clear it —
+   * which on this surface means a device offering checkboxes for a single-
+   * choice prompt and answering it with the wrong keystrokes.
+   *
+   * Matched by prefix in both directions because the two strings come from
+   * different places: the parser reads the question off a width-constrained TUI
+   * (truncated, whitespace-collapsed) while the map holds the tool input's own
+   * text. Same tolerance as the ask-gate's `askEchoMatches`.
+   */
+  private resolveMultiSelect(): boolean {
+    if (this.state !== State.AWAITING_OPTION) return false;
+    if (this.parsedMultiSelect) return true;
+    const shown = normalizeQuestion(this.question);
+    if (!shown) return false;
+    const hit = this.askMultiSelect.find(({ question }) => {
+      const known = normalizeQuestion(question);
+      if (!known) return false;
+      return known === shown || known.startsWith(shown) || shown.startsWith(known);
+    });
+    return hit?.multiSelect === true;
+  }
+
+  /**
+   * Arrow-RIGHT presses that take the prompt from the question tab on screen to
+   * the trailing `Submit` tab, or null when that cannot be established.
+   *
+   * An AskUserQuestion renders as a tab strip — `← ☒ 作業内容 ✔ Submit →` — and
+   * `Submit` is always the last tab. Landing on it opens a review screen whose
+   * cursor already sits on "Submit answers", so `→`×N then Enter commits the
+   * whole answer set.
+   *
+   * The count comes from the tool input's group list, never from the screen.
+   * Every screen-derived measurement on this surface has failed the same way:
+   * Claude Code repaints only what changed, so a frame routinely carries a
+   * partial option list (measured live: four rows for a six-row prompt), and a
+   * walk sized from it stops short and drops its Enter on an option row — which
+   * TOGGLES, un-ticking the answer and committing nothing. The hook input is
+   * not a repaint and cannot be partial.
+   */
+  getSubmitTabDistance(): number | null {
+    if (this.state !== State.AWAITING_OPTION) {
+      debug('SM', `submitTab: not awaiting (state=${this.state})`);
+      return null;
+    }
+    if (this.askMultiSelect.length === 0) {
+      debug('SM', 'submitTab: no AskUserQuestion groups recorded');
+      return null;
+    }
+    // One group means the strip is `<question> | Submit`, so Submit is always
+    // the next tab — identifying the current one buys nothing and costs the
+    // whole feature when the question text cannot be read off the TUI, which is
+    // the common case (measured live: `tabs=null` on a single-question prompt
+    // because `question` was null in a partial repaint).
+    if (this.askMultiSelect.length === 1) return 1;
+    const shown = normalizeQuestion(this.question);
+    if (!shown) {
+      debug('SM', `submitTab: question unreadable, cannot place among ${this.askMultiSelect.length} groups`);
+      return null;
+    }
+    // Same two-way prefix tolerance as resolveMultiSelect: the TUI's copy is
+    // width-truncated while the map holds the tool input's own text.
+    const idx = this.askMultiSelect.findIndex(({ question }) => {
+      const known = normalizeQuestion(question);
+      if (!known) return false;
+      return known === shown || known.startsWith(shown) || shown.startsWith(known);
+    });
+    if (idx < 0) {
+      debug('SM', `submitTab: question "${shown.slice(0, 40)}" matched none of ${this.askMultiSelect.length} groups`);
+      return null;
+    }
+    return this.askMultiSelect.length - idx;
+  }
+
   getCursorIndex(): number {
     return this.cursorIndex;
   }
@@ -584,6 +678,7 @@ export class StateMachine extends EventEmitter {
       toolProgress: this.toolProgress,
       options: this.options,
       question: this.question,
+      multiSelect: this.resolveMultiSelect(),
       navigable: this.navigable,
       cursorIndex: this.cursorIndex,
       projectName: this.projectName,
@@ -618,4 +713,37 @@ export class StateMachine extends EventEmitter {
   getLastValidSuggestedPrompt(): string | null {
     return this.lastValidSuggestedPrompt;
   }
+}
+
+/** Collapse a question to a comparable form: the parser and the tool input
+ *  disagree on whitespace, and the TUI copy may be truncated. */
+function normalizeQuestion(q: string | null | undefined): string {
+  return typeof q === 'string' ? q.replace(/\s+/g, ' ').trim() : '';
+}
+
+/**
+ * Pull `{ question, multiSelect }` out of an AskUserQuestion tool input.
+ *
+ * Shape is `{ questions: [{ question, header, options, multiSelect }] }`; every
+ * field is treated as untrusted, since this arrives as a hook payload. Anything
+ * unparseable yields an empty list, which resolves to "single-select" — the
+ * safe default, because offering checkboxes for a single-choice prompt sends
+ * keystrokes the TUI will not accept.
+ */
+export function collectAskMultiSelect(
+  toolInput: Record<string, unknown> | undefined,
+): Array<{ question: string; multiSelect: boolean }> {
+  const raw = toolInput?.questions;
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ question: string; multiSelect: boolean }> = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const q = (entry as Record<string, unknown>).question;
+    if (typeof q !== 'string' || !q.trim()) continue;
+    out.push({
+      question: q,
+      multiSelect: (entry as Record<string, unknown>).multiSelect === true,
+    });
+  }
+  return out;
 }

@@ -284,7 +284,7 @@ describe('usage-encoder level-fill (SD+ 200x100) snapshots', () => {
     expect(svg).toContain('width="200" height="100"');
     expect(svg).toContain('#C07058');     // Claude brand colour (logo tint)
     expect(svg).toContain('M20.998 10.949'); // canonical Claude Code robot path
-    expect(svg).toContain('>CLAUDE<');    // explicit identity prevents provider confusion
+    expect(svg).not.toContain('>CLAUDE<'); // logo-only identity, no agent-name text (matches SD)
     expect(svg).toContain('>5H<');
     expect(svg).toContain('>7D<');
     expect(svg).toContain('>30<');        // 5h used
@@ -298,7 +298,7 @@ describe('usage-encoder level-fill (SD+ 200x100) snapshots', () => {
     const svg = renderUsageEncoderBoth(codexData);
     expect(svg).toContain('#6166E0');     // Codex brand colour (logo tint)
     expect(svg).toContain('M8.086.457');  // Codex provider logo path
-    expect(svg).toContain('>CODEX<');     // explicit identity prevents provider confusion
+    expect(svg).not.toContain('>CODEX<'); // logo-only identity, no agent-name text (matches SD)
     expect(svg).toContain('>55<');        // 5h used (amber)
     expect(svg).toContain('>88<');        // 7d used (red)
     expect(svg).toContain('#eab308');
@@ -405,22 +405,6 @@ describe('session-slot-renderer snapshots', () => {
     expect(fresh).not.toContain('STALE');
     expect(stale).toContain('STALE');
     expect(stale).toMatchSnapshot();
-  });
-
-  it('wraps names with larger typography on original Stream Deck keys', () => {
-    const classic = renderSessionSlot(makeSession({
-      projectName: 'Continuous Integration Validation',
-    }), false, 4, undefined, { lowResolutionKey: true });
-    const standard = renderSessionSlot(makeSession({
-      projectName: 'Continuous Integration Validation',
-    }), false, 4);
-
-    expect(classic).toContain('font-size="20" font-weight="700"');
-    expect(classic).toContain('>Continuous<');
-    expect(classic).toContain('>Integration<');
-    expect(classic).toContain('x="20" y="128"');
-    expect(standard).toContain('font-size="16" font-weight="600"');
-    expect(standard).toContain('x="20" y="120"');
   });
 });
 

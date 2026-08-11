@@ -2,8 +2,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
 import type { BridgeEvent, PluginCommand } from './types.js';
 import { isLocalConnection, validateToken } from './auth.js';
-import { mayAdoptEsp32, noteEsp32Adopted } from './pairing-window.js';
-import { debug, log } from './logger.js';
+import { debug } from './logger.js';
 import { WS_PING_INTERVAL_MS } from '@agentdeck/shared';
 
 export class WsServer {
@@ -16,13 +15,6 @@ export class WsServer {
   private onDisconnectCallback: ((ws: WebSocket) => void) | null = null;
   private clientAlive = new Map<WebSocket, boolean>();
   private esp32Clients = new Set<WebSocket>();
-  // Unauthorized closes used to be debug-only, which made a fleet-wide
-  // credential mismatch invisible: every board reconnected every few seconds,
-  // got closed 4001, and the daemon log stayed empty — the diagnosis needed
-  // `netstat`. Report it at normal level, throttled per IP so a flapping board
-  // describes the problem instead of becoming one.
-  private unauthorizedByIp = new Map<string, { loggedAt: number; suppressed: number }>();
-  private static readonly UNAUTHORIZED_LOG_INTERVAL_MS = 60_000;
   // Per-IP connect timestamps for the flap guard (window: 30s, threshold: >6).
   private recentConnectsByIp = new Map<string, number[]>();
   private flappingClients = new Set<WebSocket>();
@@ -33,15 +25,6 @@ export class WsServer {
   // connect board-class from byte one, so the ≤4096B invariant holds and a
   // heap-tight board can't be killed by its own welcome payload.
   private knownBoardIps = new Set<string>();
-  /**
-   * Supplies the credential for a cable-free ESP32 re-arm, or null when this
-   * server must not hand one out. Injected rather than imported so the WS layer
-   * never reaches for a token itself — a session bridge shares this class and
-   * has no business provisioning boards.
-   */
-  private esp32AdoptionProvider:
-    | (() => { authToken: string; bridgeIp: string; bridgePort: number } | null)
-    | null = null;
   private socketRemoteIp = new Map<WebSocket, string>();
   private eventTransformer: ((event: BridgeEvent, client: WebSocket) => BridgeEvent | null) | null = null;
   // Clients that registered as the Ulanzi Studio plugin. Their WebSocket
@@ -90,43 +73,7 @@ export class WsServer {
         const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
         const token = url.searchParams.get('token') || '';
         if (!validateToken(token)) {
-          // Whatever the peer called itself, bounded and sanitized: it is a
-          // string from an unauthenticated peer heading for a terminal.
-          const claimed = url.searchParams.get('clientType')
-            ?? (url.searchParams.get('esp32') === '1' ? 'esp32' : null);
-          const peerKind = claimed?.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 24)
-            || (this.knownBoardIps.has(remoteIp) ? 'esp32' : undefined);
-
-          // Cable-free re-arm. A board cannot type a pairing code, so the
-          // operator names its address instead (`agentdeck pair --adopt <ip>`)
-          // and the daemon pushes the credential down the socket the board just
-          // opened. `auth_provision` reaches the same firmware handler over the
-          // WebSocket as over serial, and that handler persists to NVS — so this
-          // survives the board's next reboot, which is the whole point.
-          //
-          // The socket is still unauthenticated and stays that way: it is never
-          // registered as a client, never added to any roster, and receives this
-          // one frame and nothing else. The board reconnects holding the token.
-          if (peerKind === 'esp32' && this.esp32AdoptionProvider && mayAdoptEsp32(remoteIp)) {
-            const payload = this.esp32AdoptionProvider();
-            if (payload) {
-              const board = url.searchParams.get('board')?.replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 24);
-              try {
-                ws.send(JSON.stringify({ type: 'auth_provision', ...payload }));
-              } catch { /* peer vanished mid-handshake */ }
-              noteEsp32Adopted(remoteIp, board || undefined);
-              // Normal close, not 4001: the board should redial immediately with
-              // its new credential, not treat this endpoint as one that refused
-              // it. Delayed so the frame flushes first.
-              const bye = setTimeout(() => {
-                try { ws.close(1000, 'Re-armed — reconnect with the new token'); } catch { /* gone */ }
-              }, 500);
-              bye.unref?.();
-              return;
-            }
-          }
-
-          this.logUnauthorized(remoteIp, token.length > 0, peerKind);
+          debug('WS', `Rejected remote connection from ${remoteIp} (invalid token)`);
           ws.close(4001, 'Unauthorized');
           return;
         }
@@ -321,18 +268,6 @@ export class WsServer {
     }
   }
 
-  /**
-   * Enable cable-free ESP32 re-arming on this server (daemon only).
-   *
-   * Whether any given board is re-armed is still decided by the operator's
-   * window (`mayAdoptEsp32`); this only grants the server the ability at all.
-   */
-  setEsp32AdoptionProvider(
-    provider: (() => { authToken: string; bridgeIp: string; bridgePort: number } | null) | null,
-  ): void {
-    this.esp32AdoptionProvider = provider;
-  }
-
   onClientConnect(callback: (ws: WebSocket) => void): void {
     this.onConnectCallback = callback;
   }
@@ -364,47 +299,6 @@ export class WsServer {
     const byId = new Map<string, { id: string; name: string }>();
     for (const info of this.tuiClients.values()) byId.set(info.id, info);
     return [...byId.values()];
-  }
-
-  /**
-   * Report a 4001 close once per IP per minute, naming the likely cause. The
-   * two cases read very differently to an operator: a peer that presented
-   * nothing is usually an unpaired client, while a peer that presented a token
-   * we do not accept is a provisioned device whose credential went stale —
-   * which USB serial can re-arm and nothing else can.
-   *
-   * `peerKind` exists because an IP alone is not an identity on a LAN with a
-   * DHCP pool and a dozen boards on it. A board hammering the daemon every ~10s
-   * for a day was diagnosed by hand — cross-referencing ARP against the WiFi
-   * registry, then reading `wifi_provision_ack` IPs out of the log to work out
-   * which serial port they came from — and the answer ("it is an ESP32, not a
-   * companion app") was in the rejected request's own query string the whole
-   * time. The firmware tags itself `?clientType=esp32`; log what it said.
-   */
-  private logUnauthorized(ip: string, presentedToken: boolean, peerKind?: string): void {
-    const now = Date.now();
-    const prev = this.unauthorizedByIp.get(ip);
-    if (prev && now - prev.loggedAt < WsServer.UNAUTHORIZED_LOG_INTERVAL_MS) {
-      prev.suppressed++;
-      return;
-    }
-    // Bound the map: it is keyed by LAN peers, but a long-lived daemon on a
-    // busy network should not accumulate them forever.
-    if (this.unauthorizedByIp.size > 64) this.unauthorizedByIp.clear();
-    const repeated = prev?.suppressed ? ` — plus ${prev.suppressed} more since the last line` : '';
-    this.unauthorizedByIp.set(ip, { loggedAt: now, suppressed: 0 });
-    const who = peerKind ? `${ip} (${peerKind})` : ip;
-    // The advice differs by peer: an ESP32 has a USB serial channel that works
-    // precisely when authentication is what is broken, and a companion app or
-    // reader does not — for those, an operator-opened pairing code is the path
-    // that needs no camera and no cable.
-    const howToFix = peerKind === 'esp32'
-      ? 'Attach it over USB serial and the daemon re-arms its token automatically.'
-      : 'Pair it with "agentdeck pair" (code) or "agentdeck qr".';
-    log(presentedToken
-      ? `[agentdeck] Rejected ${who}: pairing token not accepted${repeated}. `
-        + `A provisioned device looping here needs its token re-armed over USB serial.`
-      : `[agentdeck] Rejected ${who}: no pairing token${repeated}. ${howToFix}`);
   }
 
   close(): void {

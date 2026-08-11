@@ -116,6 +116,17 @@ data class BridgeEvent (
      */
     val moduleHealth: Map<String, Any?>? = null,
 
+    /**
+     * True when the open question accepts SEVERAL answers — the AskUserQuestion input's own
+     * `multiSelect`, captured from the PreToolUse hook. Distinct from `promptType:
+     * 'multi_select'`, which is merely the fallback shape label for "a list of options" and is
+     * set for ordinary single-choice lists too. Devices answer these with `select_options`
+     * (plural), never `select_option`.
+     * **Emitted in BOTH polarities** — a flag only ever sent when true latches one-way under
+     * retain-on-absent merging.
+     */
+    val multiSelect: Boolean? = null,
+
     val navigable: Boolean? = null,
 
     /**

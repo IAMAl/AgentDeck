@@ -10,6 +10,7 @@ import Foundation
 public enum AgentCommand: Equatable {
     case respond(value: String)
     case selectOption(index: Int, sessionId: String?)
+    case selectOptions(indices: String, sessionId: String?, question: String?)
     case navigateOption(direction: String)
     case sendPrompt(text: String)
     case switchMode(mode: String?)
@@ -43,6 +44,12 @@ public enum AgentCommand: Equatable {
             var dict: [String: Any] = ["type": "select_option"]
             dict["index"] = index
             if let sessionId = sessionId { dict["sessionId"] = sessionId }
+            return dict
+        case .selectOptions(let indices, let sessionId, let question):
+            var dict: [String: Any] = ["type": "select_options"]
+            dict["indices"] = indices
+            if let sessionId = sessionId { dict["sessionId"] = sessionId }
+            if let question = question { dict["question"] = question }
             return dict
         case .navigateOption(let direction):
             var dict: [String: Any] = ["type": "navigate_option"]
@@ -145,6 +152,7 @@ public enum AgentCommand: Equatable {
         switch self {
         case .respond: return "respond"
         case .selectOption: return "select_option"
+        case .selectOptions: return "select_options"
         case .navigateOption: return "navigate_option"
         case .sendPrompt: return "send_prompt"
         case .switchMode: return "switch_mode"

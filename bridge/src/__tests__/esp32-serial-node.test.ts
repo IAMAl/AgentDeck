@@ -30,7 +30,6 @@ import {
   serialOpenFailureBackoffMs,
   TIMELINE_HISTORY_BYTE_BUDGET,
   shouldSendWifiProvision,
-  shouldSendAuthProvision,
   shouldRetryDeviceInfoIdentify,
   recordForeignProbeFailure,
   isForeignPortDenylisted,
@@ -595,45 +594,6 @@ describe('WiFi provision protocol', () => {
       provisionSent: false,
       deviceInfo: { board: 'ttgo_t_display', wifiConfigured: true, wifiConnected: true },
     } as any)).toBe(false);
-  });
-
-  it('re-arms the pairing token on boards the WiFi gate skips', () => {
-    // The case that broke the fleet: an online board holding a credential the
-    // daemon stopped accepting. `shouldSendWifiProvision` refuses it on purpose
-    // (re-injecting credentials fights the firmware's radio policy), so the
-    // token would never reach it if the two shared a gate.
-    const online = {
-      connected: true,
-      deviceInfo: { board: 'ttgo_t_display', wifiConfigured: true, wifiConnected: true },
-    } as any;
-    expect(shouldSendWifiProvision({ ...online, provisionSent: false })).toBe(false);
-    expect(shouldSendAuthProvision(online, 'token-1')).toBe(true);
-  });
-
-  it('costs one write per board per token, not one per device_info frame', () => {
-    const conn = {
-      connected: true,
-      deviceInfo: { board: '86box', wifiConfigured: true, wifiConnected: true },
-      authTokenSent: 'token-1',
-    } as any;
-    expect(shouldSendAuthProvision(conn, 'token-1')).toBe(false);
-    // …but a handover that changed the served token must reach the board.
-    expect(shouldSendAuthProvision(conn, 'token-2')).toBe(true);
-  });
-
-  it('never writes a credential to an unidentified or empty peer', () => {
-    expect(shouldSendAuthProvision({
-      connected: true, deviceInfo: null,
-    } as any, 'token-1')).toBe(false);
-
-    expect(shouldSendAuthProvision({
-      connected: false, deviceInfo: { board: '86box' },
-    } as any, 'token-1')).toBe(false);
-
-    // An absent token means "no information" — never "clear it".
-    expect(shouldSendAuthProvision({
-      connected: true, deviceInfo: { board: '86box' },
-    } as any, '')).toBe(false);
   });
 });
 

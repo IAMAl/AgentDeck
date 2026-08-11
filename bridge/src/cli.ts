@@ -656,7 +656,6 @@ daemon
   .option('--wake-word', 'Enable wake word voice assistant ("오픈클로")')
   .action(async (opts) => {
     const { findExistingDaemon, probeDaemonHealth, readDaemonInfo, removeDaemonInfo, removeDaemonSession, requestDaemonStandDown, requestDaemonShutdown, waitForDaemonExit, waitForPortBindable } = await import('./session-registry.js');
-    const { adoptPeerToken } = await import('./auth.js');
 
     // Reverse two-tier upgrade path: the macOS app may already own the canonical
     // port with its in-process Swift daemon (Tier 1 — limited: no ADB devices,
@@ -669,14 +668,6 @@ daemon
     const targetPort = opts.port ? parseInt(String(opts.port), 10) : BRIDGE_WS_PORT;
     const incumbent = await probeDaemonHealth(targetPort);
     if (incumbent?.mode === 'daemon') {
-      // Take over the fleet's credential along with the port. The app's daemon
-      // keeps its token inside its sandbox container, unreadable from here, so
-      // this loopback answer is the only place we can learn what every paired
-      // board is currently holding. Adopting it BEFORE the stand-down means the
-      // handover costs no device its pairing.
-      if (adoptPeerToken(incumbent.pairingToken)) {
-        log(`Adopted the incumbent daemon's pairing token so paired devices survive the handover.`);
-      }
       if (incumbent.isSwift) {
         log(`AgentDeck app's in-process daemon holds port ${targetPort} — requesting stand-down to take over with the full CLI feature set…`);
         // Prefer /stand-down (clean demote: the app stays running as a client).
@@ -1398,110 +1389,6 @@ program
     }
   });
 
-
-program
-  .command('pair')
-  .description('Pair a device with a one-time code (no camera or USB needed)')
-  .option('-p, --port <port>', 'Daemon port (auto-detected)')
-  .option('-t, --ttl <seconds>', 'How long the window stays open')
-  .option('-n, --devices <count>', 'How many devices this window may pair', '1')
-  .option(
-    '--adopt <ip...>',
-    'Re-arm ESP32 board(s) at these IPs over WiFi — no cable. Read the address off the daemon\'s "Rejected <ip> (esp32)" line',
-  )
-  .action(async (opts) => {
-    const { readDaemonInfo, findDaemonPort } = await import('./session-registry.js');
-    const { formatPairingCode, getLanIp, PAIRING_WINDOW_MS, PAIRING_MAX_FAILED_ATTEMPTS } =
-      await import('@agentdeck/shared');
-    const info = readDaemonInfo();
-    const port = opts.port != null
-      ? parseInt(opts.port, 10)
-      : (info?.httpPort ?? info?.port ?? findDaemonPort() ?? BRIDGE_WS_PORT);
-
-    const ttlMs = opts.ttl != null ? Math.round(parseFloat(opts.ttl) * 1000) : PAIRING_WINDOW_MS;
-    const redemptions = parseInt(opts.devices, 10) || 1;
-
-    const adoptEsp32Ips: string[] = Array.isArray(opts.adopt)
-      ? opts.adopt
-      : (typeof opts.adopt === 'string' ? [opts.adopt] : []);
-
-    const daemon = `http://127.0.0.1:${port}`;
-    type Redemption = { at: number; ip: string; name: string; kind: string };
-    type Status = {
-      open: boolean; secondsRemaining: number; attemptsRemaining: number;
-      redemptionsRemaining: number; redemptions: Redemption[]; failures: Array<{ at: number; ip: string }>;
-      adoptEsp32Pending?: string[];
-    };
-
-    let opened: { code: string; expiresAt: number; redemptions: number; adoptEsp32Ips?: string[] };
-    try {
-      const res = await fetch(`${daemon}/pair/open`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ttlMs, redemptions, adoptEsp32Ips }),
-        signal: AbortSignal.timeout(3000),
-      });
-      if (!res.ok) throw new Error(`daemon answered ${res.status}`);
-      opened = await res.json() as typeof opened;
-    } catch (err) {
-      console.error(`Could not reach the daemon on port ${port}: ${err instanceof Error ? err.message : String(err)}`);
-      console.error('Start it with "agentdeck daemon start", then try again.');
-      process.exitCode = 1;
-      return;
-    }
-
-    const lanIp = getLanIp();
-    log('');
-    log(`  Pairing code:  ${formatPairingCode(opened.code)}`);
-    log('');
-    log(`  On the device: Settings → Connection → "Pair with code", enter it there.`);
-    log(`  The device finds this Mac itself (${lanIp}:${port}) — no cable, no QR scan.`);
-    log('');
-    log(`  Valid for ${Math.round((opened.expiresAt - Date.now()) / 1000)}s, `
-      + `${opened.redemptions} device(s), ${PAIRING_MAX_FAILED_ATTEMPTS} wrong tries.`);
-    if (opened.adoptEsp32Ips?.length) {
-      log('');
-      log(`  Also re-arming ESP32 board(s) at ${opened.adoptEsp32Ips.join(', ')} —`);
-      log('  they need no code; the credential is pushed on their next connect.');
-    }
-    log('');
-
-    // Watch the window until it closes, so the operator sees who paired — and
-    // sees a wrong code as it happens, which is the point of a short window
-    // somebody is standing in front of.
-    const seenRedemptions = new Set<string>();
-    let seenFailures = 0;
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 1000));
-      let status: Status;
-      try {
-        const res = await fetch(`${daemon}/pair/status`, { signal: AbortSignal.timeout(2000) });
-        status = await res.json() as Status;
-      } catch {
-        console.error('Lost contact with the daemon — the pairing window is no longer being watched.');
-        process.exitCode = 1;
-        return;
-      }
-      for (const r of status.redemptions) {
-        const key = `${r.at}:${r.ip}`;
-        if (seenRedemptions.has(key)) continue;
-        seenRedemptions.add(key);
-        log(`  ✓ Paired  ${r.name} (${r.kind}) at ${r.ip}`);
-      }
-      for (const f of status.failures.slice(seenFailures)) {
-        log(`  ✗ Wrong code from ${f.ip} — ${status.attemptsRemaining} attempt(s) left`);
-      }
-      seenFailures = status.failures.length;
-
-      if (!status.open) {
-        log('');
-        log(seenRedemptions.size > 0
-          ? `Pairing window closed. ${seenRedemptions.size} device(s) paired.`
-          : 'Pairing window closed with nothing paired. Run "agentdeck pair" again to retry.');
-        return;
-      }
-    }
-  });
 
 program
   .command('token')

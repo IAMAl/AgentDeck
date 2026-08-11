@@ -56,15 +56,6 @@ actor ESP32Serial {
         var readBuffer = ""
         var deviceInfo: DeviceInfo?
         var provisionSent = false
-        /// Pairing token most recently pushed over THIS connection, so a re-arm
-        /// costs one write per board per token rather than one per device_info
-        /// frame. Connection-scoped, not port-keyed: a reconnect must re-arm,
-        /// because the board on the other end may have rebooted or been swapped.
-        var authTokenSent: String?
-        /// Whether this board answered `auth_provision` — i.e. its firmware is
-        /// new enough to be re-armed by it. Absence is what triggers the legacy
-        /// WiFi-provision fallback.
-        var authProvisionAcked = false
         let readToken = ReadToken()
         let openedAt = Date()
         var lastReadAt: Date?
@@ -367,64 +358,6 @@ actor ESP32Serial {
         }
         publishStatusShadow()
         return count
-    }
-
-    /// Push the current pairing token to every serial-attached board that is
-    /// not already holding it (Node parity: `sendAuthProvisionToAll`).
-    ///
-    /// Deliberately separate from `sendWifiProvisionToAll` on both axes: it is
-    /// not gated on the WiFi auto-provision setting, and it does not skip a
-    /// board whose radio is up. That skip is right for credentials — re-joining
-    /// an AP fights the firmware's own radio policy — and wrong for the token,
-    /// which is exactly what an online board can be missing while the daemon
-    /// closes it 4001 on every dial. USB serial is the authoritative credential
-    /// channel because it is the one that still works when authentication is
-    /// what is broken.
-    /// Returns the ports actually written, so the caller can watch for an ack
-    /// and fall back for firmware that predates this message.
-    func sendAuthProvisionToAll(token: String, bridgeIP: String, bridgePort: Int) -> [String] {
-        guard !token.isEmpty else { return [] }
-        let msg: [String: Any] = [
-            "type": "auth_provision",
-            "authToken": token,
-            "bridgeIp": bridgeIP,
-            "bridgePort": bridgePort,
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: msg),
-              let json = String(data: data, encoding: .utf8) else { return [] }
-
-        var armed: [String] = []
-        for i in connections.indices {
-            guard connections[i].connected else { continue }
-            // No device_info yet means we have not confirmed an AgentDeck board
-            // on this tty; a credential is not something to write speculatively.
-            guard connections[i].deviceInfo?.board != nil else { continue }
-            if connections[i].authTokenSent == token { continue }
-            sendToConnection(&connections[i], json: json)
-            guard connections[i].connected else { continue }
-            connections[i].authTokenSent = token
-            armed.append(connections[i].port)
-        }
-        return armed
-    }
-
-    func noteAuthProvisionAck(port: String) {
-        guard let i = connections.firstIndex(where: { $0.port == port }) else { return }
-        connections[i].authProvisionAcked = true
-    }
-
-    /// Legacy re-arm for firmware that predates `auth_provision`: the one
-    /// message it does understand. Costs a WiFi re-associate, so the caller
-    /// only reaches here after the board stayed silent.
-    func sendLegacyProvisionIfUnacked(port: String, _ msg: [String: Any]) -> Bool {
-        guard let i = connections.firstIndex(where: { $0.port == port && $0.connected }),
-              !connections[i].authProvisionAcked,
-              let data = try? JSONSerialization.data(withJSONObject: msg),
-              let json = String(data: data, encoding: .utf8) else { return false }
-        sendToConnection(&connections[i], json: json)
-        guard connections[i].connected else { return false }
-        connections[i].provisionSent = true
-        return true
     }
 
     /// Send display state (on/off) to all connected ESP32 devices.

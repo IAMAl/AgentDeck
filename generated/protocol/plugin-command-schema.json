@@ -303,6 +303,9 @@
           "$ref": "#/definitions/SelectOptionCommand"
         },
         {
+          "$ref": "#/definitions/SelectOptionsCommand"
+        },
+        {
           "$ref": "#/definitions/NavigateOptionCommand"
         },
         {
@@ -458,6 +461,35 @@
       "required": [
         "type",
         "index"
+      ],
+      "type": "object"
+    },
+    "SelectOptionsCommand": {
+      "additionalProperties": false,
+      "description": "Answer a multi-select question in one shot (`StateUpdateEvent.multiSelect`).\n\nCarries the FULL desired set, not a delta: the bridge diffs `indices` against the options currently marked `selected` and toggles only what differs, so a device whose view drifted mid-prompt still converges on what its user saw rather than inverting an unrelated row.\n\nThe ask-gate rung deliberately does not accept this — it resolves a single label — so a device must fall back to `select_option` when there is no PTY.",
+      "properties": {
+        "indices": {
+          "description": "0-based wire indices to end up checked. Empty = uncheck everything.",
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "question": {
+          "description": "Echo of the question being answered — same guard as `select_option`.",
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "type": {
+          "const": "select_options",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "indices"
       ],
       "type": "object"
     },

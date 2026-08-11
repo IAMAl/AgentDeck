@@ -43,6 +43,11 @@ const ROUTED_COMMANDS = new Set([
   'interrupt',
   'escape',
   'select_option',
+  // Multi-select submit. Omitting it here is invisible on the display path —
+  // `multiSelect` rides `state_update` through the spread merge, so the device
+  // renders checkboxes and toggles them locally — and only the final tap is
+  // silently dropped at the hub. Every command a device can emit belongs here.
+  'select_options',
   'send_prompt',
   'navigate_option',
   'switch_mode',

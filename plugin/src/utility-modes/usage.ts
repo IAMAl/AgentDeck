@@ -5,7 +5,7 @@
 import type { CodexRateLimits, ScopedUsageLimit } from '@agentdeck/shared';
 // Codex freshness footnote (SSOT `shared/format-utils`): "stale" for an ended
 // window, "3h ago" for a still-live window whose snapshot has gone cold.
-import { codexUsageFootnote, isCodexFreePlan } from '@agentdeck/shared';
+import { codexUsageFootnote } from '@agentdeck/shared';
 
 export interface UsageModeData {
   fiveHourPercent?: number;
@@ -216,11 +216,6 @@ export function buildCodexUsageEncoder(data: UsageModeData, hasReceivedData: boo
       const tier = (cx.limitId ?? 'credits').toUpperCase();
       const bal = cx.credits?.unlimited ? '∞' : (cx.credits?.balance ?? '—');
       note = `${tier} · ${bal} credits`;
-    } else if (isCodexFreePlan(cx?.planType)) {
-      // A free ChatGPT tier has no rolling subscription windows at all, so the
-      // empty dial is the account, not a missing fetch. Say which, or the user
-      // reads a permanent "No Codex usage" as AgentDeck failing to read it.
-      note = 'Free tier · no quota';
     } else {
       note = 'No Codex usage';
     }

@@ -36,6 +36,19 @@ sealed class AgentCommand {
         }
     }
 
+    data class SelectOptions(val indices: String, val sessionId: String? = null, val question: String? = null) : AgentCommand() {
+        override val typeTag: String = "select_options"
+        override fun toJson(): String {
+            val buf = StringBuilder()
+            buf.append("{\"type\":\"select_options\"")
+            buf.append(",\"indices\":").append(encode(indices))
+            if (sessionId != null) buf.append(",\"sessionId\":").append(encode(sessionId))
+            if (question != null) buf.append(",\"question\":").append(encode(question))
+            buf.append("}")
+            return buf.toString()
+        }
+    }
+
     data class NavigateOption(val direction: String) : AgentCommand() {
         override val typeTag: String = "navigate_option"
         override fun toJson(): String {
