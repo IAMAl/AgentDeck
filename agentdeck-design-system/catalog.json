@@ -30,6 +30,7 @@
     "policy.product-tiers": { "en": "Product tiers", "ko": "제품 티어", "ja": "製品ティア" },
     "policy.app-review": { "en": "App review", "ko": "앱 심사", "ja": "App Review" },
     "policy.releasing": { "en": "Releases", "ko": "출시", "ja": "リリース" },
+    "policy.ai-assisted-maintenance": { "en": "AI maintenance", "ko": "AI 유지보수", "ja": "AI保守" },
     "validation.testing": { "en": "Testing", "ko": "테스트", "ja": "テスト" },
     "validation.design-lint": { "en": "Design lint", "ko": "디자인 린트", "ja": "Design lint" },
     "validation.testflight-qa": { "en": "TestFlight QA", "ko": "TestFlight QA", "ja": "TestFlight QA" },
@@ -201,6 +202,12 @@
       "id": "policy.releasing",
       "sources": {
         "en": "RELEASING.md"
+      }
+    },
+    {
+      "id": "policy.ai-assisted-maintenance",
+      "sources": {
+        "en": "docs/ai-assisted-maintenance.md"
       }
     },
     {
