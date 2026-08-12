@@ -21,6 +21,7 @@
     "spec.devices": { "en": "Devices", "ko": "디바이스", "ja": "デバイス" },
     "spec.esp32": { "en": "ESP32 firmware", "ko": "ESP32 펌웨어", "ja": "ESP32 firmware" },
     "spec.esp32-client": { "en": "ESP32 client", "ko": "ESP32 클라이언트", "ja": "ESP32 client" },
+    "spec.wire-compatibility": { "en": "Wire contract", "ko": "와이어 호환성", "ja": "ワイヤ互換性" },
     "spec.android": { "en": "Android app", "ko": "Android 앱", "ja": "Android app" },
     "design.android-ui": { "en": "Android UI", "ko": "Android UI", "ja": "Android UI" },
     "spec.plugin-conventions": { "en": "Plugin rules", "ko": "플러그인 규칙", "ja": "Plugin 規約" },
@@ -146,6 +147,12 @@
       "id": "spec.esp32-client",
       "sources": {
         "en": "docs/esp32-client-contract.md"
+      }
+    },
+    {
+      "id": "spec.wire-compatibility",
+      "sources": {
+        "en": "docs/wire-compatibility.md"
       }
     },
     {

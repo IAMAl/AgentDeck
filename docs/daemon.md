@@ -2,7 +2,7 @@
 id: arch.daemon
 title: Daemon Hub
 description: The singleton daemon on port 9120 — session-bridge push, mDNS recovery, usage relay, multi-surface monitoring.
-category: Engineering
+category: Specs
 locale: en
 canonical: true
 status: stable
@@ -125,6 +125,12 @@ Daemon이 Gateway adapter의 `connection` 이벤트를 WS 클라이언트에 포
 ## LAN security model (issue #145)
 
 The daemon deliberately binds `0.0.0.0` — companion apps, ESP32 boards, and pull-sync e-ink clients live on the LAN — so the security boundary is **authentication, not the bind address**:
+
+The entire body an unauthenticated LAN peer can read is the minimal `GET /health` — no credential, no inventory, no session state:
+
+```json
+{"status":"ok","mode":"daemon","port":9120,"sameSocketControl":true,"authRequired":true}
+```
 
 - **HTTP default-deny** (`bridge/src/http-auth-gate.ts`, mirrored in Swift `DaemonServer.httpAccessResponse` + `HTTPServer.setAccessPolicy`): a request that is neither same-machine (`isLocalConnection`) nor token-bearing (`?token=` / `Authorization: Bearer`) reaches exactly one route — a minimal `GET /health` (`{status, mode, port, sameSocketControl, authRequired}`) with **no `pairingToken`, no module/device inventory, no session state**. Everything else 401s before route dispatch. The full `/health` (with `pairingToken`, for same-machine consumers) is only served to authorized requests.
 - **Cross-origin reads go to one secret-free route, `GET /setup-status`** (`{status, mode, port, state, isSwift}`; Node `daemon-server.ts`, Swift `DaemonServer.setupHTTPRoutes`). It is the only route that answers with `Access-Control-Allow-Origin: *`, because the Ulanzi Studio Property Inspector is a webview on a foreign origin and its setup stepper has to tell "daemon down" from "daemon unreadable". **`/health` must never gain that header**: it carries `pairingToken`, and a browser request originates on the user's own machine, so it passes `isLocalConnection` — ACAO there would hand the LAN credential to any page the user visits. `/setup-status` is still behind the default-deny gate above (an unauthenticated LAN peer gets 401, not the payload); CORS governs which *origin* may read a response, not which *host* may ask.

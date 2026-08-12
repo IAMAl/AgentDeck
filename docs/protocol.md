@@ -2,7 +2,7 @@
 id: arch.protocol
 title: Bridge Protocol
 description: The bridge-to-client WebSocket protocol — event catalog, state machine, and the generated Swift/Kotlin type mirrors.
-category: Engineering
+category: Specs
 locale: en
 canonical: true
 status: stable
