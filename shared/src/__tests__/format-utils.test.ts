@@ -209,7 +209,11 @@ describe('codex snapshot freshness', () => {
   });
 
   describe('codexUsageFootnote', () => {
-    const live = { resetsAt: '2026-08-11T14:46:25.000Z' };
+    // `isCodexWindowStale` reads the real clock (no injectable now), so the
+    // reset must be relative to Date.now(), not a fixed date that decays into
+    // the past — 6 days out keeps the weekly window genuinely live. The age
+    // assertions below use the injected NOW, independent of this value.
+    const live = { resetsAt: new Date(Date.now() + 6 * 24 * 3600_000).toISOString() };
 
     it('says nothing for a live window with a fresh snapshot', () => {
       expect(codexUsageFootnote(live, ago(2 * 60_000), NOW)).toBeUndefined();
