@@ -116,6 +116,33 @@ describe('StateMachine', () => {
       });
       expect(sm.getSnapshot().question).toBe('Which approach do you prefer?');
     });
+
+    // A device answers a multi-select by ticking rows then submitting; the submit
+    // is `→`×N to the Submit tab, then Enter. N comes from the AskUserQuestion
+    // hook input. When that never arrived but the parser saw a checkbox list, the
+    // submit must still fire (single-question ⇒ Submit is the next tab) — else the
+    // ticks land but nothing commits, which read on the deck as "tap does nothing".
+    it('getSubmitTabDistance falls back to 1 for a parsed checkbox list with no hook groups', () => {
+      const sm = bootToIdle();
+      sm.handleHookEvent('UserPromptSubmit', {});
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }],
+        question: 'Pick features',
+        multiSelect: true,
+      });
+      expect(sm.getState()).toBe(State.AWAITING_OPTION);
+      expect(sm.getSubmitTabDistance()).toBe(1);
+    });
+
+    it('getSubmitTabDistance stays null for a single-select list (no checkboxes, no hook)', () => {
+      const sm = bootToIdle();
+      sm.handleHookEvent('UserPromptSubmit', {});
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }],
+        question: 'Pick one',
+      });
+      expect(sm.getSubmitTabDistance()).toBeNull();
+    });
   });
 
   // === Diff Flow ===

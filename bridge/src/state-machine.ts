@@ -632,6 +632,17 @@ export class StateMachine extends EventEmitter {
       return null;
     }
     if (this.askMultiSelect.length === 0) {
+      // The hook input that carries the question-group list never arrived (or was
+      // cleared) — but the parser saw a checkbox list on the TUI, so this IS a
+      // multi-select. A single-question AskUserQuestion (the overwhelming common
+      // case) puts `Submit` exactly one tab right of the question, so fall back
+      // to that rather than skipping the submit and stranding the ticks on
+      // screen with nothing committed. (A multi-question prompt with no hook data
+      // can't be placed, but it was already unanswerable before this.)
+      if (this.parsedMultiSelect) {
+        debug('SM', 'submitTab: no hook groups but parser saw a checkbox list → single-question fallback (tabs=1)');
+        return 1;
+      }
       debug('SM', 'submitTab: no AskUserQuestion groups recorded');
       return null;
     }
