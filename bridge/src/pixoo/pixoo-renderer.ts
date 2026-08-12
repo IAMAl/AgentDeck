@@ -921,7 +921,26 @@ function renderCompact32Frame(
   const set = (x: number, y: number, color: RGB) => setPixel(outputBuf, x, y, color);
   const state = String(stateEvent?.state ?? State.IDLE);
 
-  for (let y = 0; y < 28; y++) {
+  // Telemetry rails: one per PRESENT reading, anchored to the bottom edge with
+  // no dead rows. A provider that reports nothing — absent, stale, or a
+  // windowless plan-void Codex block (its primary/secondary are simply missing)
+  // — claims no rail, so the freed rows go back to the scene instead of showing
+  // a black stripe. Order is fixed (Claude 5h/7d, Codex primary/secondary);
+  // packing only removes the gaps a reserved-but-empty row would leave.
+  const codexPrimary = usageEvent?.codexRateLimits?.primary?.stale === true
+    ? undefined : usageEvent?.codexRateLimits?.primary?.usedPercent;
+  const codexSecondary = usageEvent?.codexRateLimits?.secondary?.stale === true
+    ? undefined : usageEvent?.codexRateLimits?.secondary?.usedPercent;
+  const rails = ([
+    [usageEvent?.fiveHourPercent, [42, 220, 154]],
+    [usageEvent?.sevenDayPercent, [54, 154, 255]],
+    [codexPrimary, [185, 86, 255]],
+    [codexSecondary, [104, 116, 255]],
+  ] as Array<[number | undefined, RGB]>).filter((e): e is [number, RGB] => e[0] != null);
+  const railTop = 32 - rails.length;
+
+  // Scene fills every row a rail does not claim, so fewer rails hand space back.
+  for (let y = 0; y < railTop; y++) {
     const t = y / 27;
     const color: RGB = [2 + Math.round(5 * t), 7 + Math.round(10 * t), 18 + Math.round(18 * t)];
     for (let x = 0; x < 32; x++) set(x, y, color);
@@ -1036,20 +1055,9 @@ function renderCompact32Frame(
     }
   }
 
-  const primary = usageEvent?.codexRateLimits?.primary?.stale === true
-    ? undefined : usageEvent?.codexRateLimits?.primary?.usedPercent;
-  const secondary = usageEvent?.codexRateLimits?.secondary?.stale === true
-    ? undefined : usageEvent?.codexRateLimits?.secondary?.usedPercent;
-  const telemetry: Array<[number | undefined, RGB]> = [
-    [usageEvent?.fiveHourPercent, [42, 220, 154]],
-    [usageEvent?.sevenDayPercent, [54, 154, 255]],
-    [primary, [185, 86, 255]],
-    [secondary, [104, 116, 255]],
-  ];
-  telemetry.forEach(([raw, brand], row) => {
-    const y = 28 + row;
+  rails.forEach(([raw, brand], idx) => {
+    const y = railTop + idx;
     for (let x = 0; x < 32; x++) set(x, y, [5, 8, 14]);
-    if (raw == null) return;
     const pct = Math.max(0, Math.min(100, raw));
     const color: RGB = pct >= 90 ? [255, 58, 72] : pct >= 70 ? [255, 183, 38] : brand;
     set(0, y, brand); set(1, y, brand);
