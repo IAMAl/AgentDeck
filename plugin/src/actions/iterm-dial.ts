@@ -19,7 +19,15 @@ import streamDeck, {
   WillDisappearEvent,
   TouchTapEvent,
 } from '@elgato/streamdeck';
-import { encoderRegistry, isDaemonConnected } from '../encoder-registry.js';
+import {
+  encoderRegistry,
+  isDaemonConnected,
+  isOptionTakeoverActive,
+  registerTakeoverRestore,
+  registerEncoderColumn,
+  forgetEncoderColumn,
+} from '../encoder-registry.js';
+import { takeoverOwnsInput, optionSelectRotate, optionSelectPress, optionSelectTap } from './option-select-dial.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import { renderUsageEncoderBoth, renderUsageEncoderSingle } from '../renderers/usage-gauge.js';
 import { renderUsageSession } from '../renderers/usage-dial-renderer.js';
@@ -41,6 +49,8 @@ let currentView: UsageView = 'both';
 
 export function initUsageDial(_bridge: ConnectionManager): void {
   dinfo('CodexUsageDial', 'initUsageDial called');
+  // Repaint the usage gauge when the option picker hands this LCD back.
+  registerTakeoverRestore(() => refreshUsageDials());
 }
 
 /** Called from plugin.ts when usage_update arrives. */
@@ -76,6 +86,8 @@ function setCanvasFeedback(svg: string): void {
 function refreshUsageDials(): void {
   // See option-dial: usage ticks must not undo display-sleep blanking.
   if (isDisplayDimmed()) return;
+  // …nor repaint over the option picker while it has borrowed this LCD.
+  if (isOptionTakeoverActive()) return;
   if (encoderRegistry.usageIds.length === 0) return;
   ensurePixmapLayout();
 
@@ -118,6 +130,7 @@ export class UsageDialAction extends SingletonAction {
     if (!encoderRegistry.usageIds.includes(ev.action.id)) {
       encoderRegistry.usageIds.push(ev.action.id);
     }
+    registerEncoderColumn(ev.action.id, (ev.payload as any)?.coordinates?.column);
     currentLayout = PIXMAP_LAYOUT;
     if (dimActionIfNeeded(ev.action, 'Encoder')) return;
     fireUsageRefresh();
@@ -125,6 +138,7 @@ export class UsageDialAction extends SingletonAction {
   }
 
   override async onTouchTap(_ev: TouchTapEvent): Promise<void> {
+    if (takeoverOwnsInput()) { optionSelectTap(); return; }
     if (!isDaemonConnected()) {
       void openAgentDeckAppOrGitHub().catch(() => {});
       return;
@@ -132,6 +146,8 @@ export class UsageDialAction extends SingletonAction {
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
+    // Borrowed by the option picker — move the cursor, not the usage view.
+    if (takeoverOwnsInput()) { optionSelectRotate(ev.payload.ticks); return; }
     if (!isDaemonConnected()) return;
     // Rotation cycles the views the current payload actually has — with only a
     // weekly window that is both → 7d → session, no dead 5h stop.
@@ -144,6 +160,7 @@ export class UsageDialAction extends SingletonAction {
   }
 
   override async onDialDown(_ev: DialDownEvent): Promise<void> {
+    if (takeoverOwnsInput()) { optionSelectPress(); return; }
     if (!isDaemonConnected()) {
       void openAgentDeckAppOrGitHub().catch(() => {});
       return;
@@ -158,6 +175,7 @@ export class UsageDialAction extends SingletonAction {
 
   override onWillDisappear(ev: WillDisappearEvent): void {
     dinfo('CodexUsageDial', `onWillDisappear: id=${ev.action.id}`);
+    forgetEncoderColumn(ev.action.id);
     const idx = encoderRegistry.usageIds.indexOf(ev.action.id);
     if (idx !== -1) {
       encoderRegistry.usageIds.splice(idx, 1);

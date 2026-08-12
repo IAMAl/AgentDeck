@@ -33,9 +33,54 @@ let _daemonConnected = false;
 export function setEncoderDaemonConnected(v: boolean): void { _daemonConnected = v; }
 export function isDaemonConnected(): boolean { return _daemonConnected; }
 
+// ─── Option takeover ─────────────────────────────────────────────────────
 // The encoder option-TAKEOVER (E1–E4 commandeered for AWAITING option/permission
-// selection) was retired in the Phase 2 SD+ redesign: E2/E3 now permanently show
-// Claude/Codex usage, and option/permission selection lives on the keypad detail
-// view (session-slot). The takeover cross-module callback cycles were removed
-// along with encoder-takeover.ts. The voice-text takeover that also borrowed
-// these LCDs went with the Voice dial.
+// selection) was retired in the Phase 2 SD+ redesign, then restored here in a
+// narrower form: it now fires ONLY when no dedicated Answer Prompt dial is
+// placed. A user who assigns that action keeps the old opt-in behaviour and
+// nothing yields; a user who keeps the four default dials gets them lent to the
+// picker for the duration of a prompt and handed straight back. That "dedicated
+// wins" rule is what keeps the two designs from fighting over the same LCDs,
+// which is why the pre-7e10292f version needed cross-module callback cycles.
+//
+// Only the RESTORE direction needs a callback: option-select-dial paints and
+// reads input directly, but asking the four dials to repaint their own faces
+// would close an import cycle (dial → option-select-dial → dial).
+let _optionTakeover = false;
+export function isOptionTakeoverActive(): boolean { return _optionTakeover; }
+export function setOptionTakeoverActive(v: boolean): void { _optionTakeover = v; }
+
+const _restoreCallbacks: Array<() => void> = [];
+/** Each default dial registers its own repaint here at init. */
+export function registerTakeoverRestore(fn: () => void): void { _restoreCallbacks.push(fn); }
+/** Call only AFTER clearing the flag — the callbacks gate on it. */
+export function fireTakeoverRestore(): void {
+  for (const fn of _restoreCallbacks) {
+    try { fn(); } catch { /* one dial's repaint must not strand the others */ }
+  }
+}
+
+// Physical column per encoder action id. The picker is laid out in 800-space and
+// each dial paints the window at its own column, so registration order is not a
+// usable substitute — two dials at columns 0 and 3 are not a 400px strip.
+const _encoderColumns = new Map<string, number>();
+export function registerEncoderColumn(id: string, column: number | undefined): void {
+  if (typeof column === 'number') _encoderColumns.set(id, column);
+}
+export function forgetEncoderColumn(id: string): void { _encoderColumns.delete(id); }
+export function encoderColumnOf(id: string): number | undefined { return _encoderColumns.get(id); }
+
+/** The four default dials, left to right. Falls back to slot order for a dial
+ *  whose payload carried no coordinates. */
+export function takeoverTargetIds(): string[] {
+  const ordered = [
+    ...encoderRegistry.utilityIds,
+    ...encoderRegistry.optionIds,
+    ...encoderRegistry.usageIds,
+    ...encoderRegistry.launcherIds,
+  ];
+  return ordered
+    .map((id, i) => ({ id, col: _encoderColumns.get(id) ?? i }))
+    .sort((a, b) => (a.col - b.col) || 0)
+    .map((e) => e.id);
+}

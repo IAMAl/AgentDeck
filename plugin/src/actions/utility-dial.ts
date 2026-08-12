@@ -20,11 +20,20 @@ import streamDeck, {
   SingletonAction,
   DialRotateEvent,
   DialDownEvent,
+  TouchTapEvent,
   WillAppearEvent,
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import { State } from '@agentdeck/shared';
-import { encoderRegistry, isDaemonConnected } from '../encoder-registry.js';
+import {
+  encoderRegistry,
+  isDaemonConnected,
+  isOptionTakeoverActive,
+  registerTakeoverRestore,
+  registerEncoderColumn,
+  forgetEncoderColumn,
+} from '../encoder-registry.js';
+import { takeoverOwnsInput, optionSelectRotate, optionSelectPress, optionSelectTap } from './option-select-dial.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import { renderUtilityGeneric, type UtilityRenderData } from '../renderers/utility-renderer.js';
 import { dlog, dinfo, dwarn } from '../log.js';
@@ -97,6 +106,8 @@ function stopPolling(): void {
 
 export function initUtilityDial(): void {
   dinfo('VolumeDial', 'initUtilityDial');
+  // Repaint the volume face when the option picker hands this LCD back.
+  registerTakeoverRestore(() => refreshUtilityDials());
   void isVolumeSupported().then((supported) => {
     volumeSupported = supported;
     if (!supported) {
@@ -127,6 +138,10 @@ function ensurePixmapLayout(): void {
 export function refreshUtilityDials(): void {
   // The volume poll timer keeps firing while the host display sleeps.
   if (isDisplayDimmed()) return;
+  // While the option picker has borrowed this LCD, every repaint here would
+  // overwrite a slice of it — and the volume poll fires on its own timer, so
+  // this guard (not the call sites) is what keeps the picker on screen.
+  if (isOptionTakeoverActive()) return;
   // Offline banner is highest priority and all-or-nothing across the encoders.
   // Gate on real daemon-down, NOT session-level currentState === DISCONNECTED
   // (which flips transiently during multi-session switching while the daemon is up).
@@ -176,6 +191,7 @@ export class UtilityDialAction extends SingletonAction {
     if (!encoderRegistry.utilityIds.includes(ev.action.id)) {
       encoderRegistry.utilityIds.push(ev.action.id);
     }
+    registerEncoderColumn(ev.action.id, (ev.payload as any)?.coordinates?.column);
     if (volumeSupported === null) volumeSupported = await isVolumeSupported();
     if (volumeSupported) {
       await syncFromSystem();
@@ -186,6 +202,8 @@ export class UtilityDialAction extends SingletonAction {
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
+    // Borrowed by the option picker — the dial answers the prompt, not volume.
+    if (takeoverOwnsInput()) { optionSelectRotate(ev.payload.ticks); return; }
     if (!isDaemonConnected()) return;
     if (volumeSupported === false) return;
 
@@ -201,6 +219,7 @@ export class UtilityDialAction extends SingletonAction {
   }
 
   override async onDialDown(ev: DialDownEvent): Promise<void> {
+    if (takeoverOwnsInput()) { optionSelectPress(); return; }
     if (!isDaemonConnected()) {
       void openAgentDeckAppOrGitHub().catch(() => {});
       return;
@@ -226,8 +245,14 @@ export class UtilityDialAction extends SingletonAction {
     refreshUtilityDials();
   }
 
+  /** Touch strip tap while borrowed = submit the multi-select answer. */
+  override async onTouchTap(_ev: TouchTapEvent): Promise<void> {
+    if (takeoverOwnsInput()) optionSelectTap();
+  }
+
   override onWillDisappear(ev: WillDisappearEvent): void {
     dinfo('VolumeDial', `onWillDisappear: id=${ev.action.id}`);
+    forgetEncoderColumn(ev.action.id);
     const idx = encoderRegistry.utilityIds.indexOf(ev.action.id);
     if (idx !== -1) {
       encoderRegistry.utilityIds.splice(idx, 1);

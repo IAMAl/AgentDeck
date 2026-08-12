@@ -20,7 +20,15 @@ import streamDeck, {
   WillDisappearEvent,
 } from '@elgato/streamdeck';
 import type { AgentLink } from '../agent-link.js';
-import { encoderRegistry, isDaemonConnected } from '../encoder-registry.js';
+import {
+  encoderRegistry,
+  isDaemonConnected,
+  isOptionTakeoverActive,
+  registerTakeoverRestore,
+  registerEncoderColumn,
+  forgetEncoderColumn,
+} from '../encoder-registry.js';
+import { takeoverOwnsInput, optionSelectRotate, optionSelectPress, optionSelectTap } from './option-select-dial.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import { renderUsageEncoderBoth, renderUsageEncoderSingle, renderUsageEncoderTriple, renderUsageEncoderScopedSingle, type UsageEncoderScoped } from '../renderers/usage-gauge.js';
 import { renderUsageSession } from '../renderers/usage-dial-renderer.js';
@@ -63,6 +71,8 @@ function toEncScoped(s?: ScopedUsageLimit): UsageEncoderScoped | undefined {
 
 export function initOptionDial(_b: AgentLink): void {
   // No bridge interaction required — refreshes ride fireUsageRefresh().
+  // Repaint the usage gauge when the option picker hands this LCD back.
+  registerTakeoverRestore(() => refreshClaudeUsageDials());
 }
 
 /** Called from plugin.ts when usage_update arrives. */
@@ -99,6 +109,9 @@ function refreshClaudeUsageDials(): void {
   // `usage_update` ticks arrive continuously; without this the LCD would light
   // back up seconds after the host display slept.
   if (isDisplayDimmed()) return;
+  // Same reason: usage ticks would repaint over a borrowed LCD on their own
+  // schedule, so the guard belongs here rather than at the call sites.
+  if (isOptionTakeoverActive()) return;
   if (encoderRegistry.optionIds.length === 0) return;
   ensurePixmapLayout();
 
@@ -144,6 +157,7 @@ export class ResponseDialAction extends SingletonAction {
     if (!encoderRegistry.optionIds.includes(ev.action.id)) {
       encoderRegistry.optionIds.push(ev.action.id);
     }
+    registerEncoderColumn(ev.action.id, (ev.payload as any)?.coordinates?.column);
     currentLayout = PIXMAP_LAYOUT;
     // An encoder that appears while the host display is already asleep never
     // saw the sleep edge, so blank it here instead of drawing usage.
@@ -153,6 +167,8 @@ export class ResponseDialAction extends SingletonAction {
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
+    // Borrowed by the option picker — move the cursor, not the usage view.
+    if (takeoverOwnsInput()) { optionSelectRotate(ev.payload.ticks); return; }
     if (!isDaemonConnected()) return;
     // Rotation cycles the usage view (triple → 5h → 7d → scoped… → session).
     const views = usageViews(getUsageModeData());
@@ -163,6 +179,7 @@ export class ResponseDialAction extends SingletonAction {
   }
 
   override async onDialDown(_ev: DialDownEvent): Promise<void> {
+    if (takeoverOwnsInput()) { optionSelectPress(); return; }
     if (!isDaemonConnected()) {
       void openAgentDeckAppOrGitHub().catch(() => {});
       return;
@@ -176,6 +193,7 @@ export class ResponseDialAction extends SingletonAction {
   }
 
   override async onTouchTap(_ev: TouchTapEvent): Promise<void> {
+    if (takeoverOwnsInput()) { optionSelectTap(); return; }
     if (!isDaemonConnected()) {
       void openAgentDeckAppOrGitHub().catch(() => {});
       return;
@@ -183,6 +201,7 @@ export class ResponseDialAction extends SingletonAction {
   }
 
   override onWillDisappear(ev: WillDisappearEvent): void {
+    forgetEncoderColumn(ev.action.id);
     const idx = encoderRegistry.optionIds.indexOf(ev.action.id);
     if (idx !== -1) {
       encoderRegistry.optionIds.splice(idx, 1);

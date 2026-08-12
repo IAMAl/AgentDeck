@@ -21,11 +21,20 @@ import streamDeck, {
   SingletonAction,
   DialRotateEvent,
   DialDownEvent,
+  TouchTapEvent,
   WillAppearEvent,
   WillDisappearEvent,
   DidReceiveSettingsEvent,
 } from '@elgato/streamdeck';
-import { encoderRegistry, isDaemonConnected } from '../encoder-registry.js';
+import {
+  encoderRegistry,
+  isDaemonConnected,
+  isOptionTakeoverActive,
+  registerTakeoverRestore,
+  registerEncoderColumn,
+  forgetEncoderColumn,
+} from '../encoder-registry.js';
+import { takeoverOwnsInput, optionSelectRotate, optionSelectPress, optionSelectTap } from './option-select-dial.js';
 import { svgToDataUrl } from '../renderers/button-renderer.js';
 import { renderLauncher, renderLauncherEmpty, type LauncherRenderData } from '../renderers/launcher-renderer.js';
 import { renderOfflineTouchStrip } from '../renderers/session-slot-renderer.js';
@@ -55,6 +64,8 @@ function entries() {
 
 export function initLauncherDial(): void {
   dinfo('Launcher', 'initLauncherDial');
+  // Repaint the launcher face when the option picker hands this LCD back.
+  registerTakeoverRestore(() => refreshLauncherDials());
   refreshLauncherDials();
 }
 
@@ -74,6 +85,8 @@ function ensurePixmapLayout(): void {
 
 export function refreshLauncherDials(): void {
   if (isDisplayDimmed()) return;
+  // Don't repaint over the option picker while it has borrowed this LCD.
+  if (isOptionTakeoverActive()) return;
   if (!isDaemonConnected()) {
     ensurePixmapLayout();
     const canvasFeedback = { canvas: svgToDataUrl(renderOfflineTouchStrip(3)) };
@@ -117,6 +130,7 @@ export class LauncherDialAction extends SingletonAction {
     if (!encoderRegistry.launcherIds.includes(ev.action.id)) {
       encoderRegistry.launcherIds.push(ev.action.id);
     }
+    registerEncoderColumn(ev.action.id, (ev.payload as any)?.coordinates?.column);
     settings = (ev.payload?.settings ?? {}) as LauncherSettings;
     if (dimActionIfNeeded(ev.action, 'Encoder')) return;
     refreshLauncherDials();
@@ -128,6 +142,8 @@ export class LauncherDialAction extends SingletonAction {
   }
 
   override async onDialRotate(ev: DialRotateEvent): Promise<void> {
+    // Borrowed by the option picker — move the cursor, not the launch target.
+    if (takeoverOwnsInput()) { optionSelectRotate(ev.payload.ticks); return; }
     if (!isDaemonConnected()) return;
 
     const list = entries();
@@ -139,6 +155,9 @@ export class LauncherDialAction extends SingletonAction {
   }
 
   override async onDialDown(ev: DialDownEvent): Promise<void> {
+    // A launch fired from a borrowed dial would be a destructive misfire — the
+    // press belongs to the prompt on screen.
+    if (takeoverOwnsInput()) { optionSelectPress(); return; }
     if (!isDaemonConnected()) {
       void openAgentDeckAppOrGitHub().catch(() => {});
       return;
@@ -159,7 +178,13 @@ export class LauncherDialAction extends SingletonAction {
     refreshLauncherDials();
   }
 
+  /** Touch strip tap while borrowed = submit the multi-select answer. */
+  override async onTouchTap(_ev: TouchTapEvent): Promise<void> {
+    if (takeoverOwnsInput()) optionSelectTap();
+  }
+
   override onWillDisappear(ev: WillDisappearEvent): void {
+    forgetEncoderColumn(ev.action.id);
     const idx = encoderRegistry.launcherIds.indexOf(ev.action.id);
     if (idx !== -1) {
       encoderRegistry.launcherIds.splice(idx, 1);
