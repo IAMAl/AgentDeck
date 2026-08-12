@@ -150,6 +150,45 @@ describe('OutputParser', () => {
       expect(ev.options[4].kind).toBe('freeform_input');
     });
 
+    // Regression: a real AskUserQuestion draws a full-width box rule between
+    // options and wraps each description across several lines. The backward
+    // block-scan used to break on the first description longer than its budget,
+    // dropping every option above it — the deck showed only the last ~2 of 4.
+    // The rule now resets a per-option budget and opens the description block so
+    // wrapped (indented OR col-0) lines are tolerated up to the next option.
+    for (const [shape, indent] of [['indented', '     '], ['col-0', '']] as const) {
+      it(`keeps all four options when each has a ${shape} multi-line description`, () => {
+        const p = armParser();
+        const events = collectEvents(p, 'option_prompt');
+        const RULE = '─'.repeat(40);
+        p.feed(
+          '❯ 1. [ ] Select all / clear all\n' +
+          `${indent}long-press the dial to toggle every option at once,\n` +
+          `${indent}handy when the list is large and most should be on.\n` +
+          RULE + '\n' +
+          '  2. [ ] Submit confirm pill\n' +
+          `${indent}draw a SUBMIT (N) target at the bottom of the strip\n` +
+          `${indent}so the tap destination is obvious, not implicit.\n` +
+          RULE + '\n' +
+          '  3. [ ] min / max constraints\n' +
+          `${indent}show and enforce "pick 2 to 4" via a protocol field.\n` +
+          RULE + '\n' +
+          '  4. [ ] Other surfaces\n' +
+          `${indent}bring multi-select to the Ulanzi D200H and ESP32.\n`,
+        );
+        vi.advanceTimersByTime(200);
+
+        const ev = events[events.length - 1];
+        expect(ev.multiSelect).toBe(true);
+        expect(ev.options.map((o: { label: string }) => o.label)).toEqual([
+          'Select all / clear all',
+          'Submit confirm pill',
+          'min / max constraints',
+          'Other surfaces',
+        ]);
+      });
+    }
+
     it('does not flag a plain numbered list as multiSelect', () => {
       const p = armParser();
       const events = collectEvents(p, 'option_prompt');

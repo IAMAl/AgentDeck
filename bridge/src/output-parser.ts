@@ -1153,24 +1153,44 @@ export class OutputParser extends EventEmitter {
     let blockStart = blockEnd;
     let foundOption = false;
     let descGap = 0;
-    const MAX_DESC_GAP = 2; // max indented description lines between consecutive options
+    // Per-option description budget. AskUserQuestion descriptions wrap to several
+    // lines at real terminal widths, and the box rule between options resets this
+    // (below), so it caps ONE option's description \u2014 not the cumulative gap across
+    // the block. At 2 the backward scan broke mid-block on the first long
+    // description and dropped every option above it (only the last ~2 survived).
+    const MAX_DESC_GAP = 6;
     const sepRe = /^[\s\u2500-\u257F]*$/; // box-drawing characters + whitespace only
+    const boxRuleRe = /[\u2500-\u257F]/;  // a horizontal rule carries box-drawing glyphs
+    // Set by a box rule (scanning backward): the rule sits directly above the
+    // NEXT option and directly below the PREVIOUS option's description, so it
+    // opens that description's block. Cleared when the scan reaches an option.
+    // Between the two, an UNINDENTED (col 0) line is a wrapped description line,
+    // not a boundary — which is how Claude Code's AskUserQuestion renders them.
+    let descBlockOpen = false;
     while (blockStart > 0) {
       const line = allLines[blockStart - 1];
       if (optLineRe.test(line)) {
         blockStart--;
         foundOption = true;
         descGap = 0;
+        descBlockOpen = false;
       } else if (line.trim() === '' || sepRe.test(line)) {
-        // Blank or separator line — always tolerate (TUI redraws create variable blank runs)
+        // Blank or separator line — always tolerate (TUI redraws create variable
+        // blank runs). A box rule additionally ends the previous option's
+        // description: it resets the per-option budget and opens that block so
+        // the description's own wrapped, unindented lines are tolerated below.
+        if (boxRuleRe.test(line)) {
+          descGap = 0;
+          descBlockOpen = true;
+        }
         blockStart--;
-      } else if (foundOption && (/^\s/.test(line) || optLineRe.test(allLines[blockStart - 2] ?? ''))) {
-        // Option description between options. Two shapes: classic INDENTED text,
-        // OR an UNINDENTED (col 0) description sitting directly under its option —
-        // which is how Claude Code's AskUserQuestion renders them. For the
-        // unindented case we require an option on the line directly above, so the
-        // scan can't bridge into a stale numbered list separated from the real
-        // prompt by prose (e.g. "Would you like to proceed?"). Tolerate within limit.
+      } else if (foundOption && (/^\s/.test(line) || descBlockOpen || optLineRe.test(allLines[blockStart - 2] ?? ''))) {
+        // Option description. Three shapes: classic INDENTED text; an UNINDENTED
+        // line directly under its option; or an UNINDENTED wrapped line inside a
+        // rule-opened description block. The block closes at the next option, so
+        // this can't bridge past option 1 into the question prose above it (there
+        // is no rule between the question and the first option). Tolerate within
+        // the per-option budget.
         descGap++;
         if (descGap > MAX_DESC_GAP) break;
         blockStart--;
