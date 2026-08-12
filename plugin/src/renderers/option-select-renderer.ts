@@ -147,11 +147,17 @@ export function renderOptionSelect(view: OptionSelectView, p: StripPlacement): s
   content += `<rect x="0" y="0" width="4" height="${HEADER_H}" fill="${accent}"/>`;
   // In multi-select the useful number is how many are ticked, not where the
   // cursor sits — the cursor is a means, the tally is the answer being built.
+  // Colour the counter by readiness: a tap only submits once something is
+  // ticked, so an empty answer reads muted ("press to select") and a non-empty
+  // one turns green ("N selected · tap to submit") to show the tap is now live.
+  const ticks = view.checked?.size ?? 0;
+  const ready = view.multiSelect === true && ticks > 0;
   const counter = view.multiSelect
-    ? `${view.checked?.size ?? 0} selected · tap strip to submit`
+    ? (ready ? `${ticks} selected · tap to submit` : 'press to select')
     : `${cursor + 1} / ${options.length}`;
+  const counterColor = ready ? '#86efac' : '#64748b';
   const counterPx = measureTextWidth(counter, 12);
-  content += `<text x="${W - 10}" y="15" text-anchor="end" font-family="${FONT}" font-size="12" fill="#64748b">${escapeXml(counter)}</text>`;
+  content += `<text x="${W - 10}" y="15" text-anchor="end" font-family="${FONT}" font-size="12" fill="${counterColor}">${escapeXml(counter)}</text>`;
   content += `<text x="12" y="15" font-family="${FONT}" font-size="12" font-weight="bold" fill="${accent}">${escapeXml(truncateByPx(title, W - 32 - counterPx, 12))}</text>`;
 
   // ── Rows: full strip width, which is the whole point of this layout ──
@@ -165,21 +171,35 @@ export function renderOptionSelect(view: OptionSelectView, p: StripPlacement): s
     const opt = options[optIdx];
     const isCursor = optIdx === cursor;
     const y = HEADER_H + 1 + i * ROW_H;
-    // The box carries the tick in multi-select, so the row number would only
-    // compete with it — drop it there.
-    const box = view.multiSelect ? (view.checked?.has(optIdx) ? '☑ ' : '☐ ') : `${optIdx + 1}. `;
-    const label = `${box}${opt.label}`;
+    const baseY = y + 17;
+    const x = isCursor ? 12 : 24;
+    const prefix = isCursor ? '▶ ' : '';
 
+    // Cursor highlight sits under whatever text renders on top of it.
     if (isCursor) {
       content += `<rect x="4" y="${y}" width="${rowW}" height="${ROW_H - 2}" rx="4" fill="#1e3a5f"/>`;
-      content += `<text x="12" y="${y + 17}" font-family="${FONT}" font-size="14" font-weight="bold" fill="#ffffff">▶ ${escapeXml(truncateByPx(label, labelPx, 14))}</text>`;
+    }
+
+    if (view.multiSelect) {
+      // The tick box is its own coloured glyph so a checked row pops (green ☑)
+      // without recolouring the label; the row number is dropped because the box
+      // is the state. `recommended`/`selected` are the agent's own hints and
+      // stay legible; a device-side tick (bright label) outranks both.
+      const ticked = view.checked?.has(optIdx) === true;
+      const boxChar = ticked ? '☑' : '☐';
+      const boxColor = ticked ? '#86efac' : '#64748b';
+      const labelColor = isCursor ? '#ffffff' : ticked ? '#e2e8f0' : opt.recommended ? '#86efac' : opt.selected ? '#93c5fd' : '#94a3b8';
+      const usedPx = measureTextWidth(`${prefix}${boxChar} `, 14);
+      const labelText = escapeXml(truncateByPx(opt.label, Math.max(20, labelPx - usedPx), 14));
+      content += `<text x="${x}" y="${baseY}" font-family="${FONT}" font-size="14"${isCursor ? ' font-weight="bold"' : ''}>`
+        + (prefix ? `<tspan fill="#ffffff">${prefix}</tspan>` : '')
+        + `<tspan fill="${boxColor}">${boxChar} </tspan>`
+        + `<tspan fill="${labelColor}">${labelText}</tspan>`
+        + `</text>`;
     } else {
-      // `recommended` / `selected` stay legible without the cursor highlight —
-      // they are the agent's own hints. A device-side tick outranks both: it is
-      // what the user just did.
-      const ticked = view.multiSelect && view.checked?.has(optIdx);
-      const textColor = ticked ? '#e2e8f0' : opt.recommended ? '#86efac' : opt.selected ? '#93c5fd' : '#94a3b8';
-      content += `<text x="24" y="${y + 17}" font-family="${FONT}" font-size="14" fill="${textColor}">${escapeXml(truncateByPx(label, labelPx, 14))}</text>`;
+      const label = `${prefix}${optIdx + 1}. ${opt.label}`;
+      const textColor = isCursor ? '#ffffff' : opt.recommended ? '#86efac' : opt.selected ? '#93c5fd' : '#94a3b8';
+      content += `<text x="${x}" y="${baseY}" font-family="${FONT}" font-size="14"${isCursor ? ' font-weight="bold"' : ''} fill="${textColor}">${escapeXml(truncateByPx(label, labelPx, 14))}</text>`;
     }
   }
 
