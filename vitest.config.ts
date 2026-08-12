@@ -1,6 +1,19 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  // Stream Deck action modules decorate their classes with the SDK's `@action`.
+  // The production build compiles these with tsc (via @rollup/plugin-typescript);
+  // Vitest on Vite 8 transforms with oxc/rolldown, whose default handling of
+  // these decorators emits JS that V8 rejects at import ("SyntaxError: Invalid
+  // or unexpected token"). Emitting the legacy `__decorate` form instead is
+  // valid JS. Tests mock `@elgato/streamdeck`, so the decorator is a no-op at
+  // runtime and the legacy-vs-standard calling-convention difference never bites
+  // — this only affects the test transform, never the shipped plugin.
+  oxc: {
+    decorator: {
+      legacy: true,
+    },
+  },
   test: {
     setupFiles: ['./vitest.setup.ts'],
     include: [
