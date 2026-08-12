@@ -2,6 +2,66 @@
 
 ---
 
+## 2026-08-13 — 복원 중 브랜치의 테스트 실패 62→0: 액션 계층 테스트 해금과 auth 토큰 수렴 복원
+
+### 배경
+
+- `master`는 fresh `first commit` 위에 기능을 하나씩 복원하는 중이었고, CLAUDE.md와
+  테스트가 기술하는 기능들이 아직 복원되지 않아 `pnpm test`에 **62개**의 기존 실패가
+  있었다(현재 작업과 무관한 사전 실패).
+- Stream Deck+ option-select dial의 복수 선택(`multiSelect`)을 검증하려 했으나, 액션
+  계층에는 테스트가 하나도 없었다. 원인은 SDK의 `@action` 표준 데코레이터를 Vite 8
+  (rolldown/oxc)가 import 시 깨뜨려(`SyntaxError: Invalid or unexpected token`) 액션
+  모듈을 테스트에서 불러올 수 없던 것.
+
+### 변경
+
+- **액션 계층 테스트 해금**: `vitest.config.ts`에 `oxc.decorator.legacy: true` 추가.
+  테스트 변환에만 적용되고 배포 플러그인은 계속 tsc(`@rollup/plugin-typescript`)로
+  빌드된다. 테스트는 `@elgato/streamdeck`을 mock(`logger.setLevel`/`createScope` 포함)한다.
+- **option-select dial 거동 테스트 + tick 이월 강화**: 액션 계층 최초의 거동 테스트.
+  복수 선택 체크 이월을 질문 문자열이 아니라 **프롬프트 서명(질문 + 옵션 집합)**으로
+  판정해, 한 AskUserQuestion의 문구가 같은 두 하위 질문이 서로의 체크를 상속하지 않게 했다.
+- **`pairing-code` barrel export 복원**: `@agentdeck/shared`가 `pairing-code`를
+  re-export하지 않아 소비자가 `undefined`(→ `10 ** PAIRING_CODE_DIGITS` = NaN,
+  `bridge/src/pairing-window.ts:mintCode` throw)를 받던 것을 한 줄로 복원 →
+  pairing-window **40건** 해소.
+- **pixoo 32×32 telemetry rails**: 고정 4줄 대신 **present provider만** 그리도록 수정
+  (Claude 5h/7d, Codex primary/secondary; stale/windowless-void 제외, 하단 정렬,
+  남는 줄은 scene 복귀). **4건** 해소.
+- **LAN 경계 / wire 문서 계약**: `docs/daemon.md`에 미인증 피어가 받는 공개 health
+  JSON 표본(`buildPublicHealth` 출력과 일치)을 명시하고, protocol/gateway-protocol/daemon
+  카테고리를 `Specs`로(뷰어 collapse 그룹에서 제외), `wire-compatibility.md`를 카탈로그에
+  등록. `ai-assisted-maintenance` 정책 문서도 등록해 `design-system:check`를 통과시켰다.
+  docs-wire-contract **7건** 해소.
+- **시간 의존 테스트 견고화**: 고정 `resetsAt`가 과거로 부패하던 codexUsageFootnote
+  테스트를 `Date.now()` 상대값으로(**1건**).
+- **auth 토큰 수렴 복원**: 리뷰·실기검증을 마친 `adoptPeerToken`/`getAcceptedTokens`와
+  data-dir 해석을 git 이력 **067ff53d**(추가 원본 `4faddf74`)에서 복원. 현재 export의
+  strict superset이고 import가 동일해 소비자(bridge-core, cli)에 무영향. legacy 상속
+  테스트를 Windows(`os.homedir()`는 `HOME`이 아니라 `USERPROFILE`을 읽음) 대응으로
+  크로스플랫폼화. **10건** 해소.
+- **`.nvmrc` = `22`** 추가: engines(`>=22`)·CI(`node-version: 22`) 정합 hygiene.
+
+### 검증
+
+- `pnpm test`: 테스트 레벨 실패 **62 → 0**(2877 pass, 19 skip), 회귀 없음.
+- `pnpm docs:check`, `pnpm design-system:check`: green.
+- plugin·bridge `tsc --noEmit`: clean.
+
+### 남은 것 (범위 밖 · 據え置き)
+
+- `protocol-generated-sync`는 suite 레벨로 실패한다. **원인은 Node 버전이 아니라**
+  (포터블 Node 22.23.2로 확인: 22/24 동일 출력) committed `generated/protocol/*`가
+  bump된 `quicktype@23.2.6`에 대해 **stale**하기 때문. 커밋된 산출물은 quicktype
+  **23.0.x**가 내던 legacy `hashValue` Swift 형식을 담고 있고(23.2.6은 `hash(into:)`),
+  생성기가 절대 `--src`에서 조용히 no-op(→ 기존 파일 유지)이라 재생성되지 않고 동결됐다.
+  정확한 재현 버전/설정은 특정하지 못했다(23.0.0은 hash 형식은 맞지만 들여쓰기가 다름).
+  SSOT 결정 사항(23.2.6로 미러 전면 재생성 vs 구 quicktype 고정)으로, maintainer의 실제
+  Linux CI에서는 green일 가능성이 높아 **據え置き(C)**로 결정.
+
+---
+
 ## 2026-08-11 — 외부 기여와 AI 보조 유지보수의 공개 계약 정립
 
 ### 배경
