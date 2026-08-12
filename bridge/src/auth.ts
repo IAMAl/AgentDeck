@@ -5,41 +5,159 @@ import { homedir, networkInterfaces } from 'os';
 import { getLanIp } from '@agentdeck/shared';
 import { debug } from './logger.js';
 
-const AGENTDECK_DIR = join(homedir(), '.agentdeck');
-const TOKEN_FILE = join(AGENTDECK_DIR, 'auth-token');
+const LEGACY_DIR = join(homedir(), '.agentdeck');
 const TOKEN_LENGTH = 32; // 32 hex chars = 16 bytes
+/** Bounded so a long-lived machine cannot accumulate an unbounded key ring. */
+const MAX_ACCEPTED_TOKENS = 4;
 
-let cachedToken: string | null = null;
+/**
+ * Every other module resolves its state through
+ * `AGENTDECK_DATA_DIR || ~/.agentdeck`; this one used to hardcode the home
+ * path, so a daemon started with a custom data dir kept its pairing token
+ * somewhere else than the rest of its state.
+ */
+function dataDir(): string {
+  return process.env.AGENTDECK_DATA_DIR || LEGACY_DIR;
+}
+function tokenFile(dir = dataDir()): string {
+  return join(dir, 'auth-token');
+}
+/**
+ * Tokens this daemon still ACCEPTS but no longer hands out — the credential it
+ * held before adopting a peer daemon's one (see `adoptPeerToken`). Without it,
+ * convergence itself would lock out every device that was provisioned a moment
+ * earlier, which is the failure this whole path exists to prevent.
+ */
+function acceptedFile(dir = dataDir()): string {
+  return join(dir, 'auth-token-accepted');
+}
+
+// Cached per resolved directory, so pointing AGENTDECK_DATA_DIR somewhere else
+// re-reads instead of serving the previous directory's credential.
+let cachedToken: { dir: string; token: string } | null = null;
+let cachedAccepted: { dir: string; tokens: string[] } | null = null;
+
+function readTokenFile(path: string): string | null {
+  try {
+    if (!existsSync(path)) return null;
+    const token = readFileSync(path, 'utf-8').trim();
+    return token.length >= TOKEN_LENGTH ? token : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Read existing token or generate a new one. */
 export function getOrCreateToken(): string {
-  if (cachedToken) return cachedToken;
+  const dir = dataDir();
+  if (cachedToken?.dir === dir) return cachedToken.token;
 
+  let token = readTokenFile(tokenFile(dir));
+  // A custom data dir that has no token yet inherits the legacy one rather than
+  // minting a fresh one: generating here would silently un-pair every device
+  // the machine already has.
+  const inherited = token === null && dir !== LEGACY_DIR
+    ? readTokenFile(tokenFile(LEGACY_DIR))
+    : null;
+  if (inherited) token = inherited;
+
+  const generated = token === null;
+  if (token === null) token = randomBytes(TOKEN_LENGTH / 2).toString('hex');
+
+  if (generated || inherited) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(tokenFile(dir), token + '\n', { mode: 0o600 });
+      debug('auth', generated
+        ? `Generated new auth token → ${tokenFile(dir)}`
+        : `Carried the existing auth token into ${tokenFile(dir)}`);
+    } catch (err) {
+      debug('auth', `Failed to write token file: ${err}`);
+    }
+  }
+
+  cachedToken = { dir, token };
+  return token;
+}
+
+/** Shape check for a token handed to us by someone else. */
+function isWellFormedToken(token: unknown): token is string {
+  return typeof token === 'string' && token.trim().length >= TOKEN_LENGTH;
+}
+
+/** Tokens accepted for authentication but never handed out. */
+export function getAcceptedTokens(): string[] {
+  const dir = dataDir();
+  if (cachedAccepted?.dir === dir) return cachedAccepted.tokens;
+  let tokens: string[] = [];
   try {
-    if (existsSync(TOKEN_FILE)) {
-      const token = readFileSync(TOKEN_FILE, 'utf-8').trim();
-      if (token.length >= TOKEN_LENGTH) {
-        cachedToken = token;
-        return token;
-      }
+    if (existsSync(acceptedFile(dir))) {
+      tokens = readFileSync(acceptedFile(dir), 'utf-8')
+        .split('\n')
+        .map(line => line.trim())
+        .filter(isWellFormedToken)
+        .slice(0, MAX_ACCEPTED_TOKENS);
     }
   } catch {
-    // Fall through to generate
+    tokens = [];
   }
+  cachedAccepted = { dir, tokens };
+  return tokens;
+}
 
-  // Generate new token
-  const token = randomBytes(TOKEN_LENGTH / 2).toString('hex');
-
+function writeAcceptedTokens(tokens: string[]): void {
+  const dir = dataDir();
+  const bounded = tokens.slice(0, MAX_ACCEPTED_TOKENS);
+  cachedAccepted = { dir, tokens: bounded };
   try {
-    mkdirSync(AGENTDECK_DIR, { recursive: true });
-    writeFileSync(TOKEN_FILE, token + '\n', { mode: 0o600 });
-    debug('auth', `Generated new auth token → ${TOKEN_FILE}`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(acceptedFile(dir), bounded.map(t => t + '\n').join(''), { mode: 0o600 });
   } catch (err) {
-    debug('auth', `Failed to write token file: ${err}`);
+    debug('auth', `Failed to write accepted-token file: ${err}`);
   }
+}
 
-  cachedToken = token;
-  return token;
+/**
+ * Adopt the pairing token of a daemon that is already serving this machine.
+ *
+ * A machine has ONE fleet of paired devices but can be served by either the
+ * Node CLI daemon or the macOS app's in-process Swift daemon, and the two keep
+ * their token in different files — the sandboxed app cannot read
+ * `~/.agentdeck/auth-token` and this process must not poke at the app's
+ * container. So the credential travels over the one channel both can always
+ * use: the incumbent's loopback `/health`, which carries `pairingToken` to
+ * same-machine callers only. Whoever starts second adopts what the incumbent
+ * is already serving, so a later handover in EITHER direction is
+ * credential-neutral and start order stops mattering.
+ *
+ * The token we were holding moves to the accepted list rather than being
+ * dropped: devices provisioned under it must keep working until they are
+ * re-armed.
+ *
+ * No new trust is granted — `probeDaemonHealth` dials 127.0.0.1, and
+ * same-machine peers are already fully trusted by this daemon's access model.
+ *
+ * Returns true when the served token actually changed.
+ */
+export function adoptPeerToken(peerToken: unknown): boolean {
+  if (!isWellFormedToken(peerToken)) return false;
+  const adopted = peerToken.trim();
+  const current = getOrCreateToken();
+  if (adopted === current) return false;
+
+  const accepted = [current, ...getAcceptedTokens().filter(t => t !== current && t !== adopted)];
+  writeAcceptedTokens(accepted);
+
+  const dir = dataDir();
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(tokenFile(dir), adopted + '\n', { mode: 0o600 });
+  } catch (err) {
+    debug('auth', `Failed to persist adopted token: ${err}`);
+  }
+  cachedToken = { dir, token: adopted };
+  debug('auth', 'Adopted the incumbent daemon\'s pairing token; previous one still accepted');
+  return true;
 }
 
 /** Check if a connection originates from this machine (localhost or own LAN IPs). */
@@ -66,23 +184,38 @@ export function isLocalConnection(ip: string): boolean {
  */
 export function rotateToken(): string {
   const token = randomBytes(TOKEN_LENGTH / 2).toString('hex');
-  mkdirSync(AGENTDECK_DIR, { recursive: true });
-  writeFileSync(TOKEN_FILE, token + '\n', { mode: 0o600 });
-  cachedToken = token;
-  debug('auth', `Rotated auth token → ${TOKEN_FILE}`);
+  const dir = dataDir();
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(tokenFile(dir), token + '\n', { mode: 0o600 });
+  cachedToken = { dir, token };
+  // Retiring a leaked token has to retire the key ring with it, or the leaked
+  // one survives in the accepted list and rotation buys nothing.
+  writeAcceptedTokens([]);
+  debug('auth', `Rotated auth token → ${tokenFile(dir)}`);
   return token;
 }
 
-/** Validate a token string against the stored token. */
-export function validateToken(token: string): boolean {
-  const stored = getOrCreateToken();
+function matchesToken(candidate: string, stored: string): boolean {
   // Constant-time comparison to prevent timing attacks
-  if (token.length !== stored.length) return false;
+  if (candidate.length !== stored.length) return false;
   let result = 0;
-  for (let i = 0; i < token.length; i++) {
-    result |= token.charCodeAt(i) ^ stored.charCodeAt(i);
+  for (let i = 0; i < candidate.length; i++) {
+    result |= candidate.charCodeAt(i) ^ stored.charCodeAt(i);
   }
   return result === 0;
+}
+
+/**
+ * Validate a token against the one we serve, then against the ones we still
+ * accept (a token superseded by `adoptPeerToken`). Every candidate is compared
+ * — no early exit — so the answer costs the same whichever key matched.
+ */
+export function validateToken(token: string): boolean {
+  let ok = matchesToken(token, getOrCreateToken());
+  for (const accepted of getAcceptedTokens()) {
+    ok = matchesToken(token, accepted) || ok;
+  }
+  return ok;
 }
 
 /** Build a ws:// URL with auth token for QR code pairing. */

@@ -127,8 +127,12 @@ describe('data-dir resolution', () => {
     const fakeHome = mkdtempSync(join(tmpdir(), 'agentdeck-home-'));
     mkdirSync(join(fakeHome, '.agentdeck'), { recursive: true });
     writeFileSync(join(fakeHome, '.agentdeck', 'auth-token'), TOKEN_A + '\n');
+    // os.homedir() reads HOME on POSIX but USERPROFILE on Windows — set both so
+    // LEGACY_DIR resolves to fakeHome on either platform.
     const realHome = process.env.HOME;
+    const realUserProfile = process.env.USERPROFILE;
     process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
     try {
       const mod = await loadAuth();
       expect(mod.getOrCreateToken()).toBe(TOKEN_A);
@@ -137,6 +141,8 @@ describe('data-dir resolution', () => {
     } finally {
       if (realHome === undefined) delete process.env.HOME;
       else process.env.HOME = realHome;
+      if (realUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = realUserProfile;
       rmSync(fakeHome, { recursive: true, force: true });
     }
   });
