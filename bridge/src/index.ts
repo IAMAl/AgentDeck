@@ -971,27 +971,41 @@ export async function startSession(opts: SessionOptions): Promise<void> {
           delay += 40;
           cursor = target;
         }
-        // Reach the trailing `Submit` TAB with `→`, then Enter on the review
-        // screen (its cursor already sits on "Submit answers"). Counting rows to
-        // a `Submit` row cannot be made reliable — the snapshot the count comes
-        // from is a repaint and is routinely short — whereas the tab distance
-        // comes from the tool input's group list and cannot be partial.
+        // A multi-QUESTION AskUserQuestion lays its groups out as horizontal
+        // tabs ending in a `Submit answers` button, and `getSubmitTabDistance`
+        // is the number of `→` from the group on screen to that button (the
+        // groups after this one, plus one). It comes from the tool input's group
+        // list, so it can't be partial the way a row count off a short repaint
+        // can. Three outcomes:
         const tabs = core.stateMachine.getSubmitTabDistance();
-        if (tabs !== null && tabs > 0) {
-          for (let i = 0; i < tabs; i++) {
-            write('\x1b[C', delay, `right ${i + 1}/${tabs} → Submit tab`);
-            delay += 20;
-          }
-          write('\r', delay + 80, 'enter (Submit answers)');
-        } else {
-          // Nowhere safe to put the Enter: on an option row it toggles, which
+        if (tabs === null) {
+          // Nowhere safe to put the Enter (multi-group prompt whose on-screen
+          // question couldn't be placed): on an option row Enter toggles, which
           // un-ticks the last answer and commits nothing — the transcript then
           // reads "User declined to answer questions", an answer the user never
           // gave. Stop after the ticks; they stay on screen for the terminal.
-          debug('agentdeck', `select_options submit SKIPPED — no Submit tab (tabs=${tabs}); ticks left for the terminal`);
+          debug('agentdeck', 'select_options submit SKIPPED — no Submit tab (tabs=null); ticks left for the terminal');
+          core.stateMachine.updateCursorIndex(cursor, 'optimistic');
+          core.stateMachine.handleUserAction('select_option');
+        } else if (tabs > 1) {
+          // Groups remain after this one. Walking all the way to Submit would
+          // answer THIS group and default every later one — "answering the first
+          // group submits the whole form". Advance exactly ONE tab to the next
+          // group and stop: no Enter, and DON'T leave AWAITING_OPTION, so the
+          // parser surfaces that group as the next prompt for the device to
+          // answer. The device already cleared its picker on the submitting tap;
+          // it repaints when the next group's option_prompt lands.
+          write('\x1b[C', delay, `right → next question group (${tabs - 1} left after this one)`);
+          debug('agentdeck', `select_options advanced to next group (tabs=${tabs}); form stays open, no submit`);
+        } else {
+          // tabs === 1: the last (or only) group. Submit is the next tab, and its
+          // cursor already sits on "Submit answers", so `→` then Enter commits
+          // the whole form.
+          write('\x1b[C', delay, 'right 1/1 → Submit tab');
+          write('\r', delay + 100, 'enter (Submit answers)');
+          core.stateMachine.updateCursorIndex(cursor, 'optimistic');
+          core.stateMachine.handleUserAction('select_option');
         }
-        core.stateMachine.updateCursorIndex(cursor, 'optimistic');
-        core.stateMachine.handleUserAction('select_option');
         break;
       }
 

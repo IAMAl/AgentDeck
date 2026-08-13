@@ -106,38 +106,82 @@ export function buildHookCommand(eventName: string): string {
   ]).join('\n');
 }
 
+/** Base64 (UTF-16LE) for `powershell -EncodedCommand`. */
+function encodePwshCommand(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
 /**
- * Windows variant of `buildHookCommand`. Claude Code v2.1+ executes hook
- * commands through `cmd.exe` on Windows, so we shell out to PowerShell for
- * the JSON read + HTTP POST. Discovery is narrower than POSIX since the
- * macOS App Store sandbox paths don't exist on Windows:
+ * Windows variant of `buildHookCommand`, delivered as `-EncodedCommand`.
  *
- *   1. `$env:AGENTDECK_PORT`
- *   2. `%USERPROFILE%\.agentdeck\daemon.json` (verified with `/health` probe)
- *   3. `9120` fallback
+ * Claude Code v2.x runs a hook `command` on Windows THROUGH PowerShell, not
+ * cmd.exe — proven live: the hooks failed with a PowerShell tokenizer error at
+ * `行:1 文字:69` and the broken text showed the script's own `$port`/`$candidate`
+ * already stripped and `$env:AGENTDECK_PORT` already expanded to a bare number.
+ * That can only happen if an OUTER PowerShell parsed the string first, which is
+ * exactly what `powershell -Command "…$var…"` invites: the outer shell expands
+ * every `$var` inside the double-quoted argument before the inner powershell
+ * ever sees it, leaving `[int]=0` and `-or  -lt 1` (empty operands). Under
+ * cmd.exe the same string worked (cmd reads `%VAR%`, not `$VAR`), which is why
+ * the retired `-Command` form passed every cmd-based test yet fired nothing in
+ * the real session — no PreToolUse ever reached the bridge, so a multi-question
+ * AskUserQuestion arrived with no group list and its submit desynced.
  *
- * Single quotes are used inside the PowerShell script so the entire `-Command`
- * argument can stay double-quoted under cmd.exe. Errors are swallowed so a
- * dead daemon never blocks the host session.
+ * `-EncodedCommand` is a single base64 token: no `$`, quotes, or spaces for any
+ * outer shell to touch, so it survives cmd.exe AND PowerShell identically. This
+ * is the same immunity the Codex installer already relies on (codex-install.ts).
+ *
+ * Port discovery is narrower than POSIX (the macOS sandbox-container paths don't
+ * exist on Windows): `$env:AGENTDECK_PORT` → `%USERPROFILE%\.agentdeck\daemon.json`
+ * (verified with a `/health` probe) → `9120`.
  */
 export function buildHookCommandWin(eventName: string): string {
-  const ps = [
-    `$ev='${eventName}'`,
+  const lines = [
+    `$ErrorActionPreference='SilentlyContinue'`,
+    `$ProgressPreference='SilentlyContinue'`,
     `[int]$port=0`,
     `[int]$candidate=0`,
     `if(!([int]::TryParse([string]$env:AGENTDECK_PORT,[ref]$candidate)) -or $candidate -lt 1 -or $candidate -gt 65535){$candidate=0}`,
     `$port=$candidate`,
-    `if(-not $port){$f=Join-Path $env:USERPROFILE '.agentdeck\\daemon.json'; if(Test-Path $f){try{$d=Get-Content -Raw $f|ConvertFrom-Json; $raw=if($d.httpPort){$d.httpPort}else{$d.port}; $candidate=0; if([int]::TryParse([string]$raw,[ref]$candidate) -and $candidate -ge 1 -and $candidate -le 65535){try{Invoke-RestMethod -Uri ('http://127.0.0.1:'+$candidate+'/health') -TimeoutSec 1 -ErrorAction Stop|Out-Null; $port=$candidate}catch{}}}catch{}}}`,
-    `if(-not $port){$port=9120}`,
+    `if($port -eq 0){`,
+    `  $f=Join-Path $env:USERPROFILE '.agentdeck\\daemon.json'`,
+    `  if(Test-Path -LiteralPath $f){`,
+    `    try{`,
+    `      $d=Get-Content -LiteralPath $f -Raw | ConvertFrom-Json`,
+    `      $raw=if($d.httpPort){$d.httpPort}else{$d.port}`,
+    `      $candidate=0`,
+    `      if([int]::TryParse([string]$raw,[ref]$candidate) -and $candidate -ge 1 -and $candidate -le 65535){`,
+    `        try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Uri ('http://127.0.0.1:'+$candidate+'/health')|Out-Null; $port=$candidate}catch{}`,
+    `      }`,
+    `    }catch{}`,
+    `  }`,
+    `}`,
+    `if($port -eq 0){$port=9120}`,
     // Read stdin as UTF-8: [Console]::In decodes piped stdin with the console OEM
     // codepage (e.g. CP949), garbling non-ASCII payload text.
     `$body=(New-Object System.IO.StreamReader([Console]::OpenStandardInput(),[System.Text.Encoding]::UTF8)).ReadToEnd()`,
-    // Post UTF-8 bytes: Invoke-RestMethod encodes a string body as ISO-8859-1 when
-    // the content type carries no charset, replacing non-ASCII characters with '?'.
+    // Post UTF-8 bytes: a string body is encoded ISO-8859-1 without a charset,
+    // replacing non-ASCII characters with '?'.
     `$bytes=[System.Text.Encoding]::UTF8.GetBytes([string]$body)`,
-    `try{Invoke-RestMethod -Uri ('http://127.0.0.1:'+$port+'/hooks/'+$ev) -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 2 -ErrorAction Stop|Out-Null}catch{}`,
-  ].join('; ');
-  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps}"`;
+    `$uri='http://127.0.0.1:'+$port+'/hooks/${eventName}'`,
+  ];
+  // PreToolUse (60s) and Stop (10s) are request-response: the daemon may hold
+  // the socket and answer with a permission/steer decision that Claude reads off
+  // stdout, so echo the RAW response body (Invoke-WebRequest .Content — never
+  // Invoke-RestMethod, which parses JSON to an object and would print a hashtable
+  // dump). Everything else is fire-and-forget telemetry: post and stay quiet.
+  if (eventName === 'PreToolUse' || eventName === 'Stop') {
+    const timeout = eventName === 'PreToolUse' ? 60 : 10;
+    lines.push(
+      `try{$r=Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec ${timeout} -Uri $uri -ContentType 'application/json; charset=utf-8' -Body $bytes; [Console]::Out.Write([string]$r.Content)}catch{}`,
+    );
+  } else {
+    lines.push(
+      `try{Invoke-RestMethod -Method Post -TimeoutSec 2 -Uri $uri -ContentType 'application/json; charset=utf-8' -Body $bytes|Out-Null}catch{}`,
+    );
+  }
+  lines.push(`exit 0`);
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodePwshCommand(lines.join('\n'))}`;
 }
 
 // Claude Code v2.1+ requires 3-level nesting: event → matcher group → hook handler.
@@ -159,6 +203,35 @@ export function buildHookEntry(eventName: string) {
   };
 }
 
+/** The script a hook command actually runs — the `-EncodedCommand` base64
+ *  decoded (Windows), else the command verbatim. The Windows hook ships as one
+ *  base64 token, which hides its `AGENTDECK_PORT` marker from a raw substring
+ *  scan; decoding here lets ownership detection work identically on both
+ *  platforms. Exported for the migration gate and tests. */
+export function decodeHookCommand(cmd: string): string {
+  const m = /-EncodedCommand\s+([A-Za-z0-9+/=]+)\s*$/.exec(cmd);
+  if (!m) return cmd;
+  try {
+    return Buffer.from(m[1], 'base64').toString('utf16le');
+  } catch {
+    return cmd;
+  }
+}
+
+/** Is this command one AgentDeck installed? Seen through the base64 so dedup on
+ *  re-install and removal on uninstall don't leak or duplicate the Windows hook. */
+function isAgentDeckHookCommand(cmd: unknown): boolean {
+  if (typeof cmd !== 'string') return false;
+  const text = decodeHookCommand(cmd);
+  return text.includes('AGENTDECK_PORT') || text.includes('localhost:9120');
+}
+
+/** A settings hook entry (flat or matcher-group) that AgentDeck owns. */
+function isAgentDeckHookEntry(h: any): boolean {
+  if (isAgentDeckHookCommand(h?.command)) return true;
+  return Array.isArray(h?.hooks) && h.hooks.some((hh: any) => isAgentDeckHookCommand(hh?.command));
+}
+
 /** Pure logic: apply AgentDeck hooks to a settings object (no file I/O). */
 export function applyHooks(settings: any): any {
   if (!settings.hooks) {
@@ -168,18 +241,10 @@ export function applyHooks(settings: any): any {
     if (!settings.hooks[event]) {
       settings.hooks[event] = [];
     }
-    // Remove both old flat format and new matcher format
-    settings.hooks[event] = settings.hooks[event].filter((h: any) => {
-      if (h.command?.includes('AGENTDECK_PORT') || h.command?.includes('localhost:9120')) {
-        return false;
-      }
-      if (Array.isArray(h.hooks) && h.hooks.some((hh: any) =>
-        hh.command?.includes('AGENTDECK_PORT') || hh.command?.includes('localhost:9120')
-      )) {
-        return false;
-      }
-      return true;
-    });
+    // Remove any prior AgentDeck hook (old flat format, matcher format, or the
+    // superseded Windows -Command form) so a re-install replaces rather than
+    // duplicates. Matches through the base64 Windows blob.
+    settings.hooks[event] = settings.hooks[event].filter((h: any) => !isAgentDeckHookEntry(h));
     settings.hooks[event].push(buildHookEntry(event));
   }
   return settings;
@@ -190,17 +255,7 @@ export function removeHooks(settings: any): any {
   if (!settings.hooks) return settings;
   for (const event of HOOK_EVENTS) {
     if (settings.hooks[event]) {
-      settings.hooks[event] = settings.hooks[event].filter((h: any) => {
-        if (h.command?.includes('AGENTDECK_PORT') || h.command?.includes('localhost:9120')) {
-          return false;
-        }
-        if (Array.isArray(h.hooks) && h.hooks.some((hh: any) =>
-          hh.command?.includes('AGENTDECK_PORT') || hh.command?.includes('localhost:9120')
-        )) {
-          return false;
-        }
-        return true;
-      });
+      settings.hooks[event] = settings.hooks[event].filter((h: any) => !isAgentDeckHookEntry(h));
       if (settings.hooks[event].length === 0) {
         delete settings.hooks[event];
       }
@@ -462,6 +517,28 @@ export function migrateHooksIfNeeded(home: string = homedir()): void {
       ? raw.includes('[int]::TryParse')
       : raw.includes('*[!0-9]*');
     if (!hasValidatedPort) {
+      applyHooks(settings);
+      migrated = true;
+    }
+
+    // Migration 10: Windows hooks shipped as `powershell … -Command "…$var…"`.
+    // Claude Code runs a Windows hook THROUGH PowerShell, and that outer shell
+    // expands the script's own $port/$env:AGENTDECK_PORT before the inner
+    // powershell sees them, so every such hook died at `行:1` and nothing ever
+    // reached the bridge (a multi-question AskUserQuestion then arrived with no
+    // group list and its submit desynced). Rebuild once into the shell-safe
+    // -EncodedCommand form. Detected on the PARSED hooks — in the raw file the
+    // quote is JSON-escaped (`-Command \"`), and the check must be scoped to OUR
+    // hooks so a user's own `-Command` hook neither triggers it nor churns on
+    // every pass. The rebuilt form is base64 (no `-Command `), so this self-heals
+    // exactly once and stays idempotent.
+    const hasSupersededWinHook = HOOK_EVENTS.some((event) =>
+      (settings.hooks?.[event] ?? []).some((group: any) =>
+        [group, ...(Array.isArray(group?.hooks) ? group.hooks : [])].some((h: any) =>
+          typeof h?.command === 'string'
+          && h.command.includes('-Command ')
+          && isAgentDeckHookCommand(h.command))));
+    if (hasSupersededWinHook) {
       applyHooks(settings);
       migrated = true;
     }

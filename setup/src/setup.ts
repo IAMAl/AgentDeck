@@ -265,25 +265,82 @@ function buildHookCommand(eventName: string): string {
   ]).join('\n');
 }
 
-/** Windows variant — kept in sync with `@agentdeck/hooks` `buildHookCommandWin`. */
+/** Windows variant — kept in sync with `@agentdeck/hooks` `buildHookCommandWin`.
+ *  Ships as `-EncodedCommand` (base64): Claude Code runs a Windows hook THROUGH
+ *  PowerShell, and a `-Command "…$var…"` form let that outer shell expand the
+ *  script's own $port/$env:AGENTDECK_PORT before the inner powershell saw them,
+ *  breaking every hook at `行:1`. A base64 token has no $ or quote to expand, so
+ *  it survives cmd.exe and PowerShell alike. */
 function buildHookCommandWin(eventName: string): string {
-  const ps = [
-    `$ev='${eventName}'`,
+  const lines = [
+    `$ErrorActionPreference='SilentlyContinue'`,
+    `$ProgressPreference='SilentlyContinue'`,
     `[int]$port=0`,
     `[int]$candidate=0`,
     `if(!([int]::TryParse([string]$env:AGENTDECK_PORT,[ref]$candidate)) -or $candidate -lt 1 -or $candidate -gt 65535){$candidate=0}`,
     `$port=$candidate`,
-    `if(-not $port){$f=Join-Path $env:USERPROFILE '.agentdeck\\daemon.json'; if(Test-Path $f){try{$d=Get-Content -Raw $f|ConvertFrom-Json; $raw=if($d.httpPort){$d.httpPort}else{$d.port}; $candidate=0; if([int]::TryParse([string]$raw,[ref]$candidate) -and $candidate -ge 1 -and $candidate -le 65535){try{Invoke-RestMethod -Uri ('http://127.0.0.1:'+$candidate+'/health') -TimeoutSec 1 -ErrorAction Stop|Out-Null; $port=$candidate}catch{}}}catch{}}}`,
-    `if(-not $port){$port=9120}`,
+    `if($port -eq 0){`,
+    `  $f=Join-Path $env:USERPROFILE '.agentdeck\\daemon.json'`,
+    `  if(Test-Path -LiteralPath $f){`,
+    `    try{`,
+    `      $d=Get-Content -LiteralPath $f -Raw | ConvertFrom-Json`,
+    `      $raw=if($d.httpPort){$d.httpPort}else{$d.port}`,
+    `      $candidate=0`,
+    `      if([int]::TryParse([string]$raw,[ref]$candidate) -and $candidate -ge 1 -and $candidate -le 65535){`,
+    `        try{Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 -Uri ('http://127.0.0.1:'+$candidate+'/health')|Out-Null; $port=$candidate}catch{}`,
+    `      }`,
+    `    }catch{}`,
+    `  }`,
+    `}`,
+    `if($port -eq 0){$port=9120}`,
     // Read stdin as UTF-8: [Console]::In decodes piped stdin with the console OEM
     // codepage (e.g. CP949), garbling non-ASCII payload text.
     `$body=(New-Object System.IO.StreamReader([Console]::OpenStandardInput(),[System.Text.Encoding]::UTF8)).ReadToEnd()`,
-    // Post UTF-8 bytes: Invoke-RestMethod encodes a string body as ISO-8859-1 when
-    // the content type carries no charset, replacing non-ASCII characters with '?'.
+    // Post UTF-8 bytes: a string body is encoded ISO-8859-1 without a charset,
+    // replacing non-ASCII characters with '?'.
     `$bytes=[System.Text.Encoding]::UTF8.GetBytes([string]$body)`,
-    `try{Invoke-RestMethod -Uri ('http://127.0.0.1:'+$port+'/hooks/'+$ev) -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -TimeoutSec 2 -ErrorAction Stop|Out-Null}catch{}`,
-  ].join('; ');
-  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${ps}"`;
+    `$uri='http://127.0.0.1:'+$port+'/hooks/${eventName}'`,
+  ];
+  // PreToolUse (60s) and Stop (10s) are request-response: echo the RAW body so
+  // Claude reads the daemon's decision off stdout. Others: fire-and-forget.
+  if (eventName === 'PreToolUse' || eventName === 'Stop') {
+    const timeout = eventName === 'PreToolUse' ? 60 : 10;
+    lines.push(
+      `try{$r=Invoke-WebRequest -UseBasicParsing -Method Post -TimeoutSec ${timeout} -Uri $uri -ContentType 'application/json; charset=utf-8' -Body $bytes; [Console]::Out.Write([string]$r.Content)}catch{}`,
+    );
+  } else {
+    lines.push(
+      `try{Invoke-RestMethod -Method Post -TimeoutSec 2 -Uri $uri -ContentType 'application/json; charset=utf-8' -Body $bytes|Out-Null}catch{}`,
+    );
+  }
+  lines.push(`exit 0`);
+  const encoded = Buffer.from(lines.join('\n'), 'utf16le').toString('base64');
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+}
+
+/** The script a hook runs — the Windows `-EncodedCommand` base64 decoded, else
+ *  the command verbatim. Lets ownership detection see the `AGENTDECK_PORT` marker
+ *  the base64 would otherwise hide. Mirror of `@agentdeck/hooks` decodeHookCommand. */
+function decodeHookCommand(cmd: unknown): string {
+  if (typeof cmd !== 'string') return '';
+  const m = /-EncodedCommand\s+([A-Za-z0-9+/=]+)\s*$/.exec(cmd);
+  if (!m) return cmd;
+  try {
+    return Buffer.from(m[1], 'base64').toString('utf16le');
+  } catch {
+    return cmd;
+  }
+}
+
+function isOurHookCommand(cmd: unknown): boolean {
+  const text = decodeHookCommand(cmd);
+  return text.includes('AGENTDECK_PORT') || text.includes('localhost:9120');
+}
+
+/** A settings hook entry (flat or matcher-group) this installer owns. */
+function isOurHookEntry(h: any): boolean {
+  return isOurHookCommand(h?.command)
+    || (Array.isArray(h?.hooks) && h.hooks.some((hh: any) => isOurHookCommand(hh?.command)));
 }
 
 function buildHookEntry(eventName: string) {
@@ -317,18 +374,9 @@ function sweepLegacyHooks(claudeDir: string) {
     const settings: any = JSON.parse(raw);
     if (!settings.hooks) return;
 
-    const isOurs = (h: any) =>
-      h.command?.includes('AGENTDECK_PORT') ||
-      h.command?.includes('localhost:9120') ||
-      (Array.isArray(h.hooks) &&
-        h.hooks.some(
-          (hh: any) =>
-            hh.command?.includes('AGENTDECK_PORT') || hh.command?.includes('localhost:9120'),
-        ));
-
     for (const event of HOOK_EVENTS) {
       if (!Array.isArray(settings.hooks[event])) continue;
-      settings.hooks[event] = settings.hooks[event].filter((h: any) => !isOurs(h));
+      settings.hooks[event] = settings.hooks[event].filter((h: any) => !isOurHookEntry(h));
       if (settings.hooks[event].length === 0) delete settings.hooks[event];
     }
     if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
@@ -376,22 +424,10 @@ function installHooks() {
       settings.hooks[event] = [];
     }
 
-    // Remove existing AgentDeck hooks (old flat + new matcher format)
-    settings.hooks[event] = settings.hooks[event].filter((h: any) => {
-      if (h.command?.includes('AGENTDECK_PORT') || h.command?.includes('localhost:9120')) {
-        return false;
-      }
-      if (
-        Array.isArray(h.hooks) &&
-        h.hooks.some(
-          (hh: any) =>
-            hh.command?.includes('AGENTDECK_PORT') || hh.command?.includes('localhost:9120'),
-        )
-      ) {
-        return false;
-      }
-      return true;
-    });
+    // Remove existing AgentDeck hooks (old flat, matcher, and the superseded
+    // Windows -Command form) so a re-run replaces rather than duplicates. Matches
+    // through the base64 Windows blob via decodeHookCommand.
+    settings.hooks[event] = settings.hooks[event].filter((h: any) => !isOurHookEntry(h));
 
     settings.hooks[event].push(buildHookEntry(event));
   }

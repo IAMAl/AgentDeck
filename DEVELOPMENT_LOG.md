@@ -2,6 +2,63 @@
 
 ---
 
+## 2026-08-13 — 계층형(다중 그룹) 복수 선택: Windows 훅 파스 실패 수리 + 첫 그룹 조기 제출 수정
+
+### 배경
+
+- 다중 그룹 AskUserQuestion(예: Q1 "Languages" 복수 + Q2 "Tooling" 복수)을 Stream Deck+
+  에서 답하면 **첫 그룹(G0)을 확정한 순간 선택지가 사라진다**는 리포트. 라이브 `--debug`
+  세션 로그로 원인을 두 겹으로 확정했다.
+
+### 진단 (라이브 로그)
+
+1. **Windows 훅이 전부 파스 실패였다.** TUI에 `SessionStart/UserPromptSubmit hook error …
+   Failed with non-blocking status code … 場所 行:1 文字:69`. `[Hook]` 로그는 `GET /health`
+   뿐, `POST /hooks/*`가 **한 건도** 없었다. Claude Code는 Windows 훅 `command`를 **PowerShell
+   을 통해** 실행하는데, 설치된 `powershell … -Command "…$var…"` 형태를 그 바깥 PowerShell이
+   먼저 파싱해 스크립트 자신의 `$port`/`$env:AGENTDECK_PORT`를 **선전개**해 버려(`[int]=0`,
+   `-or  -lt 1`) 매 훅이 1행에서 죽었다. cmd.exe(`%VAR%`)로는 통과해 cmd 기반 테스트는 전부
+   green이었던 것. 결과로 PreToolUse가 도달하지 않아 `askMultiSelect`가 비고 `getSubmitTabDistance`
+   가 `tabs=1` fallback으로 떨어져, G0 확정이 "space→right1→Enter"로 **다음 그룹 위에서** 커밋되고
+   상태가 PROCESSING로 튀어 device가 선택지를 되받지 못했다(desync 공백).
+2. **훅 수리 후 남은 진짜 버그.** PreToolUse가 도달하자 `getSubmitTabDistance`가 **정확히 2**
+   (`right 1/2`, `right 2/2` 확인). 그러나 `select_options`가 그룹과 무관하게 Submit까지 걸어가
+   Enter → **G0만 답하고 전체 폼을 조기 제출**(`● User answered … Languages → TypeScript`,
+   이어서 PostToolUse). 단일 그룹은 `tabs=1`이라 정상이었기에 여태 안 보였다.
+
+### 변경
+
+- **훅을 `-EncodedCommand`(base64)로 전환** (`hooks/src/install.ts` `buildHookCommandWin`,
+  `setup/src/setup.ts` 미러). base64는 `$`·따옴표·공백이 없어 cmd.exe와 PowerShell 양쪽에서
+  동일하게 살아남는다(실기 재현으로 nested-PowerShell·cmd 모두 exit 0 확인). Codex 훅이 이미
+  쓰던 면역. PreToolUse(60s)/Stop(10s)는 request-response라 raw 응답 본문을 `[Console]::Out.Write`
+  로 echo, 나머지는 fire-and-forget. base64가 `AGENTDECK_PORT` 마커를 가리므로 `decodeHookCommand`
+  기반 소유권 판정을 도입해 `applyHooks`/`removeHooks`의 dedup·제거를 복구하고, **migration 10**
+  으로 구 `-Command` 훅을 세션 시작 시 1회 자가치유(멱등). 사용자 `settings.json`도 마이그레이션 적용.
+- **`select_options` 그룹 전진 로직** (`bridge/src/index.ts`): `tabs>1`(뒤에 그룹이 더 있음)이면
+  체크 후 **오른쪽 한 탭만** 이동하고 Enter를 치지 않으며 **AWAITING_OPTION을 유지**(다음 그룹이
+  파서를 통해 다음 프롬프트로 뜨도록). `tabs===1`(마지막/단일 그룹)만 Submit+Enter로 커밋. `tabs===null`
+  은 기존 skip 유지.
+
+### 검증
+
+- 라이브 로그: 재수리 세션에서 `POST /hooks/PreToolUse` 등 모든 훅 발화 확인, G0 확정 시
+  `select_options advanced to next group (tabs=2); form stays open, no submit` + `right → next
+  question group` 확인(Enter 없음). TUI도 `☒ Languages ☐ Tooling`으로 G1 탭으로 전진.
+- 유닛: bridge/hooks/setup/plugin **2335 pass**(신규: multi-group `getSubmitTabDistance` per-group
+  거리, migration 10, EncodedCommand 디코드 소유권 판정).
+
+### 남은 것 (후속)
+
+- **G0→G1 전진 후 device가 G1을 아직 못 그린다.** 파서가 누적 TUI 버퍼에서 두 그룹의 옵션 목록을
+  분리하지 못한다(양쪽 다 1..N 번호 + G1 옵션은 ANSI 컬럼 배치라, backward 블록 스캔이 stale G0을
+  붙잡고 non-contiguous 가드로 폐기 → G1 option_prompt 미발행). 후속 방향(Path A, 권장): PreToolUse
+  payload의 `questions[i].options`를 **SSOT로 보관**해 활성 그룹 인덱스를 추적하고 각 그룹 옵션을
+  훅 데이터에서 직접 device로 출력(“TUI 스크레이프 대신 훅 권위 데이터”). `collectAskMultiSelect`가
+  지금은 options를 버리는데 이를 보존하도록 확장 필요.
+
+---
+
 ## 2026-08-13 — Stream Deck+ 복수 선택 실기 미동작의 진짜 원인: 코드가 아니라 배포 누락
 
 ### 배경

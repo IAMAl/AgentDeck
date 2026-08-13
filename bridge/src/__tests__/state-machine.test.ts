@@ -143,6 +143,40 @@ describe('StateMachine', () => {
       });
       expect(sm.getSubmitTabDistance()).toBeNull();
     });
+
+    // A multi-QUESTION AskUserQuestion is a row of group tabs ending in `Submit
+    // answers`, so the distance is per-group: the last group sits one tab from
+    // Submit, earlier groups sit further. The device answer branches on exactly
+    // this — tabs===1 commits the whole form, tabs>1 means groups remain so it
+    // advances one tab instead of submitting (else the first group's answer
+    // defaults every later group, the "answering G0 submits everything" bug).
+    it('getSubmitTabDistance is the per-group distance to Submit across question groups', () => {
+      const sm = bootToIdle();
+      sm.handleHookEvent('UserPromptSubmit', {});
+      sm.handleHookEvent('PreToolUse', {
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [
+            { question: 'Which languages do you want to work in?', multiSelect: true },
+            { question: 'Which tools?', multiSelect: true },
+          ],
+        },
+      });
+      // Group 0 on screen → Submit is two tabs away, past group 1. tabs>1 ⇒ advance.
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'TypeScript' }, { index: 1, label: 'Python' }],
+        question: 'Which languages do you want to work in?',
+        multiSelect: true,
+      });
+      expect(sm.getSubmitTabDistance()).toBe(2);
+      // Group 1 (last) on screen → Submit is the next tab. tabs===1 ⇒ commit.
+      sm.handleParserEvent('option_prompt', {
+        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }],
+        question: 'Which tools?',
+        multiSelect: true,
+      });
+      expect(sm.getSubmitTabDistance()).toBe(1);
+    });
   });
 
   // === Diff Flow ===

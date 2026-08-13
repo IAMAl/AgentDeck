@@ -17,6 +17,7 @@ import {
   migrateHooksIfNeeded,
   sweepLegacyHooks,
   hasUnboundedHookCurl,
+  decodeHookCommand,
 } from '../install.js';
 
 describe('Hook Installer', () => {
@@ -26,12 +27,12 @@ describe('Hook Installer', () => {
       expect(entry.matcher).toBe('');
       expect(entry.hooks).toHaveLength(1);
       expect(entry.hooks[0].type).toBe('command');
-      // Both POSIX and Windows commands reference AGENTDECK_PORT and the event name.
-      // POSIX inlines the full `/hooks/<event>` path; Windows builds it via `/hooks/`+$ev,
-      // so assert both substrings without assuming a single concatenated form.
-      expect(entry.hooks[0].command).toContain('AGENTDECK_PORT');
-      expect(entry.hooks[0].command).toContain('SessionStart');
-      expect(entry.hooks[0].command).toContain('/hooks/');
+      // Both POSIX and Windows commands reference AGENTDECK_PORT and the event
+      // endpoint. Decode so the assertion reads the script on Windows, where the
+      // whole payload ships as one base64 -EncodedCommand token.
+      const script = decodeHookCommand(entry.hooks[0].command);
+      expect(script).toContain('AGENTDECK_PORT');
+      expect(script).toContain('/hooks/SessionStart');
     });
 
     it('uses `*` matcher for tool events and empty matcher for lifecycle events', () => {
@@ -163,43 +164,76 @@ describe('Hook Installer', () => {
   });
 
   describe('buildHookCommandWin (Windows)', () => {
-    it('wraps a PowerShell one-liner that targets the event endpoint', () => {
+    /** The script `powershell -EncodedCommand` will actually run. */
+    const decode = (cmd: string): string => {
+      const m = cmd.match(/-EncodedCommand (\S+)$/);
+      if (!m) throw new Error(`no -EncodedCommand token in: ${cmd}`);
+      return Buffer.from(m[1], 'base64').toString('utf16le');
+    };
+
+    it('ships as -EncodedCommand so an outer shell cannot re-parse it', () => {
       const cmd = buildHookCommandWin('SessionStart');
-      expect(cmd.startsWith('powershell -NoProfile -ExecutionPolicy Bypass -Command "')).toBe(true);
-      expect(cmd).toContain("$ev='SessionStart'");
-      expect(cmd).toContain('$env:AGENTDECK_PORT');
-      expect(cmd).toContain(".agentdeck\\daemon.json");
-      expect(cmd).toContain("/hooks/'+$ev");
-      expect(cmd).toContain('Invoke-RestMethod');
-      expect(cmd).toContain('$port=9120');
-      expect(cmd).toContain('[int]::TryParse');
-      expect(cmd).toContain('$candidate -gt 65535');
+      // The whole payload is one base64 token. Claude Code runs Windows hooks
+      // THROUGH PowerShell, and `-Command "…$var…"` let that outer shell expand
+      // the script's own `$port`/`$env:AGENTDECK_PORT` before the inner powershell
+      // saw them, breaking every hook at `行:1`. base64 has no `$`, quote, or space
+      // to expand, so it survives cmd.exe and PowerShell identically.
+      expect(cmd.startsWith('powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ')).toBe(true);
+      const b64 = cmd.match(/-EncodedCommand (\S+)$/)![1];
+      // Single token, no whitespace, pure base64 — nothing for a shell to split.
+      expect(/^[A-Za-z0-9+/=]+$/.test(b64)).toBe(true);
+      expect(cmd).not.toContain('-Command "');
     });
 
-    it('uses single-line PowerShell so cmd.exe can pass it as one -Command argument', () => {
-      const cmd = buildHookCommandWin('Stop');
-      expect(cmd).not.toContain('\n');
+    it('the decoded script targets the event endpoint with the port ladder', () => {
+      const ps = decode(buildHookCommandWin('SessionStart'));
+      expect(ps).toContain('$env:AGENTDECK_PORT');
+      expect(ps).toContain(".agentdeck\\daemon.json");
+      expect(ps).toContain("/hooks/SessionStart");
+      expect(ps).toContain('$port=9120');
+      expect(ps).toContain('[int]::TryParse');
+      expect(ps).toContain('$candidate -gt 65535');
     });
 
     it('omits the macOS App Store sandbox-container fallback paths', () => {
-      const cmd = buildHookCommandWin('SessionStart');
-      expect(cmd).not.toContain('Library/Containers/bound.serendipity');
-      expect(cmd).not.toContain('group.bound.serendipity');
+      const ps = decode(buildHookCommandWin('SessionStart'));
+      expect(ps).not.toContain('Library/Containers/bound.serendipity');
+      expect(ps).not.toContain('group.bound.serendipity');
+    });
+
+    it('PreToolUse and Stop echo the raw response body; others stay quiet', () => {
+      // Request-response events must print the daemon's decision on stdout, and it
+      // must be the RAW body — Invoke-WebRequest .Content, never Invoke-RestMethod
+      // (which parses JSON to an object and would dump a hashtable).
+      for (const ev of ['PreToolUse', 'Stop']) {
+        const ps = decode(buildHookCommandWin(ev));
+        expect(ps).toContain('Invoke-WebRequest');
+        expect(ps).toContain('[Console]::Out.Write([string]$r.Content)');
+      }
+      const preTimeout = decode(buildHookCommandWin('PreToolUse'));
+      expect(preTimeout).toContain('-TimeoutSec 60');
+      expect(decode(buildHookCommandWin('Stop'))).toContain('-TimeoutSec 10');
+      // Fire-and-forget telemetry writes nothing to stdout.
+      const fire = decode(buildHookCommandWin('SessionStart'));
+      expect(fire).toContain('Invoke-RestMethod');
+      expect(fire).toContain('|Out-Null');
+      expect(fire).not.toContain('[Console]::Out.Write');
     });
 
     it('reads stdin as UTF-8 and posts UTF-8 bytes with charset (#46)', () => {
       const cmd = buildHookCommandWin('SessionStart');
+      const ps = decode(cmd);
       // Read stdin through a UTF-8 StreamReader — [Console]::In decodes piped
       // stdin with the OEM codepage (e.g. CP949) and garbles non-ASCII payloads.
-      expect(cmd).toContain('StreamReader([Console]::OpenStandardInput()');
-      expect(cmd).toContain('[System.Text.Encoding]::UTF8');
-      expect(cmd).not.toContain('[Console]::In.ReadToEnd()');
-      // POST UTF-8 bytes with a charset — Invoke-RestMethod encodes a string body
-      // as ISO-8859-1 when the content type carries no charset, mangling non-ASCII.
-      expect(cmd).toContain('[System.Text.Encoding]::UTF8.GetBytes');
-      expect(cmd).toContain('application/json; charset=utf-8');
-      // Still a single -Command line (cmd.exe passes it as one arg) and ASCII-only
-      // (the non-ASCII payload arrives at runtime via stdin, never embedded here).
+      expect(ps).toContain('StreamReader([Console]::OpenStandardInput()');
+      expect(ps).toContain('[System.Text.Encoding]::UTF8');
+      expect(ps).not.toContain('[Console]::In.ReadToEnd()');
+      // POST UTF-8 bytes with a charset — a string body is encoded ISO-8859-1
+      // without a charset, mangling non-ASCII.
+      expect(ps).toContain('[System.Text.Encoding]::UTF8.GetBytes');
+      expect(ps).toContain('application/json; charset=utf-8');
+      // The emitted command line itself is a single ASCII base64 token (the
+      // non-ASCII payload arrives at runtime via stdin, never embedded here).
       expect(cmd).not.toContain('\n');
       expect(/^[\x00-\x7F]*$/.test(cmd)).toBe(true);
     });
@@ -217,8 +251,9 @@ describe('Hook Installer', () => {
         const expectStar = ['PreToolUse', 'PostToolUse', 'PostToolUseFailure'].includes(event);
         expect(group.matcher).toBe(expectStar ? '*' : '');
         expect(group.hooks).toHaveLength(1);
-        expect(group.hooks[0].command).toContain('AGENTDECK_PORT');
-        expect(group.hooks[0].command).toContain(event);
+        const script = decodeHookCommand(group.hooks[0].command);
+        expect(script).toContain('AGENTDECK_PORT');
+        expect(script).toContain(event);
       }
     });
 
@@ -248,7 +283,8 @@ describe('Hook Installer', () => {
       };
       const result = applyHooks(settings);
       expect(result.hooks.SessionStart).toHaveLength(1);
-      expect(result.hooks.SessionStart[0].hooks[0].command).toContain('AGENTDECK_PORT');
+      // Decode so this reads the script on both platforms (Windows ships base64).
+      expect(decodeHookCommand(result.hooks.SessionStart[0].hooks[0].command)).toContain('AGENTDECK_PORT');
     });
 
     it('replaces old matcher-format hooks', () => {
@@ -264,7 +300,8 @@ describe('Hook Installer', () => {
       };
       const result = applyHooks(settings);
       expect(result.hooks.SessionStart).toHaveLength(1);
-      expect(result.hooks.SessionStart[0].hooks[0].command).toContain('AGENTDECK_PORT');
+      // Decode so this reads the script on both platforms (Windows ships base64).
+      expect(decodeHookCommand(result.hooks.SessionStart[0].hooks[0].command)).toContain('AGENTDECK_PORT');
     });
 
     it('is idempotent — running twice produces same result', () => {
@@ -425,7 +462,7 @@ describe('Hook Installer', () => {
       expect(newCmd).toContain('$PORT');
     });
 
-    it('self-heals installed hooks that predate strict port validation', () => {
+    it.skipIf(process.platform === 'win32')('self-heals installed hooks that predate strict port validation', () => {
       const home = mkdtempSync(join(tmpdir(), 'agentdeck-hooks-port-migration-'));
       mkdirSync(join(home, '.claude'), { recursive: true });
       const settings = applyHooks({});
@@ -443,9 +480,31 @@ describe('Hook Installer', () => {
 
       migrateHooksIfNeeded(home);
       const repaired = readFileSync(settingsPath, 'utf-8');
-      const marker = process.platform === 'win32' ? '[int]::TryParse' : '*[!0-9]*';
-      expect(repaired).toContain(marker);
+      expect(repaired).toContain('*[!0-9]*');
 
+      migrateHooksIfNeeded(home);
+      expect(readFileSync(settingsPath, 'utf-8')).toBe(repaired);
+      rmSync(home, { recursive: true, force: true });
+    });
+
+    it('migration 10: rewrites the superseded Windows -Command hook to -EncodedCommand', () => {
+      const home = mkdtempSync(join(tmpdir(), 'agentdeck-hooks-win-command-'));
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      // The retired Windows form: an inline `-Command "…$env:AGENTDECK_PORT…"` that
+      // Claude Code's PowerShell shell re-parses and breaks. It must be detected
+      // and rebuilt regardless of the host platform running the migration.
+      const oldWin = `powershell -NoProfile -ExecutionPolicy Bypass -Command "$ev='PreToolUse'; [int]$port=0; if(!([int]::TryParse([string]$env:AGENTDECK_PORT,[ref]$candidate))){}; Invoke-RestMethod -Uri ('http://127.0.0.1:'+$port+'/hooks/'+$ev) -Method Post"`;
+      const settingsPath = join(home, '.claude', 'settings.json');
+      writeFileSync(settingsPath, JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: oldWin }] }] },
+      }, null, 2) + '\n');
+
+      migrateHooksIfNeeded(home);
+      const repaired = readFileSync(settingsPath, 'utf-8');
+      // The broken inline form is gone; the shell-safe encoded form is in.
+      expect(repaired).not.toContain('-Command \\"');
+      expect(repaired).toContain('-EncodedCommand');
+      // Idempotent: the rewritten form carries no `-Command "` marker to re-trigger.
       migrateHooksIfNeeded(home);
       expect(readFileSync(settingsPath, 'utf-8')).toBe(repaired);
       rmSync(home, { recursive: true, force: true });
@@ -489,12 +548,13 @@ describe('steering hook channels (request-response)', () => {
     const stopCmd = (settings.hooks.Stop as Array<{ hooks: Array<{ command: string }> }>)
       .flatMap((h) => h.hooks).map((h) => h.command).join('\n');
     // The essential property: the legacy fire-and-forget hook was rewritten to
-    // the current platform hook set. Only POSIX has a request-response Stop
-    // variant; win32 emits its fire-and-forget PowerShell form (which builds the
-    // URI as '/hooks/'+$ev, so the literal '/hooks/Stop' never appears in it).
+    // the current platform's request-response Stop form. Windows ships it as a
+    // base64 -EncodedCommand, so decode before matching.
     if (process.platform === 'win32') {
-      expect(stopCmd).toContain('Invoke-RestMethod');
-      expect(stopCmd).toContain("$ev='Stop'");
+      const ps = decodeHookCommand(stopCmd);
+      expect(ps).toContain('Invoke-WebRequest');
+      expect(ps).toContain('[Console]::Out.Write([string]$r.Content)');
+      expect(ps).toContain('/hooks/Stop');
     } else {
       expect(stopCmd).toContain('RESP=$(curl');
       expect(stopCmd).toContain('/hooks/Stop');
@@ -568,7 +628,7 @@ describe('install target (~/.claude/settings.json)', () => {
     }
     // Relocation rebuilds from the current builder, so the bounded form lands
     // even though the legacy entry was unbounded.
-    const sessionEnd = relocated.hooks.SessionEnd[0].hooks[0].command;
+    const sessionEnd = decodeHookCommand(relocated.hooks.SessionEnd[0].hooks[0].command);
     expect(sessionEnd).toContain('daemon.json');
     if (process.platform !== 'win32') {
       expect(sessionEnd).toContain('--max-time 0.8');
