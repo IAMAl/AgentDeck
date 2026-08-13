@@ -145,37 +145,44 @@ describe('StateMachine', () => {
     });
 
     // A multi-QUESTION AskUserQuestion is a row of group tabs ending in `Submit
-    // answers`, so the distance is per-group: the last group sits one tab from
-    // Submit, earlier groups sit further. The device answer branches on exactly
-    // this — tabs===1 commits the whole form, tabs>1 means groups remain so it
-    // advances one tab instead of submitting (else the first group's answer
-    // defaults every later group, the "answering G0 submits everything" bug).
-    it('getSubmitTabDistance is the per-group distance to Submit across question groups', () => {
+    // answers`, so the distance is per-group: the active group sits (groups after
+    // it)+1 tabs from Submit. Which group is active is tracked as the device
+    // advances (advanceToNextGroup), NOT read off the TUI — the parser can't
+    // place a later group's truncated question. The device answer branches on
+    // this: tabs===1 commits, tabs>1 advances one tab instead (else the first
+    // group's answer defaults every later group, the "G0 submits everything" bug).
+    it('getSubmitTabDistance tracks the active group; advance surfaces the next group from hook data', () => {
       const sm = bootToIdle();
       sm.handleHookEvent('UserPromptSubmit', {});
       sm.handleHookEvent('PreToolUse', {
         tool_name: 'AskUserQuestion',
         tool_input: {
           questions: [
-            { question: 'Which languages do you want to work in?', multiSelect: true },
-            { question: 'Which tools?', multiSelect: true },
+            { question: 'Which languages?', multiSelect: true, options: [{ label: 'TypeScript' }, { label: 'Python' }] },
+            { question: 'Which tools?', multiSelect: true, options: [{ label: 'Docker' }, { label: 'Vite' }, { label: 'ESLint' }] },
           ],
         },
       });
-      // Group 0 on screen → Submit is two tabs away, past group 1. tabs>1 ⇒ advance.
+      // Parser detects the prompt; the option list is overwritten from group 0's
+      // authoritative hook options (not the scraped ones).
       sm.handleParserEvent('option_prompt', {
-        options: [{ index: 0, label: 'TypeScript' }, { index: 1, label: 'Python' }],
-        question: 'Which languages do you want to work in?',
+        options: [{ index: 0, label: 'scraped-and-ignored' }],
+        question: 'Which languages?',
         multiSelect: true,
       });
-      expect(sm.getSubmitTabDistance()).toBe(2);
-      // Group 1 (last) on screen → Submit is the next tab. tabs===1 ⇒ commit.
-      sm.handleParserEvent('option_prompt', {
-        options: [{ index: 0, label: 'A' }, { index: 1, label: 'B' }],
-        question: 'Which tools?',
-        multiSelect: true,
-      });
-      expect(sm.getSubmitTabDistance()).toBe(1);
+      expect(sm.getSnapshot().options.map((o) => o.label)).toEqual(['TypeScript', 'Python']);
+      expect(sm.getSubmitTabDistance()).toBe(2); // group 0 of 2 → advance
+
+      // Device answered group 0 → advance surfaces group 1's options immediately.
+      sm.advanceToNextGroup();
+      expect(sm.getSnapshot().options.map((o) => o.label)).toEqual(['Docker', 'Vite', 'ESLint']);
+      expect(sm.getSnapshot().question).toBe('Which tools?');
+      expect(sm.getSubmitTabDistance()).toBe(1); // group 1 (last) → submit
+
+      // The tool call ending clears the groups so a later prompt can't inherit them.
+      sm.handleHookEvent('PostToolUse', { tool_name: 'AskUserQuestion' });
+      sm.handleParserEvent('option_prompt', { options: [{ index: 0, label: 'X' }], question: 'Pick one' });
+      expect(sm.getSubmitTabDistance()).toBeNull();
     });
   });
 

@@ -2,6 +2,48 @@
 
 ---
 
+## 2026-08-13 — 계층형 복수 선택 완성: 두 번째 그룹을 훅 데이터로 device에 출력 (Path A)
+
+### 배경
+
+- 직전 세션에서 Windows 훅 파스 실패와 첫 그룹 조기 제출은 고쳤지만, **G0 확정 후 G1이
+  device에 안 뜨는** 문제가 남았다. 파서가 누적 TUI 버퍼에서 두 번째 그룹의 옵션을 분리하지
+  못하기 때문(양쪽 다 1..N 번호 + G1 옵션은 ANSI 컬럼 배치라 backward 블록 스캔이 stale G0을
+  붙잡고, `option_prompt`가 재발행되지 않아 device는 탭에서 picker를 지운 채 공백).
+
+### 변경 (Path A — 훅 권위 데이터로 그룹 출력)
+
+- **`collectAskMultiSelect` → `collectAskGroups`**: 이제 각 그룹의 `options`까지 보존
+  (`AskGroup { question, multiSelect, options }`). PreToolUse payload는 repaint가 아니라
+  절대 부분적이지 않은 SSOT.
+- **상태기계에 활성 그룹 추적 도입** (`bridge/src/state-machine.ts`): `askGroups`,
+  `activeGroupIndex`. 다중 그룹(`askGroups.length>1`)이면 `option_prompt`에서 스크레이프한
+  옵션을 **활성 그룹의 훅 옵션으로 덮어쓴다**(`applyActiveGroupOptions`). 파서는 프롬프트
+  "등장"만 감지, 옵션 목록은 훅이 공급.
+- **`advanceToNextGroup()`**: device가 비최종 그룹을 답하면 bridge가 `→` 한 탭을 보낸 뒤
+  이 메서드가 다음 그룹을 훅 데이터에서 즉시 snapshot으로 emit → `prompt_options`로 device에
+  전달(파서 재스크레이프를 기다리지 않음). 커서는 top으로 리셋.
+- **`getSubmitTabDistance` 단순화**: 화면 질문 매칭을 버리고 `askGroups.length -
+  activeGroupIndex`. 활성 그룹은 device 전진 때만 증가하므로 취약한 TUI 질문 읽기가 불필요.
+  단일 그룹·최종 그룹은 1.
+- **다중 그룹에서 파서 커서(`pty`) 무시**(`updateCursorIndex`): 스크레이프 커서는 stale G0을
+  가리키므로 device optimistic 커서만 신뢰.
+- **툴 종료 시 그룹 리셋**(PostToolUse/Stop): 이후 프롬프트(`/model` 등)가 stale 그룹을
+  상속하지 않도록.
+- **`select_options` 전진 분기가 `advanceToNextGroup()` 호출**(`bridge/src/index.ts`).
+
+### 검증
+
+- 실기 로그(2-group, G0=4옵션 / G1=3옵션): `select_options want=[1]` → `advanced to group
+  2/2: "…working-tree changes?" (3 options)` → `broadcast(prompt_options) to 2 clients`(G1이
+  device로) → 사용자가 G1에서 `select_options want=[0]` 로 답 → `right 1/1 → Submit tab` +
+  `enter` → `● User answered Claude's questions`. **G0→G1 표시→G1 답변→양쪽 제출까지 성립.**
+- 유닛: bridge 2013 pass(신규: `advanceToNextGroup`가 다음 그룹 옵션을 snapshot에 노출,
+  per-group `getSubmitTabDistance`, PostToolUse 그룹 리셋). 전체 스위트에서 유일한 실패는
+  기존 `protocol-generated-sync`(stale quicktype, 무관·据え置き).
+
+---
+
 ## 2026-08-13 — 계층형(다중 그룹) 복수 선택: Windows 훅 파스 실패 수리 + 첫 그룹 조기 제출 수정
 
 ### 배경

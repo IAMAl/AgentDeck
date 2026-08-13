@@ -57,13 +57,16 @@ export class StateMachine extends EventEmitter {
   private toolProgress: string | null = null;
   private options: PromptOption[] = [];
   private question: string | null = null;
-  /** Per-question `multiSelect` from the last AskUserQuestion PreToolUse input.
-   *  One call carries up to four groups presented one at a time, so the flag is
-   *  looked up by the question currently displayed rather than stored flat.
-   *  Never inferred from the TUI — `✔` also marks the current choice in
-   *  single-select lists like `/model`. Resolved on read (`resolveMultiSelect`)
-   *  so it cannot go stale behind the eleven sites that clear `question`. */
-  private askMultiSelect: Array<{ question: string; multiSelect: boolean }> = [];
+  /** Question groups from the last AskUserQuestion PreToolUse input, each with
+   *  its own options. One call carries up to four groups presented one at a
+   *  time. `multiSelect` is never inferred from the TUI — `✔` also marks the
+   *  current choice in single-select lists like `/model`. For a MULTI-group
+   *  prompt the option list is driven from here rather than the parser, which
+   *  can't isolate a later group from the accumulating TUI buffer. */
+  private askGroups: AskGroup[] = [];
+  /** Which group of a multi-group AskUserQuestion is on screen. Advanced by the
+   *  device answering a non-final group (`advanceToNextGroup`); reset per call. */
+  private activeGroupIndex = 0;
   /** The parser saw `[ ]`/`[x]` boxes on the list currently rendered. This is
    *  direct evidence from the screen, so it outranks the hook lookup, which can
    *  miss when the TUI's question text differs from the tool input's. */
@@ -108,9 +111,11 @@ export class StateMachine extends EventEmitter {
         this.toolInput = formatToolInput(toolName, toolInputData);
         this.toolProgress = `Using ${toolName}`;
         if (toolName === 'AskUserQuestion') {
-          // The tool input is the only trustworthy source for multiSelect; the
-          // TUI renders the same `✔` for a single-select current choice.
-          this.askMultiSelect = collectAskMultiSelect(toolInputData);
+          // The tool input is the only trustworthy source for multiSelect (the
+          // TUI renders the same `✔` for a single-select current choice) and for
+          // each group's options (later groups can't be scraped off the TUI).
+          this.askGroups = collectAskGroups(toolInputData);
+          this.activeGroupIndex = 0;
         }
         this.emitSnapshot();
         break;
@@ -121,6 +126,11 @@ export class StateMachine extends EventEmitter {
         this.currentTool = null;
         this.toolInput = null;
         this.toolProgress = null;
+        // The AskUserQuestion tool call is over — drop its group list so a later
+        // prompt (a `/model` picker, the next question) can't inherit stale
+        // groups when it computes multiSelect or the submit distance.
+        this.askGroups = [];
+        this.activeGroupIndex = 0;
         this.emitSnapshot();
         break;
       }
@@ -133,6 +143,8 @@ export class StateMachine extends EventEmitter {
         this.question = null;
         this.navigable = false;
         this.cursorIndex = 0;
+        this.askGroups = [];
+        this.activeGroupIndex = 0;
         this.transition(State.IDLE, 'stop', 'hook');
         break;
 
@@ -232,6 +244,12 @@ export class StateMachine extends EventEmitter {
         this.parsedMultiSelect = (data?.multiSelect as boolean) === true;
         this.navigable = (data?.navigable as boolean) ?? false;
         this.cursorIndex = (data?.cursorIndex as number) ?? 0;
+        // Multi-group AskUserQuestion: the parser detects the prompt but can't
+        // cleanly isolate each group's options from the accumulating TUI buffer,
+        // so overwrite the scraped list with the authoritative group from the
+        // hook. Cursor stays device-driven (see updateCursorIndex), so a
+        // same-group re-emit here doesn't reset the user's position.
+        if (this.askGroups.length > 1) this.applyActiveGroupOptions();
         if (this.state === State.AWAITING_OPTION) {
           // Already in AWAITING_OPTION — just update options and re-emit snapshot
           // (debounced chunks may re-parse with more complete data)
@@ -561,11 +579,50 @@ export class StateMachine extends EventEmitter {
     this.emit('state_changed', this.getSnapshot());
   }
 
+  /** Overwrite the surfaced option list with the active group's authoritative
+   *  options from the hook. Preserves the cursor (device-driven) but clamps it,
+   *  so a same-group re-emit doesn't move the user's position. */
+  private applyActiveGroupOptions(): void {
+    const g = this.askGroups[this.activeGroupIndex];
+    if (!g) return;
+    this.options = g.options;
+    this.question = g.question;
+    this.parsedMultiSelect = g.multiSelect;
+    this.navigable = true;
+    if (this.cursorIndex >= g.options.length) {
+      this.cursorIndex = Math.max(0, g.options.length - 1);
+    }
+  }
+
+  /**
+   * Advance a multi-group AskUserQuestion to the next group and surface it.
+   *
+   * Called when the device answers a NON-final group: the bridge has already
+   * sent one `→` to move the TUI onto the next tab, and this puts the matching
+   * group on the deck from hook data — immediately, without waiting for (or
+   * trusting) the parser to re-scrape the switched tab. Cursor resets to the top
+   * of the new group. No-op on the last group (the caller submits instead).
+   */
+  advanceToNextGroup(): void {
+    if (this.activeGroupIndex + 1 >= this.askGroups.length) return;
+    this.activeGroupIndex++;
+    this.cursorIndex = 0;
+    this.cursorAuthority = 'optimistic';
+    this.applyActiveGroupOptions();
+    debug('SM', `advanced to group ${this.activeGroupIndex + 1}/${this.askGroups.length}: "${this.question}" (${this.options.length} options)`);
+    this.emitSnapshot();
+  }
+
   /** Update cursor index with source discrimination to prevent race conditions.
    *  'optimistic' — from StreamDeck dial navigation (immediate, may be overridden by PTY)
    *  'pty' — from parser cursor_update (authoritative, but may be stale during rapid navigation)
    */
   updateCursorIndex(idx: number, source: 'pty' | 'optimistic' = 'pty'): void {
+    // A multi-group prompt's option list is bridge-driven from hook data, so the
+    // parser's scraped cursor points into the stale first-group rows it latched
+    // in the shared buffer. Device navigation (optimistic) is the only reliable
+    // cursor there — drop the PTY confirmation rather than let it jump the row.
+    if (source === 'pty' && this.askGroups.length > 1) return;
     if (source === 'optimistic') {
       this.cursorIndex = idx;
       this.cursorAuthority = 'optimistic';
@@ -601,7 +658,7 @@ export class StateMachine extends EventEmitter {
     if (this.parsedMultiSelect) return true;
     const shown = normalizeQuestion(this.question);
     if (!shown) return false;
-    const hit = this.askMultiSelect.find(({ question }) => {
+    const hit = this.askGroups.find(({ question }) => {
       const known = normalizeQuestion(question);
       if (!known) return false;
       return known === shown || known.startsWith(shown) || shown.startsWith(known);
@@ -618,27 +675,28 @@ export class StateMachine extends EventEmitter {
    * cursor already sits on "Submit answers", so `→`×N then Enter commits the
    * whole answer set.
    *
-   * The count comes from the tool input's group list, never from the screen.
-   * Every screen-derived measurement on this surface has failed the same way:
-   * Claude Code repaints only what changed, so a frame routinely carries a
-   * partial option list (measured live: four rows for a six-row prompt), and a
-   * walk sized from it stops short and drops its Enter on an option row — which
-   * TOGGLES, un-ticking the answer and committing nothing. The hook input is
-   * not a repaint and cannot be partial.
+   * The count comes from the tool input's group list plus the bridge-tracked
+   * active-group index, never from the screen. Every screen-derived measurement
+   * on this surface has failed the same way: Claude Code repaints only what
+   * changed, so a frame routinely carries a partial option list (measured live:
+   * four rows for a six-row prompt), and a walk sized from it stops short and
+   * drops its Enter on an option row — which TOGGLES, un-ticking the answer and
+   * committing nothing. Which group is on screen is likewise not read off the
+   * TUI (the parser can't place a later group's truncated question) but tracked
+   * as the device advances through them.
    */
   getSubmitTabDistance(): number | null {
     if (this.state !== State.AWAITING_OPTION) {
       debug('SM', `submitTab: not awaiting (state=${this.state})`);
       return null;
     }
-    if (this.askMultiSelect.length === 0) {
+    if (this.askGroups.length === 0) {
       // The hook input that carries the question-group list never arrived (or was
       // cleared) — but the parser saw a checkbox list on the TUI, so this IS a
       // multi-select. A single-question AskUserQuestion (the overwhelming common
       // case) puts `Submit` exactly one tab right of the question, so fall back
       // to that rather than skipping the submit and stranding the ticks on
-      // screen with nothing committed. (A multi-question prompt with no hook data
-      // can't be placed, but it was already unanswerable before this.)
+      // screen with nothing committed.
       if (this.parsedMultiSelect) {
         debug('SM', 'submitTab: no hook groups but parser saw a checkbox list → single-question fallback (tabs=1)');
         return 1;
@@ -646,29 +704,12 @@ export class StateMachine extends EventEmitter {
       debug('SM', 'submitTab: no AskUserQuestion groups recorded');
       return null;
     }
-    // One group means the strip is `<question> | Submit`, so Submit is always
-    // the next tab — identifying the current one buys nothing and costs the
-    // whole feature when the question text cannot be read off the TUI, which is
-    // the common case (measured live: `tabs=null` on a single-question prompt
-    // because `question` was null in a partial repaint).
-    if (this.askMultiSelect.length === 1) return 1;
-    const shown = normalizeQuestion(this.question);
-    if (!shown) {
-      debug('SM', `submitTab: question unreadable, cannot place among ${this.askMultiSelect.length} groups`);
-      return null;
-    }
-    // Same two-way prefix tolerance as resolveMultiSelect: the TUI's copy is
-    // width-truncated while the map holds the tool input's own text.
-    const idx = this.askMultiSelect.findIndex(({ question }) => {
-      const known = normalizeQuestion(question);
-      if (!known) return false;
-      return known === shown || known.startsWith(shown) || shown.startsWith(known);
-    });
-    if (idx < 0) {
-      debug('SM', `submitTab: question "${shown.slice(0, 40)}" matched none of ${this.askMultiSelect.length} groups`);
-      return null;
-    }
-    return this.askMultiSelect.length - idx;
+    // Submit is the last tab, so from the active group it is (groups after this
+    // one) + 1 away. `activeGroupIndex` is authoritative — it advances only when
+    // the device answers a group — so this needs no fragile question read and is
+    // 1 for a single-group prompt and for the final group of a multi-group one.
+    const idx = Math.min(this.activeGroupIndex, this.askGroups.length - 1);
+    return this.askGroups.length - idx;
   }
 
   getCursorIndex(): number {
@@ -732,29 +773,54 @@ function normalizeQuestion(q: string | null | undefined): string {
   return typeof q === 'string' ? q.replace(/\s+/g, ' ').trim() : '';
 }
 
+/** One question group of an AskUserQuestion, carrying its own option list. */
+export interface AskGroup {
+  question: string;
+  multiSelect: boolean;
+  /** The group's options, in tool-input order (= on-screen row order). */
+  options: PromptOption[];
+}
+
 /**
- * Pull `{ question, multiSelect }` out of an AskUserQuestion tool input.
+ * Pull the question groups out of an AskUserQuestion tool input.
  *
  * Shape is `{ questions: [{ question, header, options, multiSelect }] }`; every
  * field is treated as untrusted, since this arrives as a hook payload. Anything
  * unparseable yields an empty list, which resolves to "single-select" — the
  * safe default, because offering checkboxes for a single-choice prompt sends
  * keystrokes the TUI will not accept.
+ *
+ * The per-group `options` are kept (not just `multiSelect`) because a
+ * multi-QUESTION prompt can't be scraped group-by-group off the TUI: the buffer
+ * accumulates every group's rows and later groups draw their labels via ANSI
+ * column positioning, so the parser latches the first group's stale rows. The
+ * hook payload is the authoritative, un-truncated source, and later groups are
+ * surfaced to the device from it (see `advanceToNextGroup`).
  */
-export function collectAskMultiSelect(
+export function collectAskGroups(
   toolInput: Record<string, unknown> | undefined,
-): Array<{ question: string; multiSelect: boolean }> {
+): AskGroup[] {
   const raw = toolInput?.questions;
   if (!Array.isArray(raw)) return [];
-  const out: Array<{ question: string; multiSelect: boolean }> = [];
+  const out: AskGroup[] = [];
   for (const entry of raw) {
     if (typeof entry !== 'object' || entry === null) continue;
-    const q = (entry as Record<string, unknown>).question;
+    const e = entry as Record<string, unknown>;
+    const q = e.question;
     if (typeof q !== 'string' || !q.trim()) continue;
-    out.push({
-      question: q,
-      multiSelect: (entry as Record<string, unknown>).multiSelect === true,
-    });
+    const options: PromptOption[] = [];
+    if (Array.isArray(e.options)) {
+      for (const opt of e.options) {
+        // An option is either a bare string or `{ label, description }`.
+        const label = typeof opt === 'string'
+          ? opt
+          : (opt && typeof opt === 'object' && typeof (opt as Record<string, unknown>).label === 'string'
+            ? (opt as Record<string, unknown>).label as string
+            : null);
+        if (label && label.trim()) options.push({ index: options.length, label });
+      }
+    }
+    out.push({ question: q, multiSelect: e.multiSelect === true, options });
   }
   return out;
 }

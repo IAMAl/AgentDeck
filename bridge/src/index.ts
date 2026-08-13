@@ -991,12 +991,14 @@ export async function startSession(opts: SessionOptions): Promise<void> {
           // Groups remain after this one. Walking all the way to Submit would
           // answer THIS group and default every later one — "answering the first
           // group submits the whole form". Advance exactly ONE tab to the next
-          // group and stop: no Enter, and DON'T leave AWAITING_OPTION, so the
-          // parser surfaces that group as the next prompt for the device to
-          // answer. The device already cleared its picker on the submitting tap;
-          // it repaints when the next group's option_prompt lands.
+          // group and stop: no Enter, and stay in AWAITING_OPTION. The device
+          // already cleared its picker on the submitting tap, so surface the next
+          // group from the hook's authoritative options right away rather than
+          // waiting on the parser, which can't isolate it from the shared TUI
+          // buffer (the whole reason multi-group needs hook-driven groups).
           write('\x1b[C', delay, `right → next question group (${tabs - 1} left after this one)`);
           debug('agentdeck', `select_options advanced to next group (tabs=${tabs}); form stays open, no submit`);
+          core.stateMachine.advanceToNextGroup();
         } else {
           // tabs === 1: the last (or only) group. Submit is the next tab, and its
           // cursor already sits on "Submit answers", so `→` then Enter commits
