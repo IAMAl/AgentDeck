@@ -179,4 +179,24 @@ describe('tick carry across re-emits (bridge re-sends on every cursor move)', ()
     optionSelectTap();
     expect(sent.at(-1)).toEqual({ type: 'select_options', indices: [0], question: 'Pick one' });
   });
+
+  it('a partial re-emit that resolves multiSelect=false does not downgrade a live prompt', () => {
+    // The bridge resolves `multiSelect` per repaint: a partial one that parses
+    // no checkbox lines and truncates the question away resolves FALSE. For the
+    // same prompt (same signature) that must not retract the known multi-select
+    // — otherwise the next press commits as single-select and every tick but one
+    // is thrown away. This is the "only one option gets submitted" bug, and it
+    // never showed because the other tests always feed multiSelect=true.
+    updateOptionSelectDial(State.AWAITING_OPTION, opts(['A', 'B', 'C', 'D']), 0, 'Pick', undefined, true);
+    optionSelectPress();   // tick 0
+    optionSelectRotate(1); // cursor → 1
+    optionSelectRotate(1); // cursor → 2
+    // Partial re-emit of the SAME prompt with multiSelect wrongly resolved false.
+    updateOptionSelectDial(State.AWAITING_OPTION, opts(['A', 'B', 'C', 'D']), 2, 'Pick', undefined, false);
+    optionSelectPress();   // must TOGGLE (tick 2), NOT commit as single-select
+    // A single-select commit must never have leaked onto the wire.
+    expect(sent.filter((c) => c.type === 'select_option')).toEqual([]);
+    optionSelectTap();
+    expect(sent.at(-1)).toEqual({ type: 'select_options', indices: [0, 2], question: 'Pick' });
+  });
 });

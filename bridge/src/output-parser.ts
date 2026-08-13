@@ -1343,6 +1343,24 @@ export class OutputParser extends EventEmitter {
       debug('Parser', `discarding partial repaint (lone option[${finalOptions[0].index}] "${finalOptions[0].label}")`);
       return { options: [], navigable: false, cursorIndex: 0, checkboxList: false, partial: true };
     }
+    // Same guard, one survivor up. Claude Code numbers options 1..N with no
+    // gaps, so a non-contiguous final list is never a whole prompt — the missing
+    // rows fell out of the scan window on a partial repaint (a label-column-only
+    // redraw of the middle rows leaves the stale `1.` and the current `6.` with
+    // nothing numbered between), or stale scrollback numbers contaminated the
+    // block. The longest-run filter above already re-indexes a genuinely
+    // top-truncated run, so anything gappy that reaches here came through the
+    // `sorted` fallback (no run of 2+), and publishing it puts unreachable rows
+    // on the deck AND mis-counts the bridge's `select_options` cursor walk. This
+    // is the six-option "[0,5] drop": a live multi-select collapsed to option 0
+    // and option 5 slipped the length===1 guard because the gap left two
+    // survivors, not one.
+    for (let i = 1; i < finalOptions.length; i++) {
+      if (finalOptions[i].index !== finalOptions[i - 1].index + 1) {
+        debug('Parser', `discarding non-contiguous frame [${finalOptions.map(o => o.index).join(',')}] (gap before option[${finalOptions[i].index}])`);
+        return { options: [], navigable: false, cursorIndex: 0, checkboxList: false, partial: true };
+      }
+    }
     return { options: finalOptions, navigable, cursorIndex, checkboxList, partial: false };
   }
 

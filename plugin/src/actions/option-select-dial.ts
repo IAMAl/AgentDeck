@@ -113,7 +113,8 @@ export function updateOptionSelectDial(
   // question text alone: two sub-questions of one AskUserQuestion can share
   // wording, and keying on text would leak the first's ticks into the second.
   const signature = promptSignature(question, options);
-  const checked = pending && pending.multiSelect && pending.signature === signature
+  const carrying = pending !== null && pending.multiSelect && pending.signature === signature;
+  const checked = carrying && pending
     ? pending.checked
     : new Set(options.filter((o) => o.selected === true).map((o) => o.index));
 
@@ -123,7 +124,14 @@ export function updateOptionSelectDial(
     cursorIndex,
     question,
     requestId,
-    multiSelect: multiSelect === true,
+    // A same-prompt re-emit must NOT downgrade a known multi-select to single.
+    // The bridge resolves `multiSelect` per repaint, and a partial one (no
+    // checkbox lines parsed, question truncated away) resolves false — which
+    // would make the next press commit as single-select and throw away every
+    // tick but one (the "only one option submitted" bug). Once a prompt is
+    // known multi-select it stays so for its lifetime; a genuinely new prompt
+    // carries a new signature and starts fresh from the wire flag.
+    multiSelect: carrying ? true : multiSelect === true,
     checked,
     signature,
   };

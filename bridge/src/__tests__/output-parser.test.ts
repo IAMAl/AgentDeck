@@ -3053,6 +3053,22 @@ describe('OutputParser', () => {
       expect(events).toHaveLength(0);
     });
 
+    // The six-option "[0,5] drop": a label-column-only repaint rewrites the
+    // middle rows without their `N.` markers, so only the stale `1.` and the
+    // current `6.` carry numbers. That leaves a non-contiguous parse [0,5] which
+    // slipped the lone-option guard above — it has TWO survivors, not one — and
+    // reached the deck as a broken two-row multi-select (also mis-counting the
+    // bridge's select_options cursor walk, which indexes by list position).
+    it('discards a non-contiguous frame that dropped its middle rows', () => {
+      const p = armParser();
+      const events = collectEvents(p, 'option_prompt');
+
+      p.feed('❯ 1. [ ] AAA\n  middle repaint\n  6. Chat about this\n');
+      vi.advanceTimersByTime(200);
+
+      expect(events).toHaveLength(0);
+    });
+
     it('still emits a lone option when it starts at index 0', () => {
       const p = armParser();
       const events = collectEvents(p, 'option_prompt');

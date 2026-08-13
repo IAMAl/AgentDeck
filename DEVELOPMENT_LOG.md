@@ -2,6 +2,54 @@
 
 ---
 
+## 2026-08-13 — Stream Deck+ 복수 선택 실기 미동작의 진짜 원인: 코드가 아니라 배포 누락
+
+### 배경
+
+- Stream Deck+에서 복수 선택(multiSelect) 프롬프트의 **선택지가 전부 표시되지 않고**,
+  **LCD 탭으로 확정도 되지 않는다**는 리포트. 관련 커밋과 미커밋 diff는 정확히 이
+  두 증상을 겨냥하고 있었고(`optionSelectTap`, `select_options`, tick 이월, 비연속
+  프레임 破棄), 관련 테스트 259건도 모두 green이었다 — 즉 소스는 옳았다.
+
+### 원인 (배포 누락)
+
+- **실행 중인 두 프로세스가 모두 stale**였다. 기능 일체가 실기에 배포된 적이 없었다.
+  - 플러그인: `AppData\...\Plugins\bound.serendipity.agentdeck.sdPlugin`은 **symlink가
+    아니라 복사본**이라 `pnpm build`가 갱신하지 않는다. 실행 중 `bin/plugin.js`는 **8/10
+    빌드**로, `optionSelectTap`/`select_options`/`option-select` 액션이 **전무**(manifest에
+    액션 정의조차 없음). 그래서 프레스는 옛 단일 선택 경로로 커밋되고, 탭 핸들러 자체가
+    존재하지 않았다.
+  - 데몬(bridge): `node bridge/dist/cli.js daemon start`는 기동 시 dist를 1회 로드하므로,
+    재빌드해도 **실행 중 데몬에는 도달하지 않는다**. 실행 중 데몬은 8/12 기동본으로
+    비연속 프레임 破棄 등 파서 수정을 포함하지 않았다.
+- 로그 근거: 재배포 전 플러그인 로그에 `OptionSelectDial:` 라인이 **한 줄도** 없었다
+  (`display_state` heartbeat만 반복).
+
+### 조치 (재배포 루프)
+
+- `pnpm build`(shared → bridge → plugin)로 dist·plugin bin 재생성(미커밋 파서 수정 포함).
+- 플러그인: `streamdeck stop` → dev `{bin,layouts,static,ui,manifest.json,*.streamDeckProfile}`을
+  installed 폴더에 복사(설치측 `logs/`는 보존) → `streamdeck restart`.
+- 데몬: `node bridge/dist/cli.js daemon restart`(실행 중 `claude` 세션은 순간 재연결).
+
+### 검증
+
+- 재배포 후 플러그인 로그에 최초로 `OptionSelectDial: layout span=0+4 dials=4 width=800px
+  (borrowed from the default dials)` 및 `press → select_option` 출현 — 액션이 살아났다.
+- 실기 확인: **모든 선택지가 표시되고, 다이얼 프레스로 토글 → LCD 탭으로 복수 선택이
+  확정**됨(사용자 확인). 두 증상 모두 해소.
+- 미커밋이던 파서/플러그인 수정(비연속 프레임 破棄, 동일 프롬프트 재송 시 multiSelect
+  단일 강등 방지)도 이로써 실기 동작 확인 완료.
+
+### 교훈
+
+- 플러그인 기능이 "안 된다"면 **코드 이전에 실행 중 바이너리가 최신인지부터** 본다.
+  installed 플러그인은 복사본이라 build만으로는 갱신되지 않고, 데몬은 재시작해야 dist를
+  다시 읽는다. installed `bin/plugin.js`를 심볼로 grep하고 플러그인 로그의 `OptionSelectDial:`
+  라인 유무로 stale 여부를 즉시 판별할 수 있다.
+
+---
+
 ## 2026-08-13 — 복원 중 브랜치의 테스트 실패 62→0: 액션 계층 테스트 해금과 auth 토큰 수렴 복원
 
 ### 배경
